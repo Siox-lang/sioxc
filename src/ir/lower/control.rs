@@ -452,13 +452,13 @@ impl<'a> Lowering<'a> {
                         updates,
                         ctx: self.cur_ctx,
                     });
-                } else if let Some(k) = self.eval_const(&iff.cond, &self.cur_env) {
+                } else if let Some(k) = self.eval_condition(&iff.cond, &self.cur_env) {
                     // A generate-if: the condition is a compile-time constant
                     // (a parameter/const), so only the taken branch is lowered.
                     // Its instances were gathered structurally; lowering the
                     // untaken branch too would add a spurious driver that
                     // collides with a conditionally-instantiated block.
-                    if k != 0 {
+                    if k {
                         self.lower_combinational_block(&iff.then, cond.clone());
                     } else {
                         match iff.else_.as_deref() {

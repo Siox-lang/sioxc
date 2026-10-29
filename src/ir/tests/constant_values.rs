@@ -2,6 +2,373 @@
 
 use super::*;
 
+fn lower_with_nonzero_false(source: &str) -> (Design, DiagnosticSink) {
+    let mut sink = DiagnosticSink::default();
+    let sources = [
+        source,
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";
+         impl core::ops::Boolean for Decision { fn as_bool(self) -> Decision { return self; } }",
+        "module core::ops;
+         pub trait Boolean { fn as_bool(self) -> core::primitive::Decision; }
+         attr lang for Boolean = \"boolean\";
+         pub struct Range { pub left: integer, pub right: integer }
+         attr lang for Range = \"range\";",
+    ];
+    let modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+        .collect();
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = crate::types::check(&modules, &resolved, &mut sink);
+    let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    // Inspect lowering's own diagnostics, independently of frontend lint suppression.
+    let mut sink = DiagnosticSink::default();
+    let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+    (design, sink)
+}
+
+#[test]
+fn const_context_inactive_indices_use_boolean_meaning_not_encoded_word() {
+    let (_, sink) = lower_with_nonzero_false(
+        "module model;
+        entity Top { values: integer[2] in, output: integer out }
+        impl Top {
+            for i in 0..0 {
+                if false { output = values[i - 1]; }
+                else { output = values[i]; }
+            }
+        }",
+    );
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+}
+
+#[test]
+fn const_context_generated_lints_select_source_boolean_branch() {
+    let source = "module model; entity Top { output: integer out }
+        impl Top {
+            process {
+            if false { output = 1; } else { output = 2; }
+            output = 3;
+            }
+        }";
+    let (_, sink) = lower_with_nonzero_false(source);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let assignments: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == Some(crate::diag::codes::DEAD_ASSIGNMENT))
+        .collect();
+    assert_eq!(assignments.len(), 1, "{:?}", sink.diagnostics());
+    assert!(
+        assignments[0].labels.iter().any(|label| {
+            source[label.span.start as usize..label.span.end as usize].contains("output = 2")
+        }),
+        "{assignments:?}"
+    );
+    assert!(
+        !assignments[0].labels.iter().any(|label| {
+            source[label.span.start as usize..label.span.end as usize].contains("output = 1")
+        }),
+        "{assignments:?}"
+    );
+}
+
+#[test]
+fn const_context_substitution_folds_indices_without_forging_boolean_literals() {
+    let mut sink = DiagnosticSink::default();
+    let module = crate::syntax::parse_module(
+        FileId(0),
+        "module model;
+        fn arithmetic(choice: integer) -> integer { return choice + 1; }
+        fn equal(choice: integer) -> Bool { return choice == 0; }
+        fn negated(choice: integer) -> Bool { return not (choice == 0); }",
+        &mut sink,
+    );
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    for item in &module.items {
+        let ast::Item::Fn(function) = item else {
+            continue;
+        };
+        let ast::Stmt::Return {
+            value: Some(expression),
+            ..
+        } = &function.body.as_ref().unwrap().stmts[0]
+        else {
+            panic!("return")
+        };
+        let substituted = subst_expr(expression, "choice", 0);
+        match function.name.text.as_str() {
+            "arithmetic" => {
+                assert!(matches!(substituted, ast::Expr::Int { ref text, .. } if text == "1"))
+            }
+            "equal" => assert!(matches!(
+                substituted,
+                ast::Expr::Binary {
+                    op: ast::BinOp::Eq,
+                    ..
+                }
+            )),
+            "negated" => assert!(matches!(
+                substituted,
+                ast::Expr::Unary {
+                    op: ast::UnOp::Not,
+                    ..
+                }
+            )),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn const_context_ir_calls_share_scalar_signature_restrictions() {
+    let mut sink = DiagnosticSink::default();
+    let modules = [crate::syntax::parse_module(
+        FileId(0),
+        "module model;
+         type Float = real;
+         fn discard(value: Float) -> integer { return 1; }
+         const RESULT: integer = discard(2);",
+        &mut sink,
+    )];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    for item in &modules[0].items {
+        functions.insert_declaration(item);
+    }
+    let ast::Item::Const(constant) = &modules[0].items[2] else {
+        panic!("constant")
+    };
+    assert_eq!(
+        eval_const_fns(&constant.value, &HashMap::new(), &functions, 0),
+        None
+    );
+}
+
+#[test]
+fn packed_initializers_fold_typed_call_results_without_losing_widths() {
+    let source = "module model;
+        fn twice(value: unsigned[8]) -> unsigned[8] { return value * 2; }
+        entity Top { output: unsigned[8] out }
+        impl Top {
+            let small: unsigned[8] = twice(4);
+            let wrapped: unsigned[8] = twice(200);
+            output = small + wrapped;
+        }";
+    assert!(
+        lower_diagnostics(source)
+            .iter()
+            .all(|diagnostic| diagnostic.code != Some(crate::diag::codes::NON_CONSTANT_INITIALIZER)),
+        "{:?}",
+        lower_diagnostics(source)
+    );
+    let design = lower_src(source);
+    for (name, expected) in [("small", 8), ("wrapped", 144)] {
+        let signal = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(&format!(".{name}")))
+            .expect("initialized signal");
+        assert_eq!(signal.init, [expected], "{}", signal.path);
+    }
+}
+
+#[test]
+fn packed_local_constant_calls_keep_the_declared_storage_boundary() {
+    let source = "module model;
+        fn wrapped(value: unsigned[3]) -> integer {
+            let next: unsigned[3] = value + 1;
+            return integer(next);
+        }
+        const RESULT: integer = wrapped(7);
+        entity Top { output: integer out }
+        impl Top { let seed: integer = RESULT; output = seed; }";
+    let diagnostics = lower_diagnostics(source);
+    assert!(
+        diagnostics.iter().all(|diagnostic| diagnostic.code
+            != Some(crate::diag::codes::NON_CONSTANT_INITIALIZER)),
+        "{diagnostics:?}"
+    );
+    let design = lower_src(source);
+    let seed = design
+        .signals
+        .iter()
+        .find(|signal| signal.path.ends_with(".seed"))
+        .unwrap();
+    assert_eq!(seed.init, [0]);
+}
+
+#[test]
+fn typed_initializer_calls_cannot_discard_dynamic_or_foreign_inputs() {
+    for input in ["source", "foreign()", "\"0000X001\""] {
+        let source = format!(
+            "module model;
+             extern \"C\" {{ fn foreign() -> integer; }}
+             fn discard(value: unsigned[8]) -> unsigned[8] {{ return 3; }}
+             entity Top {{ source: unsigned[8] in, output: unsigned[8] out }}
+             impl Top {{ let value: unsigned[8] = discard({input}); output = value; }}"
+        );
+        let diagnostics = lower_diagnostics(&source);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code
+                    == Some(crate::diag::codes::NON_CONSTANT_INITIALIZER))
+                .count(),
+            1,
+            "{input}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn const_context_ir_attribute_bindings_keep_compound_paths() {
+    for (expression, expected) in [
+        ("array'length", Some(3)),
+        ("bus.data'length", Some(8)),
+        ("array[2]'length", Some(8)),
+        ("bus.data'left", Some(15)),
+        ("bus.data'right", Some(8)),
+        ("bus.data'high", None),
+        ("array[1]'length", None),
+        ("array[position]'length", None),
+        ("(1 + 2)'length", None),
+    ] {
+        let mut sink = DiagnosticSink::default();
+        let source = format!(
+            "module attributes;
+             struct Payload {{ pub data: integer[15..8] }}
+             fn read(bus: Payload, array: integer[8][3], position: integer) -> integer {{
+                 return {expression};
+             }}"
+        );
+        let modules = [crate::syntax::parse_module(FileId(0), &source, &mut sink)];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{expression}: {:?}", sink.diagnostics());
+        let ast::Item::Fn(function) = &modules[0].items[1] else {
+            panic!("function")
+        };
+        let ast::Stmt::Return {
+            value: Some(value), ..
+        } = &function.body.as_ref().unwrap().stmts[0]
+        else {
+            panic!("return")
+        };
+        let functions = FunctionIndex::new(&resolved);
+        let env = HashMap::from([
+            ("array::length".into(), 3),
+            ("bus.data::length".into(), 8),
+            ("array[2]::length".into(), 8),
+            ("bus.data::left".into(), 15),
+            ("bus.data::right".into(), 8),
+        ]);
+        assert_eq!(
+            eval_const_fns(value, &env, &functions, 0),
+            expected,
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn const_context_pure_scalar_locals_do_not_fall_through_to_bound_environment() {
+    let mut sink = DiagnosticSink::default();
+    let modules = [crate::syntax::parse_module(
+        FileId(0),
+        "module model;
+         fn early() -> integer { return value; let value: integer = 7; }
+         fn initialized() -> integer { let value: integer = 8; return value; }
+         const EARLY: integer = early();
+         const INITIALIZED: integer = initialized();",
+        &mut sink,
+    )];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    for item in &modules[0].items {
+        functions.insert_declaration(item);
+    }
+    let env = HashMap::from([("value".into(), 99)]);
+    for (index, expected) in [(2, None), (3, Some(8))] {
+        let ast::Item::Const(constant) = &modules[0].items[index] else {
+            panic!("constant")
+        };
+        assert_eq!(
+            eval_const_fns(&constant.value, &env, &functions, 0),
+            expected
+        );
+    }
+}
+
+#[test]
+fn const_context_ir_queries_keep_enum_parameters_and_boolean_encodings() {
+    let mut sink = DiagnosticSink::default();
+    let sources = [
+        "module model; use core::primitive::Decision;
+         enum Code { First = 9, Next }
+         fn width(value: Code) -> integer { return integer(value); }
+         fn enabled() -> Decision { return false; }
+         const WIDTH: integer = width(Code::Next);
+         const FLAG: Decision = enabled();
+         const MODE: Code = Code::Next;
+         const COPY: Code = MODE;",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+    ];
+    let modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+        .collect();
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = crate::types::check(&modules, &resolved, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    for item in modules.iter().flat_map(|module| &module.items) {
+        functions.insert_declaration(item);
+    }
+    let constants: Vec<_> = modules[0]
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let ast::Item::Const(constant) = item {
+                Some(constant)
+            } else {
+                None
+            }
+        })
+        .collect();
+    functions.set_enum_values(std::sync::Arc::clone(&typed.enum_values));
+    let env = HashMap::new();
+    assert_eq!(
+        eval_const_fns(&constants[0].value, &env, &functions, 0),
+        Some(10)
+    );
+    let ast::Expr::Call { callee, args, .. } = &constants[0].value else {
+        panic!("call")
+    };
+    assert_eq!(eval_call_fns(callee, args, &env, &functions, 0), Some(10));
+    assert_eq!(
+        eval_const_fns(&constants[1].value, &env, &functions, 0),
+        Some(5)
+    );
+    assert_eq!(
+        eval_condition_fns(&constants[1].value, &env, &functions, 0),
+        Some(false)
+    );
+    let env = HashMap::from([(functions.constant_decl_key(constants[2]), 10)]);
+    assert_eq!(
+        eval_const_fns(&constants[3].value, &env, &functions, 0),
+        Some(10)
+    );
+}
+
 #[test]
 fn standalone_enum_helpers_borrow_supplied_function_contracts() {
     let mut sink = DiagnosticSink::default();
@@ -166,6 +533,31 @@ fn encoding_with(source: &str, owner: &str, primitive: &str, prelude: &str) -> L
         .get(owner)
         .unwrap_or_else(|| panic!("missing source encoding for {owner}"))
         .clone()
+}
+
+#[test]
+fn const_context_encoding_tables_follow_source_order_instead_of_discriminants() {
+    let source = "module model;
+        enum Palette { Low = 3, Mid = 6, High = 9 }
+        impl Ord<Palette> for Palette {
+            fn lt(self, rhs: Palette) -> Bool { return integer(self) > integer(rhs); }
+            fn le(self, rhs: Palette) -> Bool { return integer(self) >= integer(rhs); }
+        }
+        impl LogicEncoding for Palette {
+            fn to_bool(self) -> Bool { return self < Palette::Mid; }
+            fn is_binary(self) -> Bool { return self != Palette::Mid; }
+            fn is_high_impedance(self) -> Bool { return false; }
+            fn to_x01(self) -> Palette {
+                if self < Palette::Mid { return Palette::High; }
+                return Palette::Low;
+            }
+        }
+        entity Top { value: Palette out } impl Top { value = Palette::Low; }";
+    let encoding = encoding(source, "Palette");
+    assert_eq!(encoding.value_bits.get(&3), Some(&false));
+    assert_eq!(encoding.value_bits.get(&9), Some(&true));
+    assert_eq!(encoding.x01.get(&3), Some(&3));
+    assert_eq!(encoding.x01.get(&9), Some(&9));
 }
 
 #[test]

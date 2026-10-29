@@ -60,7 +60,35 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "enum_phase_values_test":
+    if profile == "packed_logic_index_test":
+        root = "PackedLogicIndexTest.probe."
+        expected = {
+            "index": [(time * 1_000_000, f"{value:064b}")
+                      for time, value in enumerate((6, 5, 4, 3, 0, 8, 7, 6))],
+            "seen": [(0, "x"), (7_000_000, "z")],
+            "nested": [(0, "x"), (7_000_000, "z")],
+            "wide": [(0, "x")],
+            "dynamic": [(0, "x"), (1_000_000, "z"), (2_000_000, "x"),
+                        (3_000_000, "x"), (4_000_000, "x"), (5_000_000, "0"),
+                        (6_000_000, "1"), (7_000_000, "x"), (7_000_000, "z")],
+            "value.data": [(0, "01xzxx01x"), (7_000_000, "01zxxx01x")],
+            "value.wide": [(0, "01xzxx01x" * 9)],
+        }
+        for name, events in expected.items():
+            assert changes.get(root + name) == events, name
+    elif profile == "length_expr_test":
+        assert changes["LengthExprTest.dut.source"] == [(0, "1001")]
+        assert changes["LengthExprTest.dut.value"] == [(0, "001")]
+    elif profile == "consteval_contexts_test":
+        assert changes["ConstantContexts.dut.source"] == [(0, "low"), (1_000_000, "above")]
+        assert changes["ConstantContexts.dut.constant_choice"] == [(0, f"{13:064b}")]
+        assert changes["ConstantContexts.dut.runtime_choice"] == [
+            (0, f"{13:064b}"), (1_000_000, f"{21:064b}")
+        ]
+        assert changes["ConstantContexts.dut.generated_choice"] == [(0, f"{14:064b}")]
+        assert changes["ConstantContexts.dut.packed_choice"] == [(0, f"{8:08b}")]
+        assert changes["ConstantContexts.dut.wrapped_choice"] == [(0, f"{144:08b}")]
+    elif profile == "enum_phase_values_test":
         root = "EnumPhaseValues.dut."
         for name in ("value", "seen"):
             assert changes[root + name] == [(0, "low"), (1_000_000, "high")], name

@@ -3,6 +3,19 @@
 use super::*;
 
 #[test]
+fn const_context_integer_metadata_converts_shared_enum_values() {
+    let (modules, sink) = checked_metadata(&["module model;
+        enum Code { First = 9, Next }
+        fn width() -> integer { return integer(Code::Next); }
+        pub attr mark: integer for entity = 1;
+        entity Device { value: integer out }
+        impl Device { attr mark = width(); value = Device'mark; }"]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let printed = crate::syntax::pretty::print_module(&modules[0]);
+    assert!(printed.contains("value = 10;"), "{printed}");
+}
+
+#[test]
 /// The analogue `'ddt` attribute is rejected as Phase-2 syntax (E-P010).
 fn rejects_phase2_ddt() {
     let errors = check_src("module m;\nentity E { y: Bit out, }\nimpl E {\n  y = x'ddt;\n}\n");

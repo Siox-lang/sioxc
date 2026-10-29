@@ -160,8 +160,10 @@ fn source_constants<'a>(
 fn process_functions<'a>(
     modules: &'a [Module],
     resolved: &'a Resolved,
+    typed: &Typed,
 ) -> crate::ir::FunctionIndex<'a> {
     let mut functions = crate::ir::FunctionIndex::new(resolved);
+    functions.set_enum_values(std::sync::Arc::clone(&typed.enum_values));
     let trait_declarations = modules
         .iter()
         .flat_map(|module| &module.items)
@@ -1217,7 +1219,7 @@ pub fn lower(
     let recursive_calls = std::cell::RefCell::new(Vec::new());
     let rejected = std::cell::RefCell::new(Vec::new());
     let self_calls = std::cell::RefCell::new(std::collections::HashSet::new());
-    let functions = process_functions(modules, resolved);
+    let functions = process_functions(modules, resolved, typed);
     let constant_integers = module_constant_integers(modules, &functions);
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
@@ -10693,17 +10695,24 @@ fn value_ref_with_type_inner(
     }
 
     if matches!(expression, ast::Expr::Call { .. }) {
-        if let Some(value) =
-            crate::ir::eval_const_fns(expression, context.constant_integers, context.functions, 0)
-        {
-            let number = if matches!(ty, Some(crate::types::Ty::Real)) {
-                ProcessNumber::Real((value as f64).to_bits())
-            } else {
-                ProcessNumber::Integer(vec![value as u64])
-            };
-            let kind = ProcessValueKind::Number(number);
-            let width = source_value_width(&kind, ty.as_ref(), process, context);
-            return push_value(span, ty, width, kind, context);
+        // Only const initializers may erase source calls here. Runtime calls
+        // retain their boundaries even when the shared evaluator knows a value.
+        if !context.constant_stack.is_empty() {
+            if let Some(value) = crate::ir::eval_const_fns(
+                expression,
+                context.constant_integers,
+                context.functions,
+                0,
+            ) {
+                let number = if matches!(ty, Some(crate::types::Ty::Real)) {
+                    ProcessNumber::Real((value as f64).to_bits())
+                } else {
+                    ProcessNumber::Integer(vec![value as u64])
+                };
+                let kind = ProcessValueKind::Number(number);
+                let width = source_value_width(&kind, ty.as_ref(), process, context);
+                return push_value(span, ty, width, kind, context);
+            }
         }
         // A family's `From` impl for the argument's type comes before the
         // kernel's raw resize (spec 3.17): `signed[16](s)` sign-extends.
@@ -13728,7 +13737,8 @@ mod tests {
         let resolved = crate::resolve::resolve(&modules, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
-        let functions = process_functions(&modules, &resolved);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let functions = process_functions(&modules, &resolved, &typed);
         assert_eq!(
             functions.canonical_type_key("std::bits::unsigned"),
             "unsigned"
@@ -13738,6 +13748,35 @@ mod tests {
                 .get_associated("Plain", "label")
                 .map(|function| function.name.text.as_str()),
             Some("label")
+        );
+    }
+
+    #[test]
+    fn process_function_index_retains_shared_enum_encodings() {
+        let mut sink = DiagnosticSink::default();
+        let modules = [crate::syntax::parse_module(
+            FileId(0),
+            "module model;
+            enum Code { First = 9, Next }
+            fn width() -> integer { return integer(Code::Next); }
+            const RESULT: integer = width();",
+            &mut sink,
+        )];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let functions = process_functions(&modules, &resolved, &typed);
+        let ast::Item::Const(constant) = &modules[0].items[2] else {
+            panic!("constant")
+        };
+        assert_eq!(
+            crate::ir::eval_const_fns(
+                &constant.value,
+                &std::collections::HashMap::new(),
+                &functions,
+                0
+            ),
+            Some(10)
         );
     }
 

@@ -3,6 +3,21 @@
 use super::*;
 
 #[test]
+fn const_context_function_widths_enforce_literal_fit_and_allow_runtime_resize() {
+    for width in ["3", "(width())"] {
+        let prefix = "module model;
+            fn width() -> integer { if 2 > 1 { return 3; } return 1; }
+            entity Device { value: unsigned[4] in, output: unsigned";
+        let source = format!("{prefix}[{width}] out }} impl Device {{ output = 9; }}");
+        assert_eq!(check_src(&source), 1, "{source}");
+        let source = format!(
+            "{prefix}[{width}] out }} impl Device {{ output = unsigned[{width}](value); }}"
+        );
+        assert_eq!(check_src(&source), 0, "{source}");
+    }
+}
+
+#[test]
 fn generic_widths_check_resolved_constants_and_function_values() {
     for argument in ["ZERO", "(zero())", "N = ZERO"] {
         let source = format!(

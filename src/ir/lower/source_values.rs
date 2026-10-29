@@ -69,6 +69,7 @@ pub(super) struct SourceValues {
     raw_bits: HashSet<ProcessValueId>,
     meta_epoch: usize,
     meta_presence: Vec<bool>,
+    widths_checked: usize,
 }
 
 impl SourceValues {
@@ -325,6 +326,7 @@ impl SourceValues {
     }
 
     fn clear_analysis(&mut self) {
+        self.widths_checked = 0;
         self.real.clear();
         self.non_integer.clear();
         self.meta_width.clear();
@@ -455,7 +457,7 @@ impl SourceValues {
                 .value_layouts
                 .get(value.0 as usize)
                 .and_then(Option::as_ref)
-                == Some(&layout)
+                .is_some_and(|bound| bound.kind == layout.kind)
             {
                 return *value;
             }
@@ -615,33 +617,18 @@ impl Lowering<'_> {
             Expr::WideConst(words) => u32::try_from(words.len()).ok()?.checked_mul(64),
             Expr::Slice { hi, lo, .. } => hi.checked_sub(*lo)?.checked_add(1),
             Expr::Canonical { value, .. } => {
-                let arena = self.source_values.borrow();
-                let mut value = *value;
-                loop {
-                    let node = &arena.ir.values[value.0 as usize];
-                    if let Some(width) = node.bit_width {
-                        return Some(width);
-                    }
-                    if let ProcessValueKind::InlineCall { operand, .. } = node.kind {
-                        value = operand;
-                        continue;
-                    }
-                    return match &node.kind {
-                        ProcessValueKind::Signal {
-                            state: ProcessSignalState::Event,
-                            ..
-                        } => Some(1),
-                        ProcessValueKind::Signal { signals, .. } => {
-                            signals.iter().try_fold(0u32, |total, signal| {
-                                total.checked_add(self.out.signal_width(*signal)?)
-                            })
-                        }
-                        ProcessValueKind::BitSlice { high, low, .. } => {
-                            high.checked_sub(*low)?.checked_add(1)
-                        }
-                        _ => None,
-                    };
+                let mut arena = self.source_values.borrow_mut();
+                // Appended values are dependency-ordered; share the canonical width rule once.
+                for index in arena.widths_checked..arena.ir.values.len() {
+                    let width = super::hardware::normalized_value_width(
+                        &arena.ir,
+                        ProcessValueId(index as u32),
+                        &self.out,
+                    );
+                    arena.ir.values[index].bit_width = width;
                 }
+                arena.widths_checked = arena.ir.values.len();
+                arena.ir.values.get(value.0 as usize)?.bit_width
             }
             _ => None,
         }
@@ -1132,6 +1119,126 @@ mod tests {
             "{:?}",
             arena.ir.validate(1)
         );
+    }
+
+    #[test]
+    fn binding_an_already_typed_alias_does_not_resize_for_a_new_source_span() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Packed {
+                width: 81,
+                family: "UserWord".to_string(),
+                range: Some(crate::ir::LayoutRange { left: 80, right: 0 }),
+                element_enum: None,
+            },
+        };
+        let mut arena = SourceValues::default();
+        let original = arena.bind_layout(&Expr::Const(17), layout.clone(), span);
+        let expression = arena.reference(original);
+        let mut alias = layout.clone();
+        alias.span = crate::diag::Span::new(crate::diag::FileId(0), 10..11);
+        let count = arena.ir.values.len();
+        assert_eq!(
+            arena.bind_layout(&expression, alias.clone(), alias.span),
+            original
+        );
+        assert_eq!(
+            arena.ir.values.len(),
+            count,
+            "no redundant storage boundary"
+        );
+        for changed in [
+            LayoutKind::Packed {
+                width: 80,
+                family: "UserWord".to_string(),
+                range: Some(crate::ir::LayoutRange { left: 79, right: 0 }),
+                element_enum: None,
+            },
+            LayoutKind::Packed {
+                width: 81,
+                family: "OtherWord".to_string(),
+                range: Some(crate::ir::LayoutRange { left: 80, right: 0 }),
+                element_enum: None,
+            },
+            LayoutKind::Packed {
+                width: 81,
+                family: "UserWord".to_string(),
+                range: Some(crate::ir::LayoutRange { left: 0, right: 80 }),
+                element_enum: None,
+            },
+        ] {
+            let changed = SourceLayout {
+                span: alias.span,
+                kind: changed,
+            };
+            assert_ne!(
+                arena.bind_layout(&expression, changed, alias.span),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn integer_storage_reuses_known_arithmetic_width_but_keeps_required_widening() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+        let mut sink = DiagnosticSink::default();
+        let resolved = crate::resolve::resolve(&[], &mut sink);
+        let lowering = Lowering::new(&mut sink, &resolved);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 64,
+                domain: ScalarDomain::Integer,
+                nominal: None,
+                value_range: None,
+            },
+        };
+        let addition =
+            lowering.source_binary(BinOp::SAdd, &Expr::Const(u64::MAX), &Expr::Const(1), span);
+        let Val::Scalar(Expr::Canonical { value, .. }) =
+            lowering.bind_value_layout(Val::Scalar(addition), layout.clone(), span)
+        else {
+            panic!("typed integer binding");
+        };
+        {
+            let arena = lowering.source_values.borrow();
+            let ProcessValueKind::RawResize { operand } = arena.ir.values[value.0 as usize].kind
+            else {
+                panic!("storage boundary");
+            };
+            assert!(matches!(
+                arena.ir.values[operand.0 as usize].kind,
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::SignedAdd,
+                    ..
+                }
+            ));
+            assert!(arena.ir.values[operand.0 as usize].bit_width.unwrap() >= 64);
+            assert_eq!(arena.ir.values[value.0 as usize].bit_width, Some(64));
+        }
+        let negative =
+            lowering
+                .source_values
+                .borrow_mut()
+                .unary(ProcessUnaryOp::Neg, &Expr::Const(3), span);
+        let Val::Scalar(Expr::Canonical { value, .. }) =
+            lowering.bind_value_layout(Val::Scalar(negative), layout, span)
+        else {
+            panic!("typed negative binding");
+        };
+        let arena = lowering.source_values.borrow();
+        let ProcessValueKind::RawResize { operand } = arena.ir.values[value.0 as usize].kind else {
+            panic!("storage boundary");
+        };
+        assert!(matches!(
+            arena.ir.values[operand.0 as usize].kind,
+            ProcessValueKind::BitSlice {
+                high: 63,
+                low: 0,
+                ..
+            }
+        ));
     }
 
     #[test]

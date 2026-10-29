@@ -115,7 +115,13 @@ impl SourceValues {
                 None => layout,
             };
             let original = self.push_node(value, layout);
-            if element_call.is_some() {
+            // A checked mux selects whole enum elements, not their former value bits.
+            let element_selection = matches!(
+                self.ir.values[original.0 as usize].kind,
+                ProcessValueKind::Select { then_value, else_value, .. }
+                    if elements.contains(&then_value) || elements.contains(&else_value)
+            );
+            if element_call.is_some() || element_selection {
                 elements.insert(original);
             }
             let raw_bit = raw_bits.contains(&ProcessValueId(index as u32));
@@ -816,6 +822,83 @@ mod tests {
         assert_eq!(arena.ir.value_layouts[root.0 as usize], Some(layout));
         assert_eq!(arena.reads[root.0 as usize].as_ref(), &[SignalId(0)]);
         assert!(arena.ir.validate(1).is_empty());
+    }
+
+    #[test]
+    fn selected_elements_keep_discriminants_but_raw_selections_keep_bits() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
+        let encoding = LogicEncoding {
+            value_bits: [(4, false), (9, true), (11, false), (13, true)].into(),
+            binary: [4, 9].into(),
+            ..Default::default()
+        };
+        for raw in [false, true] {
+            let mut arena = SourceValues::default();
+            let signal = arena.signal(SignalId(0), ProcessSignalState::Current, span);
+            let index =
+                arena.checked_index(&Expr::Current(SignalId(2)), &Expr::Const(1), 0, 1, span);
+            let mut selected = Expr::Const(0);
+            for label in [1, 0] {
+                let condition = arena.binary(BinOp::Eq, &index, &Expr::Const(label), span);
+                let element = if raw {
+                    arena.raw_slice(&signal, label as u32, label as u32, span)
+                } else {
+                    arena.slice(&signal, label as u32, label as u32, span)
+                };
+                selected = arena.select(&condition, &element, &selected, span);
+            }
+            let root = arena.bind_layout(
+                &selected,
+                SourceLayout {
+                    span,
+                    kind: LayoutKind::Scalar {
+                        width: 1,
+                        domain: ScalarDomain::Bits,
+                        nominal: None,
+                        value_range: None,
+                    },
+                },
+                span,
+            );
+            let mapped = arena.reconstruct_metavalues(
+                &[(0, 1)].into(),
+                &[(1, 2)].into(),
+                &[(1, encoding.clone())].into(),
+                None,
+                &HashMap::new(),
+            );
+            let root = mapped[root.0 as usize];
+            assert_eq!(
+                matches!(
+                    arena.ir.values[root.0 as usize].kind,
+                    ProcessValueKind::RawResize { .. }
+                ),
+                raw,
+                "only a reconstructed element selection outgrows its one-bit binding"
+            );
+            let expression =
+                crate::ir::derive::materialize_digital_expression(&arena.ir, root).unwrap();
+            for bits in 0..4 {
+                for left in [4, 9, 11, 13] {
+                    for right in [4, 9, 11, 13] {
+                        for index in 0..2 {
+                            let bit = (bits >> index) & 1;
+                            let disc = if index == 0 { left } else { right };
+                            let expected = if raw {
+                                bit
+                            } else if encoding.binary.contains(&disc) {
+                                encoding.binary_value(bit != 0).unwrap()
+                            } else {
+                                disc
+                            };
+                            let frame = [bits, left | (right << 4), index];
+                            assert_eq!(evaluate(&expression, &[frame, frame]), expected);
+                        }
+                    }
+                }
+            }
+            assert!(arena.ir.validate(3).is_empty());
+        }
     }
 
     #[test]

@@ -688,7 +688,7 @@ impl<'a> Lowering<'a> {
         // idiom this protects is the ordinary one for a generated chain —
         // `if i == 0 { s[0] = d; } else { s[i] = s[i - 1]; }` — whose `else`
         // reads `s[-1]` on the very iteration that does not take it.
-        let taken = self.eval_const(&iff.cond, &self.cur_env).map(|v| v != 0);
+        let taken = self.eval_condition(&iff.cond, &self.cur_env);
         if taken != Some(false) {
             for s in &iff.then.stmts {
                 self.collect_stmt_bad_indices(s, out);

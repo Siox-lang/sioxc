@@ -4,7 +4,9 @@ use std::collections::HashSet;
 
 use crate::resolve::DefId;
 
-use super::{BinOp, LayoutDirection, LookupTableId, SignalId, SourceLayout};
+use super::{
+    BinOp, LayoutDirection, LayoutKind, LookupTableId, ScalarDomain, SignalId, SourceLayout,
+};
 #[cfg(test)]
 use super::{Expr, UnOp};
 /// Index of a [`ProcessCfg`] in [`ProcessIr::processes`].
@@ -1242,12 +1244,23 @@ fn process_binary_is_signed(operation: &ProcessBinaryOp) -> bool {
 /// Dependencies precede their users, so no recursion guard is needed. Values
 /// outside this closed integer subset deliberately return `None`.
 pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]) -> Option<i128> {
+    arena_constant_integer_with_layouts(id, values, &[])
+}
+
+/// Fold typed storage boundaries only with their declared representation.
+pub(crate) fn arena_constant_integer_with_layouts(
+    id: ProcessValueId,
+    values: &[ProcessValue],
+    layouts: &[Option<SourceLayout>],
+) -> Option<i128> {
     let value = values.get(id.0 as usize)?;
     match &value.kind {
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
             let mut result = 0i128;
             for &word in words.iter().rev() {
-                result = result.checked_shl(64)?.checked_add(i128::from(word))?;
+                result = result
+                    .checked_mul(1i128 << 64)?
+                    .checked_add(i128::from(word))?;
             }
             // Kernel numbers store a signed value's bits; packed/untyped words
             // keep their raw mathematical interpretation.
@@ -1261,14 +1274,72 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
         ProcessValueKind::Unary {
             operation: ProcessUnaryOp::Neg,
             operand,
-        } => arena_constant_integer(*operand, values)?.checked_neg(),
+        } => arena_constant_integer_with_layouts(*operand, values, layouts)?.checked_neg(),
+        ProcessValueKind::InlineCall { operand, .. } => {
+            arena_constant_integer_with_layouts(*operand, values, layouts)
+        }
+        ProcessValueKind::RawResize { operand } => {
+            let number = arena_constant_integer_with_layouts(*operand, values, layouts)?;
+            if matches!(layouts.get(id.0 as usize).and_then(Option::as_ref),
+                Some(SourceLayout { kind: LayoutKind::Scalar { value_range: Some((left, right)), .. }, .. })
+                    if number < i128::from(*left) || number > i128::from(*right))
+            {
+                return None;
+            }
+            let (width, domain) = match layouts.get(id.0 as usize).and_then(Option::as_ref) {
+                Some(SourceLayout {
+                    kind: LayoutKind::Packed { width, .. },
+                    ..
+                }) => (*width, &ScalarDomain::Bits),
+                Some(SourceLayout {
+                    kind: LayoutKind::Scalar { width, domain, .. },
+                    ..
+                }) => (*width, domain),
+                _ => match value.ty {
+                    Some(crate::types::Ty::Integer) => (64, &ScalarDomain::Integer),
+                    Some(crate::types::Ty::Natural) => (64, &ScalarDomain::Natural),
+                    Some(crate::types::Ty::Char) => (32, &ScalarDomain::Character),
+                    _ => return None,
+                },
+            };
+            if width == 0 || matches!(domain, ScalarDomain::Real) {
+                return None;
+            }
+            if matches!(domain, ScalarDomain::Natural) {
+                let number = u64::try_from(number).ok()?;
+                return (width >= 64 || number < (1u64 << width)).then_some(i128::from(number));
+            }
+            if matches!(domain, ScalarDomain::Character) {
+                return char::from_u32(u32::try_from(number).ok()?)
+                    .map(|character| i128::from(u32::from(character)));
+            }
+            if width >= i128::BITS {
+                return (number >= 0).then_some(number);
+            }
+            let bits = (number as u128) & ((1u128 << width) - 1);
+            if matches!(domain, ScalarDomain::Integer) {
+                let shift = i128::BITS - width;
+                Some(((bits << shift) as i128) >> shift)
+            } else {
+                i128::try_from(bits).ok()
+            }
+        }
+        ProcessValueKind::BitSlice { base, high, low } => {
+            if high < low || *high >= i128::BITS {
+                return None;
+            }
+            let bits = arena_constant_integer_with_layouts(*base, values, layouts)? as u128;
+            let width = high - low + 1;
+            let mask = u128::MAX >> (u128::BITS - width);
+            i128::try_from((bits >> low) & mask).ok()
+        }
         ProcessValueKind::Binary {
             operation,
             left: left_id,
             right: right_id,
         } => {
-            let mut left = arena_constant_integer(*left_id, values)?;
-            let mut right = arena_constant_integer(*right_id, values)?;
+            let mut left = arena_constant_integer_with_layouts(*left_id, values, layouts)?;
+            let mut right = arena_constant_integer_with_layouts(*right_id, values, layouts)?;
             // A 64-bit operand of a signed operation is a kernel integer: its
             // top bit is the sign. Read unsigned, `0 - x'low` with
             // `x'low = -4` did not fold to 4, and `1 << (0 - x'low)` kept the
@@ -1326,12 +1397,13 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
             then_value,
             else_value,
         } => {
-            let selected = if arena_constant_integer(*condition, values)? != 0 {
+            let selected = if arena_constant_integer_with_layouts(*condition, values, layouts)? != 0
+            {
                 then_value
             } else {
                 else_value
             };
-            arena_constant_integer(*selected, values)
+            arena_constant_integer_with_layouts(*selected, values, layouts)
         }
         ProcessValueKind::Attribute { base, attribute } if attribute == "length" => {
             values.get(base.0 as usize)?.bit_width.map(i128::from)

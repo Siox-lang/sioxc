@@ -97,7 +97,6 @@ pub fn enum_discriminants(
         crate::resolve::declarations::DeclarationIndex::collect(fns.resolved(), modules);
     let values = crate::types::enum_values::EnumValues::collect_with_functions(
         &declarations,
-        fns.resolved(),
         Some(fns.declarations()),
     );
     enum_discriminants_from_values(&values, fns.resolved(), fns)
@@ -113,7 +112,6 @@ pub fn enum_first_discriminants(
         crate::resolve::declarations::DeclarationIndex::collect(fns.resolved(), modules);
     let values = crate::types::enum_values::EnumValues::collect_with_functions(
         &declarations,
-        fns.resolved(),
         Some(fns.declarations()),
     );
     enum_first_from_values(&values, fns)

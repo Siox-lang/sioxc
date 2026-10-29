@@ -18,6 +18,50 @@ fn literal(text: &str) -> Result<i128, NotConstant> {
 }
 
 #[test]
+fn physical_and_symbolic_enum_values_are_semantically_equivalent() {
+    let mut sink = DiagnosticSink::default();
+    let sources = [
+        "module model; use core::primitive::Bool;
+         impl Eq<Bool> for Bool { fn eq(self, rhs: Bool) -> Bool { return self; } }
+         fn compare(value: Bool) -> Bool { return value == value; }",
+        "module core::primitive;
+         pub enum Bool { false = 5, true = 17 } attr lang for Bool = \"bool\";",
+    ];
+    let modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| parse_module(FileId(i as u32), source, &mut sink))
+        .collect();
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let enums = crate::types::enum_values::EnumValues::collect(&declarations);
+    let source = Source::new(&declarations).with_enums(&enums);
+    let Item::Fn(function) = &modules[0].items[2] else {
+        panic!("function")
+    };
+    let value = Value::Enum {
+        owner: resolved.lang("bool").unwrap(),
+        discriminant: 17,
+    };
+    let result = evaluate_function(function, vec![value], &source, 0);
+    assert_eq!(result, Ok(value));
+    assert_eq!(
+        source.equivalent(
+            value,
+            Value::Variant {
+                owner: resolved.lang("bool").unwrap(),
+                variant: resolved
+                    .enum_variant(resolved.lang("bool").unwrap(), "true")
+                    .unwrap(),
+            }
+        ),
+        Some(true),
+        "raw and symbolic true mean the same source value"
+    );
+}
+
+#[test]
 fn typed_character_values_do_not_masquerade_as_integers() {
     let source = expression("'A'");
     let environment = ConstantExpressions(|_: &Path| None, std::marker::PhantomData);
@@ -394,7 +438,7 @@ fn failed_selected_branch_does_not_fall_through_to_a_later_return() {
         return 7;
     }
     fn statement(n: integer) -> integer {
-        if n > 0 { let local: integer = 3; }
+        if n > 0 { unsupported(); }
         return 7;
     }",
     );
@@ -421,7 +465,7 @@ fn empty_selected_branches_and_early_returns_are_control_flow_not_errors() {
     );
     assert_eq!(env.eval("empty(1)"), Ok(7));
     assert_eq!(env.eval("early()"), Ok(5));
-    assert_eq!(evaluate_statements(&[], &env, 0), Ok(None));
+    assert_eq!(evaluate_value_statements(&[], &env, None, 0), Ok(None));
 }
 
 #[test]
@@ -467,12 +511,13 @@ fn argument_arity_and_recursion_are_bounded_without_executing_foreign_code() {
 #[test]
 fn function_frames_are_restored_after_errors() {
     let env = Functions::new(
-        "fn fail(n: integer) -> integer { return n / 0; }
+        "fn fail(n: integer) -> integer { let local: integer = n; return local / 0; }
         fn identity(n: integer) -> integer { return n; }",
     );
     let mut interpreter = Interpreter {
         environment: &env,
         locals: Vec::new(),
+        operators: Vec::new(),
     };
     assert_eq!(
         interpreter

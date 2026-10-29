@@ -3,6 +3,144 @@
 use super::*;
 
 #[test]
+fn constant_storage_queries_use_each_declared_layout() {
+    let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+    let values = [
+        ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![u64::MAX])),
+        },
+        ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+        },
+        ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                left: ProcessValueId(0),
+                right: ProcessValueId(1),
+            },
+        },
+        ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::RawResize {
+                operand: ProcessValueId(2),
+            },
+        },
+    ];
+    for (domain, expected) in [(ScalarDomain::Bits, Some(0)), (ScalarDomain::Natural, None)] {
+        let layouts = [
+            None,
+            None,
+            None,
+            Some(SourceLayout {
+                span,
+                kind: LayoutKind::Scalar {
+                    width: 64,
+                    domain,
+                    nominal: None,
+                    value_range: None,
+                },
+            }),
+        ];
+        assert_eq!(
+            arena_constant_integer_with_layouts(ProcessValueId(3), &values, &layouts),
+            expected
+        );
+    }
+    let values = [
+        values[0].clone(),
+        ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::RawResize {
+                operand: ProcessValueId(0),
+            },
+        },
+    ];
+    for width in [1, 3, 8, 64, 81, 128, 257] {
+        let layouts = [
+            None,
+            Some(SourceLayout {
+                span,
+                kind: LayoutKind::Packed {
+                    width,
+                    family: "UserWord".to_string(),
+                    range: None,
+                    element_enum: None,
+                },
+            }),
+        ];
+        let expected = if width < 64 {
+            (1u64 << width) - 1
+        } else {
+            u64::MAX
+        };
+        assert_eq!(
+            arena_constant_integer_with_layouts(ProcessValueId(1), &values, &layouts),
+            Some(i128::from(expected)),
+            "width={width}"
+        );
+    }
+    let mut values = values;
+    values[1].ty = Some(crate::types::Ty::Integer);
+    assert_eq!(arena_constant_integer(ProcessValueId(1), &values), Some(-1));
+    let layouts = [
+        None,
+        Some(SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 64,
+                domain: ScalarDomain::Integer,
+                nominal: None,
+                value_range: Some((0, 7)),
+            },
+        }),
+    ];
+    assert_eq!(
+        arena_constant_integer_with_layouts(ProcessValueId(1), &values, &layouts),
+        None,
+        "a ranged numeric cannot silently narrow an out-of-range value"
+    );
+}
+
+#[test]
+fn narrow_constant_queries_never_wrap_wide_words_into_small_values() {
+    let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+    let mut padded = vec![0; 128];
+    padded[0] = 17;
+    for (words, expected) in [
+        (vec![1, 0, 1], None),
+        (vec![0, u64::MAX], None),
+        (vec![0, 0, 0, 1], None),
+        (vec![0, 1u64 << 63], None),
+        (vec![u64::MAX, i64::MAX as u64], Some(i128::MAX)),
+        (padded, Some(17)),
+    ] {
+        let value = ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::Number(ProcessNumber::Integer(words)),
+        };
+        assert_eq!(
+            arena_constant_integer(ProcessValueId(0), &[value]),
+            expected
+        );
+    }
+}
+
+#[test]
 fn kernel_number_queries_keep_sign_without_reinterpreting_raw_words() {
     for integer in [-2i64, i64::MIN, i64::MAX] {
         for typed in [false, true] {

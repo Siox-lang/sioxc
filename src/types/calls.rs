@@ -35,7 +35,10 @@ impl<'a> Checker<'a> {
         let Some(source) = self.type_kind_name(&source_ty) else {
             return;
         };
-        if self.conversion_exists(&target, &source) {
+        let Some(target_id) = self.resolved.resolved(path.span) else {
+            return;
+        };
+        if self.conversion_exists(&Ty::Named(target_id), &source_ty) {
             return;
         }
         self.error_with_help(
@@ -52,23 +55,31 @@ impl<'a> Checker<'a> {
 
     /// Whether `target(x)` is defined for an `x` of type `source`: an
     /// `impl From<source> for target`, or a total nominal derivation.
-    pub(super) fn conversion_exists(&self, target: &str, source: &str) -> bool {
-        target == source
+    pub(super) fn conversion_exists(&self, target: &Ty, source: &Ty) -> bool {
+        let (Some(target_name), Some(source_name)) =
+            (self.type_kind_name(target), self.type_kind_name(source))
+        else {
+            return false;
+        };
+        target_name == source_name
             || self
                 .conversion_sigs
-                .contains(&(target.to_string(), source.to_string()))
+                .contains(&(target_name.clone(), source_name.clone()))
             || self.enum_conversion_is_total(target, source)
-            || self.struct_conversion_is_total(target, source)
+            || self.struct_conversion_is_total(&target_name, &source_name)
     }
 
     /// A chain-connected enum conversion is total only when every source
     /// variant also exists in the target domain.
-    fn enum_conversion_is_total(&self, target: &str, source: &str) -> bool {
-        let ancestor = |ancestor: &str, descendant: &str| {
+    fn enum_conversion_is_total(&self, target: &Ty, source: &Ty) -> bool {
+        let (Ty::Named(target), Ty::Named(source)) = (target, source) else {
+            return false;
+        };
+        let ancestor = |ancestor: DefId, descendant: DefId| {
             let mut current = descendant;
             let mut seen = HashSet::new();
-            while let Some(base) = self.enum_bases.get(current) {
-                if !seen.insert(current.to_string()) {
+            while let Some(base) = self.declarations.enum_base(current) {
+                if !seen.insert(current) {
                     return false;
                 }
                 if base == ancestor {
@@ -78,14 +89,16 @@ impl<'a> Checker<'a> {
             }
             false
         };
-        let connected = ancestor(target, source) || ancestor(source, target);
+        let connected = ancestor(*target, *source) || ancestor(*source, *target);
         connected
             && self
-                .enum_variants
-                .get(source)
-                .zip(self.enum_variants.get(target))
+                .enum_values
+                .members(*source)
+                .zip(self.enum_values.members(*target))
                 .is_some_and(|(source, target)| {
-                    source.iter().all(|variant| target.contains(variant))
+                    source
+                        .iter()
+                        .all(|(variant, _)| target.iter().any(|(member, _)| member == variant))
                 })
     }
 

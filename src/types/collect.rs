@@ -61,7 +61,21 @@ impl<'a> Checker<'a> {
             })
             .collect();
         let declarations = DeclarationIndex::collect(resolved, modules);
-        let enum_values = enum_values::EnumValues::collect(&declarations, resolved);
+        let enum_values = enum_values::EnumValues::collect(&declarations);
+        // Compatibility names come from shared member identities, never another inheritance walk.
+        let enum_variants = declarations
+            .enumerations()
+            .filter_map(|(owner, _)| {
+                let name = resolved.qualified_name_str(owner)?.to_owned();
+                let members = enum_values.members(owner)?;
+                let names = members
+                    .iter()
+                    .filter_map(|(member, _)| resolved.def(*member))
+                    .map(|member| member.name.clone())
+                    .collect();
+                Some((name, names))
+            })
+            .collect();
         Checker {
             declarations,
             enum_values,
@@ -85,9 +99,7 @@ impl<'a> Checker<'a> {
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
-            enum_variants: HashMap::new(),
-            own_variants: HashMap::new(),
-            enum_bases: HashMap::new(),
+            enum_variants,
             conversion_sigs: HashSet::new(),
             structs: HashMap::new(),
             field_visibility: HashMap::new(),
@@ -232,9 +244,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // (inherited enum variants are expanded in collect_decl's tail)
         self.break_derivation_cycles();
-        self.expand_inherited_variants();
     }
 
     /// Collect one non-entity type declaration.
@@ -598,19 +608,6 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::Enum(e) => {
-                let Some(enum_key) = self.declaration_key(e.name.span) else {
-                    return;
-                };
-                let vars: Vec<String> = e.variants.iter().map(|v| v.name.text.clone()).collect();
-                self.own_variants.insert(enum_key.clone(), vars.clone());
-                self.enum_variants.insert(enum_key.clone(), vars);
-                if let Some(t) = &e.repr {
-                    if let Some(base) = self.type_key(t) {
-                        self.enum_bases.insert(enum_key, base);
-                    }
-                }
-            }
             Item::ExternBlock { fns, .. } => {
                 for f in fns {
                     let Some(id) = self.resolved.declared(f.name.span) else {
@@ -741,34 +738,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Nominal enum derivation: prepend base variants (spec derived types).
-    /// A base that isn't a known enum is a numeric repr — ignore it.
-    pub(super) fn expand_inherited_variants(&mut self) {
-        let names: Vec<String> = self.enum_variants.keys().cloned().collect();
-        for name in &names {
-            let mut chain = Vec::new();
-            let mut cur = name.clone();
-            let mut prefix: Vec<String> = Vec::new();
-            while let Some(base) = self.enum_bases.get(&cur).cloned() {
-                if !self.enum_variants.contains_key(&base) || chain.contains(&base) {
-                    break; // numeric repr, or cycle
-                }
-                chain.push(base.clone());
-                cur = base;
-            }
-            for anc in chain.iter().rev() {
-                if let Some(vs) = self.own_variants.get(anc) {
-                    prefix.extend(vs.iter().cloned());
-                }
-            }
-            if !prefix.is_empty() {
-                let own = self.enum_variants.get(name).cloned().unwrap_or_default();
-                prefix.extend(own);
-                self.enum_variants.insert(name.clone(), prefix);
-            }
-        }
-    }
-
     /// Derived-enum validation (spec 3.28): `enum B(A);` is a newtype over
     /// `A`'s variants, so `A` must itself be an enum. An enum carries no
     /// storage annotation — its width is derived from its variants and
@@ -784,7 +753,11 @@ impl<'a> Checker<'a> {
         let Some(head) = self.type_key(repr) else {
             return;
         };
-        if self.own_variants.contains_key(&head) {
+        if self
+            .declarations
+            .scalar_type_id(repr)
+            .is_some_and(|id| self.declarations.enumeration(id).is_some())
+        {
             return;
         }
         let name = &e.name.text;

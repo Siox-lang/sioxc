@@ -638,19 +638,30 @@ impl Lowering<'_> {
         ty: Option<&ast::Type>,
         env: &HashMap<String, Val>,
     ) -> (Val, Option<SourceLayout>) {
-        let layout = self
-            .source_operand_layout(expression, env)
-            .or_else(|| ty.map(|ty| self.source_layout(ty, &self.cur_env)));
+        // Concrete formals own storage; unconstrained parameters keep the argument's shape.
+        let declared = ty
+            .map(|ty| self.source_layout(ty, &self.cur_env))
+            .filter(|layout| layout.bit_width().is_some_and(|width| width > 0));
+        let layout = declared.or_else(|| self.source_operand_layout(expression, env));
         let value = match &layout {
             Some(layout)
                 if matches!(
                     layout.kind,
                     LayoutKind::Array { .. } | LayoutKind::Struct { .. }
-                ) =>
+                ) || matches!(
+                    expression,
+                    ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+                ) && matches!(layout.kind, LayoutKind::Packed { .. }) =>
             {
                 self.lower_shaped_source(expression, env, layout)
             }
             _ => self.lower_val_env(expression, env),
+        };
+        let value = match &layout {
+            Some(layout) => {
+                self.bind_value_layout(value, layout.clone(), ast::expr_span(expression))
+            }
+            None => value,
         };
         (value, layout)
     }

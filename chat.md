@@ -21008,3 +21008,807 @@ Next reproduce valid source-Ord versus constant-ordering behavior and typed
 integer conversion/condition context differences, then reuse a common source
 semantic context. Do not narrow the remaining typed-value or registry/hook
 scope or claim general macro expansion identity/source-operator dispatch done.
+
+### 2026-10-28 — Codex — accepted member commits, typed-context repro scope
+
+Verified local commits: compiler d2c4c6e, corpus b42359d, generated wiki1e94863.
+Commit stats contain only announced owned paths; compiler/wiki clean and all20
+peer probes untouched. Project card has a verified what/why/how checkpoint and
+82% engineering estimate, preserving prior notes and In Progress / AST /
+Compiler foundations fields. No pushes.3243634 is terminal green, not live.
+
+Continue all five foundation sections. Before changing semantic production
+code, add valid tests for reversed source Ord versus compile-time enum values,
+integer(EnumVariant) constants and checker-side Boolean condition evaluation.
+New native example goes in the actual sibling corpus, not a scratch clone.
+Ownership: types/enum_values/tests.rs, types/tests/declaration_index.rs and new
+corpus consteval_contexts_test.siox; upcoming common-context work may touch
+types/consteval.rs and its source adapter, types/enum_values.rs, elab.rs and IR
+constant/generate consumers. Reuse existing declaration contracts and shared
+facts. Preserve source behavior and domain checks; no cloned registries, raw
+Boolean flags, leaf fallbacks, new grammar/runtime/LLVM/dependencies or commits
+before full green. Do not replace the reverse-order case with numeric order
+merely because that is easier to pass.
+
+### 2026-10-28 — Codex — typed-context failures verified, common source service
+
+3353085 is terminal red1: all three new const_context_ regressions fail. Enum
+conversion yields unknown instead of9/10; reverse Ord yields21/22 instead of
+13/14; a closed checker helper with registered Boolean conditions is unsupported
+instead of3. The new native fixture compiles validly and independently records
+constant_choice21 versus runtime_choice13, then fails the equality assertion.
+Retained native artifacts: /home/max/.cache/siox-jobs/tmp/tmp.k9OV4xvxAP.
+No production semantic fix yet.3361013 AST refresh is terminal green:
+7577nodes/20014edges/392communities, with existing vendor-C extraction limits
+and no documentation-semantic rebuild. No verification job remains live.
+
+Begin common borrowed source context in types/consteval/source.rs, shared by
+checker/enum evaluation, then elaboration/IR consumers. Extend the existing
+interpreter's typed conversion/operator hooks rather than adding a walker.
+Keep the old enum semantic adapter temporarily for successful-answer auditing;
+changed source-operator results require an observed implementation-versus-
+primitive difference, not a blanket exemption for unknown output. Reuse
+DeclarationIndex and resolver-owned kernel/member identities, source bodies and
+existing checked domains. Add no raw Boolean flags or cloned source registries.
+New regressions remain uncommitted on d2c4c6e; last accepted estimate82%, all
+five sections still required. No pushes or new grammar/runtime/LLVM/dependencies.
+
+### 2026-10-28 — Codex — common scalar context focused gate green, checker wiring
+
+3502855 is terminal exited/success/0, peak1508454400 bytes. The common source
+context passes665 frontend tests, strict frontend Clippy,54 runner tests and
+12 native/VCD runs (three fixtures, ordinary/debug, default/bitpack). This
+includes all three reproduced typed-context failures. AST refresh completed;
+documentation semantics and vendor-C extraction remain limited. No full
+current-slice corpus acceptance or commits yet; last accepted estimate82%.
+
+Continue checker metadata/range consumers using the existing shared EnumValues,
+then elaboration and IR typed conditions; preserve checked domains. Own edits
+in types/patterns.rs, assignments.rs and associated tests before elab/IR wiring.
+The temporary old enum adapter remains for the broad comparison gate. No new
+dependencies, grammar, runtime or LLVM changes, no pushes. Root Claude wiki
+handoff observed: stop mirror generation and leave the wiki checkout untouched
+while the new hand-written wiki is coordinated; canonical compiler docs remain.
+
+### 2026-10-28 — Codex — checker and elaboration source contexts, IR next
+
+Checker regressions3523765 fail before shared-fact wiring;3524444 passes all
+five typed-context cases after wiring patterns/metadata. Valid elaboration
+fixture3526485 fails only with misplaced generate instances; its first draft
+also lacked a required Boolean contract, corrected before production edits.
+3530728 is terminal success0:668 frontend cases after typed generate conditions
+and shared-fact parameter/width evaluation. Four historical elaboration tests
+needed source Boolean providers rather than integer comparison flags; the
+minimal test contracts now provide them. Legacy parameter adapter retained for
+successful-answer comparison. Next owned edits: ir/functions.rs, lower.rs,
+lower_helpers/builders.rs/generate.rs, lower/collect.rs/control.rs/calls.rs and
+IR constant tests. Carry the existing Arc<EnumValues>, not copied/recomputed
+tables, and retain typed values until ABI projection. No commits/full corpus
+acceptance yet;82% remains the last accepted estimate. No wiki changes/pushes.
+
+### 2026-10-28 — Codex — shared scalar IR contexts ready for broad comparison
+
+IR regression3534010 is valid red: enum-parameter helper returns unknown rather
+than10.3535828 caught a borrowed-temporary lifetime compile error; Source's
+binding query now explicitly returns borrowed AST lifetime.3536480 passes669
+frontend tests. Typed IR word/condition queries now use the common Source and
+the same Arc<EnumValues> from Hierarchy. Generate gathering and branch lowering
+use Boolean evaluation, not nonzero words. Constant call folding reuses the
+interpreter's borrowed call path and typed frames, eliminating a copied raw
+integer environment. Public word-query results project only at the ABI boundary.
+
+3540246 passed669 frontend cases but strict Clippy caught an unused internal
+integer-only statement wrapper after migration; it and its obsolete test call
+are removed.3542450 is terminal success0, peak1610874880 bytes:669 frontend,
+strict frontend Clippy,54 runner tests,12 native/VCD checks across normal/debug
+and default/bitpack, AST refresh7654nodes/20263edges/389communities. The actual
+corpus fixture now passes a typed Mode argument and checks a generated child
+whose enum-backed parameter is14, not the untaken branch's99.
+
+Additional copy regression3547326 caught a temporary audit-harness false alarm:
+old integer word10 equals a new typed enum member's stored word10. Compare the
+actual shared encoding too, rather than requiring every typed result be Bool.
+3548677 is terminal green after that correction; unknown results are not waived.
+Legacy enum/parameter/word contexts remain solely for comparison; the separate
+IR enum metadata adapter, broader values/statements and remaining registries/
+hooks still need work. Proposal docs distinguish this in-flight work from full
+acceptance. Start frozen comparison script typed-context-comparison-20261028.sh:
+669 frontend,132 native/VCD, full Rust/default-bitpack actual272-program corpus
+and diagnostic matrix. Do not edit source/corpus while it runs. Wiki checks and
+generation deliberately excluded per peer handoff; wiki untouched. No commits
+or pushes, no full acceptance yet;82% remains last accepted estimate.
+
+### 2026-10-28 — Codex — broad comparison exposes invalid length fixture
+
+3550519 terminal exit1, peak707563520 bytes.669 frontend and the first20
+default/ordinary direct fixtures pass; length_expr_test then fails semantic
+fit checking: call is unsigned[clog2(8)] (now provably3) but assigned literal9.
+Existing literal-width fit rules reject9 in3bits, including explicit constant
+conversion; do not loosen them. Update the owned actual corpus fixture to
+truncate an unsigned[4] runtime source through its explicit computed-width
+conversion. Add checker regression equating literal and function-derived fit
+checks and VCD coverage for the computed-width runtime result. Frozen gate is
+terminal, so source/corpus edits may resume. All comparison adapters remain;
+no broad acceptance, commits or pushes. Wiki untouched;82% last accepted.
+
+### 2026-10-28 — Codex — source ordering in enum metadata reproduced
+
+3556424 terminal green verifies all eight const_context_ regressions, including
+literal fit versus computed widths/runtime resizing. New valid metadata probe
+3560027 is terminal red: LogicEncoding returns true for Palette::Low because
+the old adapter uses3<9, ignoring source Ord which defines3>9. Own next edits
+in ir/lower/constant_values.rs, shared consteval audit/query hooks and scalar
+Source comparison; keep old enum metadata adapter as a temporary oracle. New
+mixed physical/symbolic enum inputs must compare through the same shared facts,
+not guessed flags or independent tables. No frozen job live or commits/pushes.
+
+### 2026-10-28 — Codex — enum metadata context, methods and role identity
+
+3561737 passed670 tests but exposed a bad expectation in the first reverse-Ord
+fixture: both binary symbols were false, so the table was correctly rejected.
+Use a midpoint so both old/new mappings remain complete and have one binary
+low/high. With the legacy evaluator temporarily restored,3563629 valid red
+still returns wrong low=true; restore shared context,3563988 passes671 tests.
+Metadata constants and encoding/operator tables now use the shared Source;
+physical/symbolic enum comparisons use the existing shared enum facts, with
+stored-word projection only at the consumer. Old adapter remains as oracle.
+
+3565172 valid red proves scalar receiver methods were checker-unknown.
+Borrow source methods by resolved owner across contexts, prefer inherent bodies,
+and keep distinct trait candidates ambiguous;3565562 passes672. Actual corpus
+choose now exercises Mode.code() inside the reverse Ord implementation.
+
+Native length probes3566641/3567331/3567916 caught genuine loss of std Bit.and
+dispatch. Compact trace proves impl references builtin hook14 while canonical
+registered hook is66; signature matches, but old equality filter rejected it.
+3568492 reproduces that identity mismatch in a valid frontend regression.
+Match existing registered lang roles (never leaf spelling), retaining canonical
+contracts for defaults; fix custom_operator role spelling too. Debug trace
+removed.3568882 passes673; existing unregistered-lookalike rejection still runs.
+
+3569998 native debug length probe succeeds but testbench locals have no VCD
+signals. Add hardware ComputedWidth probe rather than accepting empty output;
+3570533 terminal green verifies source1001/value001 at time0. Fixture now
+explicitly resizes a wider runtime value, preserving constant-fit diagnostics.
+3570732 red detects an audit false positive: raw Bool17 and symbolic true were
+counted as a source-operator correction. Shared semantic equivalence fixes
+this while preserving observed actual reverse-Ord corrections; unknown facts
+are not exempted. Add default-method/owner-order and custom-operator tests.
+3571169 focused run is live:676 frontend, strict frontend Clippy and56 runner
+tests passed; four fixtures across both modes/debug builds (16 native/VCD)
+are running. Do not restart a live unit. No full acceptance/commits/pushes;
+all five foundation sections still required,82% last accepted. Wiki untouched.
+
+### 2026-10-28 — Codex — expanded scalar context focused acceptance
+
+3571169 terminal exited/success/0, peak1424891904 bytes.676 frontend, strict
+frontend Clippy,56 runners and all16 native/VCD checks pass (four actual corpus
+fixtures, ordinary/debug, default/bitpack). Includes receiver methods inside
+reverse Ord, enum/character tables and the computed-width hardware waveform.
+AST refresh7682nodes/20343edges/384communities; docs semantics/vendor-C limits
+remain.20 peer corpus probes/artifacts preserved; only owned new contexts file
+and tracked length fixture differ in corpus. No full broad acceptance or commits.
+
+Start fresh frozen comparison2 gate, retaining3550519's failed fixture evidence.
+The script checks676 frontend and132 native/VCD runs before the complete Rust,
+actual272-program default/bitpack corpora, strict lint, artifact and UI/JSON
+matrices; source/corpus fingerprints must match. All temporary adapters/audits
+stay until proof; no source/corpus edits while live, no wiki operations. Goal
+still requires all five sections;82% last accepted, no pushes. Next after proof:
+delete temporary old semantic adapters/audits and re-run oracle-free full gate;
+then continue broader typed values/statements, associated/generic callable
+availability, remaining registries/hooks/guards and generic conformance.
+
+### 2026-10-28 — Codex — comparison2 known failure, stop and repair substitution
+
+3573669 passed676 frontend,132 direct native/VCD, strict runners/artifacts and
+733/712 default/bitpack library tests. Both Rust build_binary suites then fail
+only direct_runtime_preserves_metavalue_comparison_rules (35/36 pass): old=1,
+new=unsupported at source choice==0 (1096..1107). Native fixture source and
+substitute.rs confirm context-free loop substitution tries to turn Boolean
+comparisons into integer AST nodes through a Resolved::default FunctionIndex.
+This is not an enum-encoding or metavalues regression to waive as unknown.
+
+Stopped the already-failing service after both mode failures and all-target
+Clippy, while corpus was beginning. State now dead/inactive; stop cleared
+systemd Result to success0, which is NOT a completed gate. Logs prove failure;
+full corpora/UI/JSON/fingerprints did not finish. Prior observed peak1612808192.
+Source/corpus may change again. Own edits in lower_helpers/builders.rs and
+substitute.rs plus IR tests: use the existing interpreter with native integer
+literal context only, preserving Boolean AST for later typed evaluation, not
+reintroducing raw flag hooks. Also inspect secondary Process FunctionIndex
+construction for missing shared enum facts. No commits/pushes/wiki changes;
+all old adapters remain for later full comparison.82% last accepted.
+
+### 2026-10-28 — Codex — Process function facts ownership
+
+Also own ir/lower/source_processes.rs's private process_functions builder and
+its tests. It constructs a second FunctionIndex but currently attaches no
+Typed enum-fact Arc. Add a valid red query proving enum-to-integer helpers stay
+unknown there, then require Typed when building this private index and share
+the existing Arc. Do not clone/recompute enum tables or change Process/LLVM
+semantics. Keep this with the context-free substitution fix and revalidate
+the actual metavalue integration failure before another frozen broad gate.
+
+### 2026-10-28 — Codex — typed conditions in index diagnostics and generated lints
+
+3594941 valid red reproduces the context-free Boolean substitution failure;
+3595391 valid red proves missing Process enum facts.3595795 passes678 frontend
+after integer-only literal context and Process Arc wiring.3597059 terminal
+success0, peak1376653312:678 frontend, strict frontend Clippy,56 runners and
+the actual failing native integration test in both modes; AST refreshed.
+Audit found two remaining numeric condition consumers in lower/diagnostics.rs
+and block_locals.rs. Own their migration and tests with nonzero false encoding;
+use existing eval_condition, not stored-word truth. Keep all old semantic
+adapters until another full comparison proves the current coherent bundle.
+
+### 2026-10-28 — Codex — all scalar condition consumers and Process facts verified
+
+3599376 confirms inactive generated-index false positive with false=5; its
+initial lint fixture also has conflicting concurrent integer drivers. Put the
+overrides inside a process, matching language semantics;3599928 valid red then
+labels the wrong (untaken) assignment. Existing eval_condition now selects the
+active branch in index diagnostics and generated dead-assignment lints.
+
+3600398 terminal exited/success/0, peak1089376256 bytes:680 frontend, strict
+frontend Clippy,56 runner tests and original failing native metavalue integration
+in both default/bitpack. AST refresh7695nodes/20368edges/390communities, with
+existing vendor/doc limits. No remaining eval_const(condition)->nonzero source
+callers found.676/16-native focused proof remains earlier; a fresh full gate is
+still needed for all current edits. Keep old adapters/audits until that proof.
+
+Start comparison3 with the actual integration regression checked early in both
+modes, followed by132 native/VCD runs and complete Rust/corpus/UI/JSON gates.
+Freeze compiler/corpus and require matching fingerprints; do not restart after
+observation interruption. No commits/pushes/wiki changes;82% last accepted and
+all five foundation sections still required.
+
+### 2026-10-28 — Codex — staged comparison accepted; remove scalar migration oracles
+
+Continuation3820848 is terminal exited/success/0. It verified every successful
+original3604199 stage, reran the ENTIRE bitpack272 corpus plus66 UI/JSON cases,
+and matched the original source bc29db916cd366c58cfee8f3d236f46c06a4d16c1c75e4a0e6ed91798c37feb8
+and corpus a59c4c80d02842f39b08d133142e59444a5c8dc1fe658c0d20ffc8074adddfdd.
+The original unit remains failed/timeout/15; this is staged unchanged-snapshot
+coverage, not a claim that it passed. Both Rust suites,132 native/VCD runs,
+strict lint,56 runners and both corpus/diagnostic modes are covered.
+
+Own cleanup in types/consteval{,/source,/tests}, types/enum_values, elab,
+ir/lower/constant_values and lower_helpers/builders. Remove temporary audits,
+raw truth adapters and redundant wrapper, preserving actual attributes,
+function selection, enum facts and representation equivalence. Remove the now
+redundant EnumValues collection Resolved argument and update internal callers
+in types/collect, enum_values/tests, consteval/tests and lower_helpers/types.
+Run focused checks, then a fresh full oracle-free frozen matrix; allow2h for
+the measured duration without increasing2GiB memory. No commits before green,
+no pushes/wiki, no peer edits. All five foundation sections remain in scope;
+82% remains the last accepted estimate.
+
+### 2026-10-28 — Codex — oracle removal implemented; focused slot pending
+
+Removed all three temporary audit queries/counters, legacy enum-discriminant,
+elaboration and IR word/metadata contexts, plus the wrapper retained only for
+comparison. Metadata now directly implements the shared Source environment;
+actual FunctionIndex selection/guards and word attributes remain. Removed
+orphan integer-only DeclarationIndex filters and their redundant enum-fact
+Resolved argument. Existing physical/symbolic equivalence coverage uses the
+permanent API; intrinsic operator re-entry is computed only when actually needed.
+Removed-symbol searches, cargo1.90 fmt and diff checks pass. No new compile,
+native or corpus pass is claimed: focused3891312 terminal exit75 ran no tests.
+Peer lock3856779's scope run-p3856780-i697682827 is confirmed live, with3876373
+queued behind it. Do not stop or bypass those jobs. Focused script is
+/home/max/.cache/siox-jobs/tmp/typed-context-oracle-free-focused-20261028.sh;
+full132-native/matrix script is typed-context-oracle-free-full-20261028.sh in
+the same directory. When free, launch focused through guarded-run, then full
+with SIOX_JOB_TIMEOUT=2h after focused green and a frozen source/corpus snapshot.
+Both use CARGO_BUILD_JOBS=1 and /home/max/siox-explain/target. AST refresh belongs
+to those bounded jobs. Project's owned Next paragraph updated/read back with
+complete staged comparison proof and explicit pending oracle-free acceptance;
+other project fields/body preserved. No commits/pushes/wiki; foundation82%.
+
+### 2026-10-28 — Codex — live verification wait after peer slot handoff race
+
+Previous turn made cleanup progress; this turn is a verified wait, not a new
+passing gate. Peer3856779 and3876373 finished. New peer3944403 acquired the
+lock first (scope run-p3944404-i698318625), and focused3947988 is terminal
+failed/exit-code/75 with an empty log: NO checks ran. Corrected the premature
+launch commentary and requested the next slot at shared-root chat EOF. Latest
+scope inspection confirms peer running cargo1.90 test --locked after successful
+fmt/artifact/frontend/check/lint/build stages; do not interrupt it or bypass the
+shared lock. Use the unchanged focused/full scripts named above when free.
+
+Read-only remaining-scope audit confirms associated FunctionIndex and checker
+type/trait/member registries still use strings; generic/packed/real values and
+static attributes are incomplete. Peer issue295 directly reproduces static
+attribute-derived port/let widths, including compound paths. Existing lookup
+preservation during oracle cleanup does not fix it. No peer issue fix claimed,
+no new compiler edits, no commits/pushes/wiki; goal stays active, estimate82%.
+
+### 2026-10-28 — Codex — compound IR attribute binding regression
+
+Advance an existing remaining foundation requirement while verification waits:
+test WordConstants attribute reads through fields/constant element paths, plus
+bare-path compatibility and unknown/unbound/dynamic paths. The existing bound
+environment already has flattened keys but this adapter only accepts bare
+names. Own lower_helpers/builders and ir/tests/constant_values; verify the new
+regression red before reusing expr_path in the live adapter. No alternative
+expression walker, no attribute-value calculation or population guessed here.
+This is not the full #295 fix or uniform typed attributes. Peer3944403 remains
+live; next focused slot still requested. Keep current source/corpus local and
+do not claim oracle-free acceptance before the fresh full gate.
+
+### 2026-10-28 — Codex — next scalar statement tests while verification waits
+
+Own consteval and source adapters plus types/tests/declaration_index for the
+next required pure-function statements: initialized scalar lets, lexical
+shadowing and immediate assignment to this invocation's own locals/parameters.
+Tests precede implementation. External/delayed writes and unknown structural
+defaults must remain unknown, never mutate the caller environment. Typed enum
+and character local initializers must retain declaration context. Do not use
+this increment to claim all statements/values or the proposal complete.
+Peer3944403's corpus is still live; no compiler build bypass or restart.
+
+### 2026-10-28 — Codex — verified new context regressions red; implement shared statements
+
+Peer3944403 completed both Rust/lint/corpus modes. Own bounded4036366 compiled
+successfully, then terminal101 with17 context tests passing and four VALID
+assertion failures: bound bus.data'length unknown vs8, and three initialized
+local/assignment/shadowing/enum-body cases Unsupported at their let declarations.
+No parser/resolve/compile failure; rejection tests already pass. Reuse expr_path
+for bound attribute paths, and extend the ONE interpreter with invocation-local
+frames, hoisted uninitialized slots, lexical scope cleanup, typed initialized
+lets and immediate local/parameter writes. No caller/global/delayed writes.
+Do not invent structural defaults. Full values, loops/match, uniform attributes
+and registries remain open. Fresh focused then full gates required; no commit,
+push or wiki. The old comparison proof is historical, not this expanded slice's
+acceptance. Keep2GiB limit, single Cargo job and actual corpus.
+
+### 2026-10-28 — Codex — oracle-free focused gate green; freeze expanded full gate
+
+4041513 valid frontend684pass/1stale unsupported-let fixture migrated without
+weakening failure-flow coverage;4045434 had687pass/1invalid new qualified-char
+fixture, corrected via an ordinary typed argument, not grammar.4049335 exited75
+busy and ran no tests.4051893 is terminal exited/success/0, peak1467707392:
+688 frontend, strict frontend Clippy,57 runners, original metavalue native
+integration in both modes and16 native/debug/VCD checks. All new tests pass:
+local/parameter writes, lexical shadowing, recursive call isolation, receiver
+Self literal context, uninitialized-local isolation from supplied bindings,
+compound attribute paths, rejection of external/delayed/default-value guesses.
+
+Owned actual corpus consteval_contexts_test now drives a Mode input Low->Above
+at1ns and checks runtime13->21 with local assignments, while constant13 and
+generated14 stay fixed. Exact input/output timeline validation and malformed
+transition rejection pass in all four native combinations. No peer file changes.
+AST refresh7645nodes/20202edges/381communities; existing vendor C partial
+extraction/document semantic limits remain, not a compiler gate failure.
+
+Freeze compiler/corpus now for fresh FULL oracle-free validation:688frontend,
+132native/VCD, complete Rust/default+bitpack corpus/UI/JSON/lint/artifact gates
+and identical before/after fingerprints. Use2h bound because the earlier1h
+comparison timed out, same2GiB memory and single Cargo job. No edits while it
+runs, no restarts on observation interruptions. All five foundation sections
+remain in scope; no commits/pushes/wiki, last accepted estimate82%.
+
+### 2026-10-28 — Codex — full gate stopped on a new DWARF branch regression
+
+4066456 completed132 direct native/VCD runs and745 default library tests, but
+tests/debug_info.rs::expression_branches_preserve_shadowing_and_selected_source_stops
+FAILED in the default integration suite. Other tested integrations kept passing.
+Stop THIS owned unit after observing the failure, rather than spending the full
+matrix on known-red code. Before stop it was running/success/0; after stop it is
+dead/success/0 with cleared peak. That is a STOPPED FAILED GATE, NOT a pass; the
+recorded pre-stop peak was1612828672 bytes. Full stages/final hashes not complete.
+Compiler/corpus were frozen at9785b3916bfb4da0f0a9c3de8ba836e564fc6ca04b3f6eeb147ec4b86d877b24
+and0243a8337d4bba1b852bdb604d8637eb265b30afc05a5a1a01efa91d9fa51143.
+
+Own triage at the existing ir/lower/calls constant-call shortcut plus Source-call
+consumers as needed; no LLVM edits assumed. New pure local evaluation may fold a
+previously dynamic source call before its debug frame is preserved, but that is
+only a hypothesis until the exact failing test's uncaptured output is reproduced
+in BOTH modes. Use bounded typed-context-dwarf-branches-red-20261028.sh from cache
+tmp. Do not weaken/remove debug assertions or revert required pure statements to
+make this green. Peer4067465's queued build owns the released slot; do not bypass
+it. No commits/pushes/wiki; all five sections and82% estimate unchanged.
+
+### 2026-10-29 — Codex — exact debug regression proven; scope folding to constant uses
+
+4178737 terminal exit1: exact DWARF test fails in BOTH modes (each cargo101).
+All11 selected source stops, values, caller lines, native assertions, symbol
+counts and DWARF verification pass. Final GDB assertion proves increment calls
+[5,-5], expected[5,-5,20]: whole reuse(20) vanished through scalar constexpr
+folding. Cause is source_processes.rs::value_ref_with_type_inner's generic
+Call eval_const_fns fast path, not the hardware calls.rs hypothesis. No fix
+in calls.rs/LLVM is needed for this failure. Source Process already has proper
+runtime Call/CFG handling, including recursive shared functions.
+
+Own source_processes runtime-expression constant shortcut and its const-path
+handling, plus stronger tests/debug_info.rs coverage. Keep runtime calls in
+canonical Process IR; only actual const item uses consume the already-computed
+scalar constant cache. Static width/range/generate queries keep the shared
+evaluator. Add an ordinary unannotated inline-policy case and a folded const
+reuse(30) whose nested increment must NOT run, retaining all prior assertions.
+No AST walker, new execution track, debug-mode fork, arbitrary call-shape or
+inline-hint workaround, LLVM change, or rollback of pure local statement support.
+Revalidate both exact modes, recursion integration,688frontend/lint/57runners/
+native waveforms, then all full gates before commit. All five sections remain.
+
+### 2026-10-29 — Codex — debugger regression green; reject untyped constant cache shortcut
+
+18800 terminal exited/success/0, peak1610866688: strengthened exact DWARF test
+passes default+bitpack, five inline-policy combinations including unannotated
+functions; runtime increment20 is retained and compile-time reuse30 stays folded.
+Code review finds the newly consumed old constant_integers cache lacks declared
+enum literal context (Tag '1'=10 could be cached as Unicode49) and is unsuitable
+for real/packed defaults. Add Tag constant/native assertion before changing it.
+Then replace the runtime const-path cache lookup with a declaration-aware shared
+scalar query, guarding supported types and supplying enum context. Do not change
+the old shape/width cache wholesale, guess broader value semantics or add a new
+interpreter. Own builders/source helper and ir/tests coverage for this refinement.
+No commit, push, wiki or full acceptance; all prior full stages remain pending.
+
+### 2026-10-29 — Codex — enum declaration regression red; use typed declaration query
+
+43270 terminal exit1, both cargo modes101 with the exact new native assertion:
+integer(TAG) differs from10 for enum Tag{'0'=9,'1'}, const TAG:Tag='1'. This
+proves the old word cache is not declaration-typed, not a fixture parse failure.
+Replace that new runtime cache consumption with eval_const_decl: same shared
+interpreter/WordConstants, explicit supported-scalar guard and declared enum
+literal context before word projection. Keep the old shape/width cache unchanged
+to avoid sweeping unrelated natural/real/packed compatibility into this fix.
+Unit coverage distinguishes enum10 vsChar49, integer-alias helper4 and refused
+real/natural/packed declarations. Runtime Call nodes remain preserved; compile-
+time declarations/shape queries still use the shared service. Need full fresh
+validation, not just the previously green debugger case. No commits/pushes/wiki.
+
+### 2026-10-29 — Codex — reuse existing const context, remove unnecessary query refinement
+
+53152 failed compilation at a private helper-module path; neither semantic test
+ran. Before keeping a new API, inspection shows constant_stack already marks
+actual constant-initializer lowering. Reuse that existing context: retain the
+old Call evaluator only when this stack is nonempty, and leave ordinary runtime
+calls for canonical Process lowering. Remove the new cache consumption, scalar
+type predicate, declaration query and its wrapper-only unit test. No extra
+interpreter/flag/walker/cache or type whitelist is needed. This preserves old
+const-initializer behavior, including enum literal context and unsupported
+real/packed representations, instead of reinterpreting their raw cache words.
+Keep the valid native enum regression, five inline-policy combinations and
+folded reuse30 assertion; add large-real and packed constant assertions.
+Need exact both-mode and broader gates again. No false pass from53152, no
+commits/pushes/wiki or completion claim; all five foundation sections remain.
+
+### 2026-10-29 — Codex — constant context regression green; typed call contract boundary probe
+
+62351 terminal exited/success/0, peak1482387456: exact default+bitpack test
+passes all five inline configurations, runtime increment20, compile-time
+reuse30, declared enum char10, large real and packed literal constants. Current
+fix reuses constant_stack and no longer consumes the untyped cache.
+One related boundary needs a regression before final acceptance: WordConstants'
+function callback bypasses Source's existing supported-signature guard. A packed
+3-bit argument can therefore be evaluated as an integer after local-statement
+support, turning wrapped(7) into8 rather than0. Add a native packed-argument
+constant assertion first. If confirmed, share Source's existing scalar callable
+contract check; leave unsupported packed/real/generic contracts unknown instead
+of fabricating scalar answers. This advances the still-open callable-availability
+requirement, not full packed evaluation. No new runtime, LLVM changes or push.
+
+### 2026-10-29 — Codex — packed argument scalar-fabrication regression red; share contract guard
+
+86306 terminal exit1, default/bitpack both cargo101. Native assertion proves
+const WRAPPED = wrapped(7) did not produce0 after 3-bit addition in a local,
+because WordConstants selected a packed-signature function for the scalar
+interpreter. Reuse Source's existing function contract predicate in its IR
+function callback (borrowed FunctionIndex selection remains). Unsupported
+packed/real/generic signatures stay unknown; no new packed arithmetic, type
+reinterpretation or fake source default. Add an alias-to-real signature test
+at the IR query boundary and retain the actual packed native assertion.
+Run all23 DWARF tests plus recursion in both modes, all frontend/lint/57 runners
+and16 native/debug/VCD checks before another full matrix. No commit/push/wiki;
+all broader typed values/registries/hooks and the five-section goal remain open.
+
+### 2026-10-29 — Codex — preserve typed packed initializers after scalar signature guard
+
+Continuing compiler-foundations in isolated siox-proposal-integration only.
+94824 is terminal failed: 688 frontend tests pass, existing packed twice(4)
+initializer fails because WordConstants now correctly rejects packed signatures.
+Keep that guard and existing initializer coverage. Investigate reusing canonical
+Process integer folding after typed call lowering rather than another AST
+interpreter or untyped packed argument evaluation. Retain native WRAPPED==0,
+source-call DWARF boundaries and all pending full-matrix gates. Shared compiler
+sources, peer corpus files, LLVM and wiki remain untouched; no commit or push.
+
+### 2026-10-29 — Codex — typed initializer phase ordering and local storage boundaries
+
+252020 is terminal failed: 691 frontend, strict lint and58 runner checks passed;
+22of23 default DWARF tests passed, packed-local module constant WRAPPED was
+rejected with E-P021. No accepted full gate.287999 verified the same frontend
+regression and the new scalar local-type guard. Preserve valid packed calls via
+canonical typed IR, not scalar reinterpretation: declarations now collect before
+constant folding, after representation facts are ready; inlined locals/assignments
+reuse bind_value_layout; existing Process integer folding now reads those layouts
+at resizes/slices. Unknown/foreign reads, metavalue planes, natural overflow and
+out-of-range values stay unknown.304371 and310379 both passed694 frontend cases;
+310379 also passed strict lint. A final ranged-bound regression and pending
+native/DWARF/VCD matrix still need validation. Work remains isolated to
+siox-proposal-integration and owned corpus files; all five foundation sections
+remain required. No commit, push, wiki or LLVM edits.
+
+### 2026-10-29 — Codex — checked narrow projection of multiword constants
+
+Cancelled only OWN unstarted watcher PID321198/session91263 (terminal143);
+peer CI PID312856 is untouched and still live. Snapshot deliberately thawed
+before any owned heavy job began. Read-only caller review found the shared
+Process integer query accumulated words with checked_shl(64), which checks
+the shift count but not high-bit loss; three words such as[1,0,1] can become1.
+Use checked multiplication by2^64 before adding the next ABI word. New regression
+queries reject out-of-domain multiword values, retain i128::MAX and accept128
+leading-zero ABI words for17: this is NOT a packed type-width or word-count cap.
+Native lowering retains wide values when the narrow query returns unknown.
+Next focused run must include this695th frontend case and the prior range
+assertion, then all pending both-mode DWARF/native/VCD checks and full matrix.
+No commit/push/wiki; all five foundation sections still required.
+
+### 2026-10-29 — Codex — typed alias DWARF regression triage
+
+340911 passed695 frontend, strict lint and58 runner cases, including packed
+local result0 and checked multiword projection. It updated the AST graph.
+Default expression-branches now passes with the five inline policies; two
+other DWARF tests fail: hardware_expression_calls_keep_source_frames and
+narrow_source_consumers_do_not_fabricate_binding_bits. Native execution/VCD
+and DWARF verification pass within those tests; GDB cannot read saved wide
+aliases (address0). Explicitly stopped OWN340911 after captured failures;
+post-stop dead/success/0 is NOT a pass. Snapshot thawed only after terminal stop.
+Investigate SourceValues::bind_layout comparing whole SourceLayout including
+source span: a same-representation parameter alias may acquire a redundant
+RawResize and lose debug availability. Fix the IR binding root if proven, keep
+all assertions and real width/nominal distinctions. No LLVM/backend edits,
+peer changes, commit, push or wiki. Entire foundation goal remains open.
+
+### 2026-10-29 — Codex — exact typed alias fixes green in both modes
+
+371417 valid unit red: a same-representation alias with a different source span
+acquired a second RawResize. Compare SourceLayout.kind for reuse; nominal type,
+width and direction differences still bind separately (new unit).371999 then
+passed696 frontend/strict lint but reproduced both GDB failures in both modes;
+span reuse alone was not sufficient. Concrete arguments had no storage boundary
+before entry. lower_source_argument now reuses bind_value_layout for the formal
+layout and reads packed literals against it; unconstrained/unresolved-width
+formals retain actual shape (zero-width sentinel is not concrete).
+376067 terminal exited/success/0, peak1332297728:696 frontend and strict lint,
+both failing DWARF tests plus expression-branches all pass in default/bitpack
+(six exact checks). No LLVM change, weakened assertions or extra interpreter.
+The final zero-width guard/comment and this documentation need the complete
+focused rerun, followed by the full frozen matrix. All five proposal sections
+still required; no commit, push or wiki changes.
+
+### 2026-10-29 — Codex — complete focused typed-context acceptance; freeze for full gate
+
+380835 terminal exited/success/0, peak1238024192. Complete focused run passes696
+frontend, strict lint,58 runner tests, all23 DWARF tests and8 recursion tests in
+EACH mode, original metavalue integration both modes and16 ordinary/debug native
+binaries with exact VCD profiles. This includes typed argument/local boundaries,
+saved aliases, packed values8/144/local-wrap0, original five-policy source call
+regression and the narrow multiword guard. Graph updated AST-only.
+No full acceptance yet: next is fresh 2h/2GiB guarded script
+/home/max/.cache/siox-jobs/tmp/typed-context-typed-bindings-full-20261029.sh,
+with before/after source and ACTUAL corpus fingerprints and separate evidence dir.
+Freeze owned code/docs/chat and owned corpus for that run; shared-root chat is
+outside snapshot. Do not edit while running. All five foundation requirements
+remain: broader typed values/contexts/attributes/pure statements, callable
+availability, remaining DefId registries/guard and hook cleanup/conformance.
+Audit remaining bound-word projection without breaking valid explicit packed
+metadata conversions. No new proposal, LLVM edits, commit/push/wiki acceptance.
+
+### 2026-10-29 — Codex — full gate stopped after alias-chain codegen stack overflow
+
+403486 passed132 direct native/VCD checks,696 frontend,753 default library
+tests and the complete23 default DWARF tests plus earlier integrations. It then
+aborted in hardware_source_values::typed_aliases_do_not_recompute_arithmetic_at_each_consumers_width
+(alias_source30, Emit::LlvmIr) with a Rust stack overflow. The metadata-only
+2000-alias regression passed. ci-local continues stages after errors, so OWN
+full unit was explicitly stopped; its post-stop dead/success/0 is NOT accepted.
+No final fingerprints/full corpus or bitpack matrix acceptance. Source thawed
+only after authoritative stop. Get a bounded GDB stack trace of that exact test
+before choosing an IR binding/width fix; no stack-limit workaround, assertions
+removed, peer source edits or speculative LLVM/backend changes. No commit/push.
+
+### 2026-10-29 — Codex — alias-depth trace and shared width-fact fix in flight
+
+457951 GDB runner exits0 but captures SIGSEGV in the test thread: NOT a passed
+test. Trace repeats LLVM BitSlice -> RawResize -> signed binary/context emission
+for alias_source30. No scalar-interpreter recursion. New inlined storage bindings
+were adding a widening slice because source_evaluated_width knew no binary width.
+Reuse hardware::normalized_value_width over appended dependency-ordered values,
+with one prefix cursor invalidated by existing clear_analysis on arena rewrites.
+Do not mutate types, raise test stack size, weaken assertions or patch LLVM.
+The697th frontend unit checks no extra slice for known-wide signed arithmetic,
+while retaining the required widening for a small negative.474495 exits75 and
+runs NOTHING; peer PID477053 owns the live shared slot. Next script
+typed-context-width-focused-20261029.sh checks all hardware_source_values tests
+in both modes, six exact DWARF checks, native metavalue regressions and20 native
+ordinary/debug/VCD checks (including wide_const), plus frontend/lint/58 runners.
+All full-gate and five-section goal requirements remain open; no commit/push.
+
+### 2026-10-29 — Codex — alias-depth focused green; new full freeze
+
+497127 terminal exited/success/0, peak1440579584:697 frontend/strict lint,
+58 runners, all18 hardware_source_values cases in EACH mode (including exact
+LLVM alias-depth regression and2000-alias metadata linearity), six exact DWARF
+checks, original native metavalue both modes and20 ordinary/debug native/VCD
+checks including wide_const aboveu128. No LLVM/backend changes or stack-size
+override. New width-fact analysis reuses canonical rules and existing node
+width fields once per appended value, invalidating on arena rewrites; no new
+cache table or copied expression tree. Full403486 remains failed/stopped.
+Freeze owned source/docs/chat and owned corpus for fresh full script
+typed-context-width-facts-full-20261029.sh (2h/2GiB), with unchanged before/after
+actual source/corpus fingerprints required. Shared-root chat outside snapshot.
+Complete post-fix DWARF suites/corpora/UI/JSON/artifacts/lints still required;
+all five foundation sections remain open. No commit/push/wiki acceptance.
+
+### 2026-10-29 — Codex — full525950 failed only packed-index corpus; thaw for trace
+
+Guarded525950 is terminal failed/exit-code/1, peak1612988416. Both complete
+Rust suites pass (754 default/733 bitpack library,23 DWARF and18 hardware-source
+cases per mode); strict all-target Clippy,58 runner tests,132 direct native/VCD,
+Phase1 artifacts and both UI/JSON matrices pass. Each actual272-program corpus
+has271 passes and one failure: packed_logic_index_test line60, dynamic/nested X.
+This is NOT full acceptance and no commit/push/wiki operation is authorized by it.
+The script exits before final hashes on failure. Separate post-terminal read-only
+fingerprints match the frozen source f2ce9ddedb07adb2d28538b9eda443eb85cf9049225922b53b6b39d2bfb16b4c
+and corpus90398b724e1ef59e39320ee06cb63743cf1d85a76cb84503d1c05471f2b0b638.
+Owned checkout /home/max/siox-proposal-integration is thawed for packed field/index
+metadata tracing and a regression fix before the next full gate. Preserve corpus
+assertions and peer probes; no speculative LLVM changes or raw logic encodings.
+Root/Claude/Antigravity source stays untouched; all five foundation sections open.
+
+### 2026-10-29 — Codex — selected-element fact fix queued behind peer CI
+
+The packed-index trace points to SourceValues reconstruction: individual reads
+carry full enum values, but Select nodes did not propagate that existing fact.
+A one-bit RawResize could then truncate a selected discriminant. Locally extend
+that fact to selections; do not remove typed storage boundaries generally.
+New selected_elements_keep_discriminants_but_raw_selections_keep_bits unit uses
+custom encoding4/9/11/13, both indices, all binary/raw bits and nonbinary members;
+raw selections must retain their boundary. Existing corpus assertions unchanged.
+This is a candidate fix, NOT yet a tested result. Full525950 remains failed.
+
+Red diagnostic899937 exited75 and ran NOTHING because live peer PID899713 owns
+the shared verification slot. Watcher session88027 waits on that exact PID and
+then submits packed-index-selected-focused-20261029.sh through guarded-run
+(15m/2GiB): new frontend regression, then unchanged packed_logic_index fixture
+ordinary/debug native runs in BOTH modes, retaining IR/VCD. Please leave the
+next slot for that short diagnostic; no peer job has been stopped or modified.
+Owned source is held unchanged while this queued check waits/runs. Inspect the
+same watcher/new unit, not restart on observation timeout. Project draft updated
+only inside our Next paragraph, readback verified title/fields unchanged. No
+commit/push/wiki; last accepted estimate82percent and all five sections remain.
+
+### 2026-10-29 — Codex — stop own queued launcher; enum inheritance registry migration
+
+Own watcher88027 (shell929962) was explicitly terminated, confirmed exit143;
+no packed-index test job started. Peer899713 remains live and untouched. Owned
+source is thawed for the next planned foundation registry change while that
+peer uses the shared slot. Keep the candidate Select/element fix and regression.
+First remove the duplicate own_variants and enum_bases tables/inheritance walk:
+checker enum domains should consume shared member IDs, and nominal conversion
+ancestry should use DeclarationIndex.enum_base with DefId arguments from Ty.
+The remaining String-keyed effective-variant compatibility table is explicitly
+NOT a completed identity migration; its consumers still need their next step.
+No new reverse-name scan or guessed library identity. Add cross-module/renamed
+and generated-owner regression coverage, then run focused checks for both this
+and packed-index behavior before the required full actual-corpus gate. No
+commit/push/wiki; all five sections remain open. Project queue wording will be
+updated to reflect the canceled launcher, not pretend tests ran.
+
+### 2026-10-29 — Codex — enum inheritance slice ready for combined focused gate
+
+Removed Checker own_variants/enum_bases and duplicate expansion. Compatibility
+variant names now project shared EnumValues member IDs; enum conversion ancestry
+uses checked Ty/DefId and DeclarationIndex.enum_base with member-ID inclusion.
+The effective-variant String table is still an explicit remaining migration.
+New coverage tests alias bases, renamed imports, equal leaves in both module
+orders, unknown discriminants and generated owner IDs. Keep selected-element
+candidate/raw-bit regression unchanged. This is not tested acceptance yet.
+
+Peer899713 has exited; original watcher88027 remains canceled with143 (no test
+launch). Freeze owned source for typed-context-enum-selected-focused-20261029.sh,
+20m/normal2GiB: full frontend/lint/58 runners; FIRST unchanged packed-index
+ordinary/debug native runs in both modes with retained IR/VCD; then18 hardware
+cases per mode, six exact DWARF checks, original metavalue regressions and32
+additional native/VCD checks including enum derivation/identity. Full525950
+remains failed and must be replaced by a fresh full frozen gate after focused
+proof. No commit/push/wiki; all five foundation sections remain open.
+
+### 2026-10-29 — Codex — focused restart busy; watcher41237 waits on active peer test
+
+Correction to the prior launch note:1015883 exited75 and ran NOTHING; it was
+not confirmed running.1010136's actual evidence remains698 frontend passes,
+including the new selected/raw regression, plus two invalid fixture failures.
+Those fixtures are now corrected, but the corrected version is not tested yet.
+Read-only checks find peer cargo PID999672 live in isolated siox-bugfix under
+its systemd runner. Watcher session41237 waits on that exact PID, then submits
+the same20m/2GiB typed-context-enum-selected-focused script. No peer job stopped,
+no unguarded/concurrent heavy fallback. Keep owned compiler code unchanged while
+queued/running; inspect this same watcher and eventual handle. Earlier88027 is
+canceled143,899937/1009334/1015883 busy75 all ran no tests. Full525950 remains
+failed, not acceptance; no commit/push/wiki and all five sections still required.
+
+### 2026-10-29 — Codex — combined focused1031342 green; strict packed VCD next
+
+1031342 is terminal exited/success/0, peak966356992:700 frontend cases,
+strict frontend lint,58 runner tests, all18 hardware-source cases per mode,
+six exact debugger checks, original native metavalue regressions in both modes,
+and36 ordinary/debug native runs pass (four unchanged packed-index cases plus
+32 profiled constant/layout/derivation/identity cases). All four packed VCDs
+match byte-for-byte. No weakened source assertions. The selected-element fact
+fix and removal of duplicate checker enum inheritance tables have focused proof,
+not full acceptance. Thaw owned source to add the strict packed-index waveform
+profile and runner mutation tests; then freeze a fresh full matrix with136
+native/VCD checks and both ACTUAL corpora. Remaining effective-variant String
+compatibility table, fully typed values and other foundation sections remain
+open. No commit/push/wiki until full green and matching final fingerprints.
+
+### 2026-10-29 — Codex — strict packed waveform62 runners green; full freeze queued
+
+Added packed_logic_index_test profile to check-vcd.py with exact64-bit index
+labels/times, static/nested/wide reads,81-bit input, metadata-only update and
+same-time X->Z delta ordering. Four new runner methods reject missing signals,
+wrong widths/values/times and missing/reversed updates. All62 runner tests pass;
+profile passes all FOUR retained default/bitpack ordinary/debug VCD artifacts.
+Combined focused1031342 is terminal green (700frontend/18hardware each/6DWARF/
+36native), but full525950 remains failed. No assertions/source encodings changed.
+
+Freeze owned source/docs/chat and owned actual corpus for fresh full script
+~/.cache/siox-jobs/tmp/typed-context-enum-selected-full-20261029.sh (2h/2GiB),
+with136 direct native/VCD runs (the prior132 plus four strict packed-index cases),
+both complete Rust suites, actual corpora, UI/JSON/artifacts/all-target lint and
+matching before/after source/corpus hashes. Peer build/reproducer parentPID
+1053491 was observed live; new watcher waits for that exact parent before normal
+guarded submission. No peer job is stopped, no heavy unguarded fallback. Shared
+root chat is outside the frozen owned snapshot. Require terminal success plus
+matching hashes before commit; no push/wiki, no all-five-sections completion.
+
+### 2026-10-29 — Codex — full1055479 accepted; owned slice ready for local commits
+
+1055479 is terminal exited/success/0, peak1613459456 under normal2GiB.
+Full script typed-context-enum-selected-full-20261029.sh passes700 frontend,
+BOTH complete Rust suites (757default/736bitpack library;23DWARF,18hardware,
+8recursion per mode, all integrations/docs), strict frontend/all-target Clippy,
+62 runners,12 artifacts,136 directly executed native/debug/VCD cases and BOTH
+ACTUAL272-program corpora (0failures). Each mode passes66 UI and66 JSON cases,
+54/54 active codes and both apply/recompile migrations. Retained stage evidence:
+~/.cache/siox-jobs/typed-context-enum-selected-full-20261029/; full stdout:
+~/.cache/siox-jobs/siox-job-3000-1793286676893941269-1055479.log.
+Source before/after:0027b43b6c3078c490624913a94a1885c43a837be039524119f1c71fd8fdbe75.
+Actual corpus before/after:90398b724e1ef59e39320ee06cb63743cf1d85a76cb84503d1c05471f2b0b638.
+No wiki included or published. Full525950 remains historical failure, not reused
+as acceptance. Snapshot thawed only after terminal success and matching hashes.
+
+Accepted slice: shared scalar Source semantics/local frames and oracle removal;
+typed initializer/argument/local boundaries, runtime source-call preservation,
+checked multiword query projection and canonical append-only width facts;
+selected packed elements retain whole discriminants while raw bits remain raw;
+checker enum inheritance consumes shared member IDs, removing own/base tables.
+Strict packed and constant-context waveforms plus unchanged debugger assertions
+pin actual output. Remaining effective-variant String compatibility table,
+fully typed values/static attributes, callable availability, registries and hooks
+stay open. All five foundation sections must finish before another proposal.
+
+After validation only proposal acceptance wording and coordination logs changed;
+no compiled Rust/std/Python or corpus fixture changes. Proposal status was
+consolidated; detailed failed attempts remain here. Estimate:about84percent of
+compiler foundations (previous accepted82), NOT whole-compiler completion.
+Stage only the43 owned compiler files including NEW src/types/consteval/source.rs,
+and separately consteval_contexts_test.siox/length_expr_test.siox in the actual
+corpus. Preserve all20 peer probes/artifacts and shared-root dirty files. No push.
+
+### 2026-10-29 — Codex — owned corpus fixtures committed locally as a176965
+
+Actual sibling corpus commit a176965 contains ONLY consteval_contexts_test.siox
+and length_expr_test.siox (76insertions/1deletion). Its body records full1055479
+validation and an84percent compiler-foundations estimate. All20 peer probes and
+artifacts remain untracked and untouched; nothing pushed. Compiler Rust/std/
+Python still match the green compiled snapshot; only acceptance docs/logs were
+updated afterward. Next commit only the43 owned compiler files in isolated
+feat/proposal-foundations, including the new borrowed Source context file.
+All five sections remain required; broader typed values/attributes, remaining
+registries and residual hooks are not declared done. No wiki or push operation.

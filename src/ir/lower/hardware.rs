@@ -378,7 +378,7 @@ fn canonical_value(expression: &Expr) -> ProcessValueId {
 }
 
 /// Natural width of one dependency-ordered normalized value.
-fn normalized_value_width(
+pub(super) fn normalized_value_width(
     process_ir: &ProcessIr,
     id: ProcessValueId,
     design: &Design,

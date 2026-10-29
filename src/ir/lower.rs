@@ -59,6 +59,8 @@ pub fn lower_in(
     base_dir: &std::path::Path,
 ) -> Design {
     let mut l = Lowering::new(sink, resolved);
+    l.free_fns
+        .set_enum_values(std::sync::Arc::clone(&hier.enum_values));
     l.expr_types = hier.expr_types.clone();
     l.promotions = hier.promotions.clone();
     l.base_dir = base_dir.to_path_buf();
@@ -70,7 +72,7 @@ pub fn lower_in(
     // name as unknown.
     l.enum_variants = enum_discriminants_from_values(&hier.enum_values, resolved, &l.free_fns);
     l.enum_first_disc = enum_first_from_values(&hier.enum_values, &l.free_fns);
-    l.collect(modules);
+    let constant_decls = l.collect(modules);
     {
         for (owner, _) in l.free_fns.declarations().enumerations() {
             if let Some(base) = l.free_fns.declarations().enum_base(owner) {
@@ -87,6 +89,9 @@ pub fn lower_in(
     }
     l.logic_encodings = l.compute_logic_encodings();
     l.out.logic_encodings = l.logic_encodings.clone();
+    l.enum_reprs = enum_reprs(&hier.enum_values, &l.free_fns);
+    l.array_families = array_families(modules, &l.free_fns);
+    l.fold_module_constants(&constant_decls);
     l.new_defaults = l.enum_first_disc.clone();
     l.new_defaults.extend(l.compute_new_defaults());
     l.out.new_defaults = l.new_defaults.clone();
@@ -102,8 +107,6 @@ pub fn lower_in(
             )
         })
         .collect();
-    l.enum_reprs = enum_reprs(&hier.enum_values, &l.free_fns);
-    l.array_families = array_families(modules, &l.free_fns);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a
     // packed vector the same way lowering does.

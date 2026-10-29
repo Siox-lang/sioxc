@@ -608,7 +608,12 @@ impl<'a> Checker<'a> {
     /// integer arithmetic over them. Anything else (a signal, a typed
     /// literal, an overflow) is unknown.
     pub(super) fn const_int(&self, e: &Expr) -> Option<i128> {
-        consteval::evaluate(e, &self.declarations, 0).ok()
+        consteval::evaluate(
+            e,
+            &consteval::Source::new(&self.declarations).with_enums(&self.enum_values),
+            0,
+        )
+        .ok()
     }
 
     /// Append the value ranges a numeric pattern covers, folding constant

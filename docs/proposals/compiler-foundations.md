@@ -9,7 +9,18 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-28, generated enum member identity, shared enum phase facts,
+Local acceptance (2026-10-29, shared scalar contexts/local statements, typed
+initializer/storage boundaries, shared enum inheritance and selected packed
+elements): both complete Rust suites pass (757 default/736 bitpack library cases,
+all 23 DWARF tests per mode), 700 frontend cases, strict Clippy, 62 runner tests,
+136 native/debug/VCD checks, 12 artifacts and both actual 272-program corpora.
+Both modes pass 66 UI and 66 JSON cases covering all 54 active codes and two
+apply/recompile migrations. Source/corpus fingerprints match before/after frozen
+gate 1055479. The engineering estimate is about **84% of compiler foundations**,
+not the whole compiler. Fully typed values, remaining registries and residual
+hooks are still open; this accepts a slice, not all five sections.
+
+Previous local acceptance (2026-10-28, generated enum member identity, shared enum phase facts,
 typed enum/character constants and source-owned
 operator/condition tables, applied layouts and known trait value types/arguments/signatures,
 borrowed contracts/default visibility,
@@ -309,14 +320,80 @@ the complete matrix above, with identical source/corpus/local-wiki fingerprints
 before and after validation. Only acceptance wording and coordination logs
 change afterward. General macro expansion identity remains separate work.
 
-**Remaining.** Raw scalar logical/bitwise hooks are explicitly transitional
-(`shortcut:` comments), not a second definition of operators. Their disagreement
-cannot be resolved from untyped integer bits: replace them with typed,
-source-owned operator and condition evaluation in all stage contexts. Unify
-function/attribute availability through the shared resolved registry; then
-include packed/real values, directional ranges, all statically sized attributes, additional
-pure-function statements. Metadata validation now shares scalar evaluation as
-described below; arbitrary typed attribute values remain open.
+**Implemented shared scalar contexts and local statements (accepted 2026-10-29).**
+One borrowed `Source` context supplies declaration-ID-selected constructors,
+operators and Boolean conditions to the shared interpreter. Checker numeric
+queries, elaboration parameters/widths/generate conditions and IR word/call/
+enum metadata queries use it. Receiver methods borrow the same contracts,
+preferring inherent bodies over trait candidates. Registered hook identities,
+rather than unrelated leaf names, select source semantics. Integer projection
+happens at numeric or stored-word boundaries, not before argument evaluation.
+Temporary duplicate contexts, comparison APIs and audit counters are removed.
+
+Initialized scalar locals and immediate local/parameter assignments retain
+resolved IDs, lexical cleanup and isolated invocation frames. Enum/character
+locals preserve their declared owner, including aliases and `Self`.
+Uninitialized slots cannot fall through to caller bindings. Explicit non-scalar
+signatures/local annotations stay unknown to this scalar interpreter rather
+than acquiring fabricated integer semantics. Nonlocal/delayed writes and
+structural defaults are not supported by that service.
+
+Previously supported packed initializer calls instead reuse existing typed
+source lowering and the canonical Process integer folder; this is not a second
+AST interpreter or complete packed constant support. Collect declarations and
+enum/logic/array representation facts before folding constants. Bind concrete
+arguments and local assignments at their declared formats, while unconstrained
+parameters retain actual argument shapes. Reuse identical representation kinds
+despite different declaration spans without merging nominal types, widths or
+directions. Ordinary runtime calls retain their source/debugger boundaries;
+only actual constant initializers may fold those calls away.
+
+The Process folder reads declared layouts for resizes/slices, distinguishing
+packed wrapping from checked natural/ranged values. Discarded dynamic/foreign
+arguments and explicit metavalue planes do not qualify as closed integer
+constants. Multiword accumulation uses checked multiplication, not shifts that
+can discard high bits. Values beyond the host query domain remain unknown;
+their original arbitrary-width native IR is retained. No source width or ABI
+word-count limit is introduced.
+
+Typed storage binding shares the canonical dependency-ordered width calculation.
+An append cursor analyses new nodes using existing width fields; arena rewrites
+invalidate it. Already-wide arithmetic avoids redundant widening slices, while
+small negative values retain contextual widening. This fixes the 30-alias
+emission stack overflow without an LLVM workaround or increased stack limit.
+Reconstruction also propagates the existing full-element fact through selections,
+so a checked packed-index mux cannot truncate an enum discriminant through its
+former one-bit binding. Explicit raw-bit selections keep their storage boundary.
+
+**Verification.** Frozen full gate 1055479 finishes `exited/success/0`, peak
+1,613,459,456 bytes within the normal 2 GiB guard. It passes 700 frontend cases,
+both complete Rust suites (757 default/736 bitpack library cases, all 23 DWARF,
+18 hardware-source and eight recursion cases per mode), strict Clippy,
+62 runner tests, 12 Phase 1 artifacts, 136 directly executed native/debug/VCD
+checks and both actual 272-program corpora. Each mode passes 66 UI and 66 JSON
+cases, covers all 54 active codes and applies/recompiles both migration fixtures.
+Source/corpus fingerprints match before and after. Detailed failed attempts,
+focused proofs and the final evidence paths remain in [chat.md](../../chat.md).
+
+Native coverage includes reversed source ordering and local assignments
+(runtime 13 to 21 at 1 ns while constants/generation remain 13/14), packed
+initializer values eight/144 and a three-bit local wrapping to zero, computed
+width truncation, source-call stops and saved wide aliases, multiword values
+above `u128`, enum derivation/identity and static/dynamic/nested/multiword packed
+reads with metadata-only reactive updates. The packed-index VCDs match in all
+four builds. Strict waveform mutation tests reject missing signals, wrong widths/
+values/times and missing/reversed delta updates. Nonstandard-encoding and raw-bit
+control cases pin reconstruction without hardcoding production discriminants.
+
+**Remaining.** Unify callable/attribute availability through resolved contracts;
+support packed, real, natural, aggregate and directional-range values, structural
+defaults and additional pure-function statements. Supply all statically sized
+attributes, including port/local environments for issue #295; the current IR
+adapter only reads already-bound field/constant-index attribute paths.
+Associated/generic callable availability and arbitrary typed metadata are still
+open. Audit bound-word projection so unsupported module constants cannot become
+untyped scalar parameters, while valid explicit packed-to-integer metadata
+conversions keep working. All five proposal sections remain in scope.
 
 **Implemented integer metadata.** Raw bindings/defaults resolve first; the
 resolve-layer attribute pass then attaches bindings and substitutes reads,
@@ -626,6 +703,21 @@ use the same recording path. No enum bodies or value tables are copied, and no
 new surface syntax is introduced. Both complete Rust suites, both actual
 267-program corpora, 84 native/VCD checks and UI/JSON gates pass with exact
 compiler/corpus/paper fingerprints. This does not complete the other registries.
+
+**Implemented shared enum inheritance contracts (accepted 2026-10-29).** The checker no
+longer owns separate own-variant/base-name tables or expands inheritance again.
+Its compatibility variant names come from shared owner/member facts, including
+members whose discriminants remain unknown. Conversion queries receive checked
+types; enum ancestry follows declaration IDs and compares inherited member IDs,
+not matching variant spellings. The remaining effective-variant name table and
+other string-keyed registries are still open identity migrations.
+
+Regressions cover transparent alias bases, renamed imports, equal enum/member
+names across modules in both source orders, unknown discriminants and coincident
+generated member spans. Combined focused validation and the subsequent full
+frozen gate 1055479 pass the matrix described above, with matching source/corpus
+fingerprints. The remaining compatibility-name table is not a completed
+declaration-ID migration; the earlier failed full gate remains historical failure.
 
 **Implemented cross-module owner coverage (2026-10-25).** Additional tests
 combine equal enum/base/variant leaves, renamed imports, reversed module order

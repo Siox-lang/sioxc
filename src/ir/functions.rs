@@ -29,6 +29,8 @@ pub struct FunctionIndex<'a> {
     resolved: &'a Resolved,
     /// Borrowed entities, constants, aliases and free/foreign functions by identity.
     declarations: DeclarationIndex<'a>,
+    /// The same computed phase facts owned by Typed/Hierarchy, never a second table.
+    enum_values: Option<std::sync::Arc<crate::types::enum_values::EnumValues>>,
     /// Static associated functions, keyed by `Type::name` because they do
     /// not yet receive a `DefId` of their own.
     /// Keyed owner first, then name, so a lookup borrows both.
@@ -56,6 +58,7 @@ impl<'a> FunctionIndex<'a> {
         Self {
             resolved,
             declarations: DeclarationIndex::new(resolved),
+            enum_values: None,
             associated: HashMap::new(),
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
@@ -156,6 +159,21 @@ impl<'a> FunctionIndex<'a> {
 
     pub(crate) fn declarations(&self) -> &DeclarationIndex<'a> {
         &self.declarations
+    }
+
+    pub(crate) fn set_enum_values(
+        &mut self,
+        values: std::sync::Arc<crate::types::enum_values::EnumValues>,
+    ) {
+        self.enum_values = Some(values);
+    }
+
+    pub(crate) fn constant_source(&self) -> crate::types::consteval::Source<'_, 'a> {
+        let source = crate::types::consteval::Source::new(&self.declarations);
+        match self.enum_values.as_deref() {
+            Some(values) => source.with_enums(values),
+            None => source,
+        }
     }
 
     pub(crate) fn resolved(&self) -> &'a Resolved {

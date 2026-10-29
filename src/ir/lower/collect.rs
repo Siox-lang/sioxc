@@ -117,7 +117,7 @@ impl<'a> Lowering<'a> {
     /// Index every declaration the lowering needs -- entities, structs, enums,
     /// functions and impls -- so later lookups are by definition rather than by
     /// name.
-    pub(super) fn collect(&mut self, modules: &'a [Module]) {
+    pub(super) fn collect(&mut self, modules: &'a [Module]) -> Vec<(String, &'a ast::ConstDecl)> {
         let mut constant_decls = Vec::new();
         for m in modules {
             for item in &m.items {
@@ -281,12 +281,17 @@ impl<'a> Lowering<'a> {
             self.free_fns
                 .insert_associated_default(format!("{ty}::{}", f.name.text), f);
         }
+        constant_decls
+    }
+
+    /// Evaluate only after declaration-derived representation facts are available.
+    pub(super) fn fold_module_constants(&mut self, constant_decls: &[(String, &ast::ConstDecl)]) {
         // Constants are order-independent. Keep the narrow signed value table
         // for widths/generate conditions, and a separate exact literal table
         // for signal values so a 128-bit constant never passes through i64.
         for _ in 0..=constant_decls.len() {
             let mut progressed = false;
-            for (key, constant) in &constant_decls {
+            for (key, constant) in constant_decls {
                 let scope = self.consts.clone();
                 progressed |= self.fold_const(key, constant, &scope);
             }
@@ -298,7 +303,7 @@ impl<'a> Lowering<'a> {
         // does not end, past the evaluator's depth) was dropped in silence:
         // a width read from it was "unresolved", and a test did not lower
         // (#174). Say so at the constant.
-        for (key, constant) in &constant_decls {
+        for (key, constant) in constant_decls {
             let folded = self.consts.contains_key(key)
                 || self.const_values.contains_key(key)
                 || self.consts_real.contains_key(key)
@@ -1047,6 +1052,18 @@ impl<'a> Lowering<'a> {
             }
             single => element(self.eval_const(single, scope)?).map(Err),
         }
+    }
+
+    /// Fold control flow through the source Boolean contract, not an integer flag.
+    pub(super) fn eval_condition(
+        &self,
+        expression: &ast::Expr,
+        env: &HashMap<String, i64>,
+    ) -> Option<bool> {
+        if let Some(env) = self.source_call_constants(env) {
+            return eval_condition_fns(expression, &env, &self.free_fns, 0);
+        }
+        eval_condition_fns(expression, env, &self.free_fns, 0)
     }
 
     /// Fold a constant expression in `env`, or `None` when it is not constant.

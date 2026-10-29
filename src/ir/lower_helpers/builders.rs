@@ -303,11 +303,23 @@ pub(in crate::ir) fn struct_derives_kernel(
     false
 }
 
-/// Const-evaluate a width expression against a parameter environment.
-pub(in crate::ir) fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
-    let resolved = Resolved::default();
-    let fns = FunctionIndex::new(&resolved);
-    eval_const_fns(e, env, &fns, 0)
+/// Substitution has no declaration context: fold only closed integer arithmetic.
+pub(in crate::ir) fn eval_integer_literal(e: &ast::Expr) -> Option<i64> {
+    consteval::evaluate(e, &IntegerLiterals, 0)
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
+}
+
+struct IntegerLiterals;
+
+impl Environment for IntegerLiterals {
+    fn domain(&self) -> IntegerDomain {
+        IntegerDomain::NativeWord
+    }
+
+    fn literal(&self, text: &str) -> Option<i128> {
+        parse_int(text).map(|value| i128::from(value as i64))
+    }
 }
 
 /// Widths, constants and const-fn calls use the shared interpreter.
@@ -317,9 +329,30 @@ pub fn eval_const_fns(
     fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
-    consteval::evaluate(e, &WordConstants { env, fns }, depth)
-        .ok()
-        .and_then(|value| i64::try_from(value).ok())
+    let environment = WordConstants { env, fns };
+    let value = consteval::evaluate_value(e, &environment, None, depth);
+    fns.constant_source().word(value.ok()?)
+}
+
+pub(in crate::ir) fn eval_condition_fns(
+    expression: &ast::Expr,
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+    depth: u32,
+) -> Option<bool> {
+    consteval::evaluate_condition(expression, &WordConstants { env, fns }, depth).ok()
+}
+
+pub(in crate::ir) fn eval_call_fns(
+    callee: &ast::Expr,
+    arguments: &[ast::Expr],
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+    depth: u32,
+) -> Option<i64> {
+    let value =
+        consteval::evaluate_call(callee, arguments, &WordConstants { env, fns }, depth).ok()?;
+    fns.constant_source().word(value)
 }
 
 /// Evaluate a pure function body through the shared constant interpreter.
@@ -329,10 +362,10 @@ pub fn eval_const_stmts(
     fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
-    consteval::evaluate_statements(stmts, &WordConstants { env, fns }, depth)
+    consteval::evaluate_value_statements(stmts, &WordConstants { env, fns }, None, depth)
         .ok()
         .flatten()
-        .and_then(|value| i64::try_from(value).ok())
+        .and_then(|value| fns.constant_source().word(value))
 }
 
 struct WordConstants<'a, 'r> {
@@ -341,6 +374,10 @@ struct WordConstants<'a, 'r> {
 }
 
 impl Environment for WordConstants<'_, '_> {
+    fn source(&self) -> Option<consteval::Source<'_, '_>> {
+        Some(self.fns.constant_source())
+    }
+
     fn domain(&self) -> IntegerDomain {
         IntegerDomain::NativeWord
     }
@@ -350,91 +387,27 @@ impl Environment for WordConstants<'_, '_> {
     }
 
     fn binding(&self, path: &ast::Path) -> Option<Binding<'_>> {
-        self.fns
-            .constant_path_key(path)
-            .and_then(|key| self.env.get(&key))
-            .map(|value| {
-                Binding::Value(crate::types::consteval::Value::Integer(i128::from(*value)))
-            })
-            .or_else(|| {
-                self.fns
-                    .declarations()
-                    .integer_constant_path(path)
-                    .map(|declaration| Binding::Expression(&declaration.value))
-            })
-    }
-
-    fn local_name<'p>(&self, path: &'p ast::Path) -> Option<&'p str> {
-        self.fns.declarations().local_name(path)
+        self.fns.constant_source().binding(path).or_else(|| {
+            self.fns
+                .constant_path_key(path)
+                .and_then(|key| self.env.get(&key))
+                .map(|value| Binding::Value(consteval::Value::Integer(i128::from(*value))))
+        })
     }
 
     fn attribute(&self, base: &ast::Expr, attr: &ast::Ident) -> Option<i128> {
-        let ast::Expr::Path(path) = base else {
-            return None;
-        };
-        let [name] = path.segments.as_slice() else {
-            return None;
-        };
+        let name = expr_path(base)?;
         self.env
-            .get(&format!("{}::{}", name.text, attr.text))
+            .get(&format!("{name}::{}", attr.text))
             .copied()
             .map(i128::from)
     }
 
     fn function(&self, callee: &ast::Expr) -> Option<&ast::FnDecl> {
-        self.fns.get(callee)
-    }
-
-    fn transparent_conversion(&self, callee: &ast::Expr) -> bool {
-        matches!(call_fn_key(callee).as_deref(), Some("integer" | "Char"))
-    }
-
-    fn local_key<'p>(&self, path: &'p ast::Path) -> Option<consteval::LocalKey<'p>> {
+        let function = self.fns.get(callee)?;
         self.fns
-            .declarations()
-            .local_id(path)
-            .map(consteval::LocalKey::Definition)
-    }
-
-    fn parameter_key<'p>(
-        &self,
-        parameter: &'p crate::syntax::ast::FnParam,
-    ) -> Option<consteval::LocalKey<'p>> {
-        self.fns
-            .declarations()
-            .parameter_id(parameter)
-            .map(consteval::LocalKey::Definition)
-    }
-
-    // shortcut: retain legacy scalar predicates until typed source-owned
-    // operator/condition evaluation replaces raw integer binding environments.
-    fn unary(&self, expression: &ast::Expr, value: i128) -> Option<i128> {
-        match expression {
-            ast::Expr::Unary {
-                op: ast::UnOp::Not, ..
-            } => Some((value == 0) as i128),
-            _ => None,
-        }
-    }
-
-    fn binary(&self, expression: &ast::Expr, a: i128, b: i128) -> Option<i128> {
-        let ast::Expr::Binary { op, .. } = expression else {
-            return None;
-        };
-        Some(match op {
-            ast::BinOp::Eq => (a == b) as i128,
-            ast::BinOp::Ne => (a != b) as i128,
-            ast::BinOp::Lt => (a < b) as i128,
-            ast::BinOp::Le => (a <= b) as i128,
-            ast::BinOp::Gt => (a > b) as i128,
-            ast::BinOp::Ge => (a >= b) as i128,
-            ast::BinOp::And => (a != 0 && b != 0) as i128,
-            ast::BinOp::Or => (a != 0 || b != 0) as i128,
-            _ => return None,
-        })
-    }
-
-    fn condition(&self, value: i128) -> Option<bool> {
-        Some(value != 0)
+            .constant_source()
+            .supports_function(function)
+            .then_some(function)
     }
 }

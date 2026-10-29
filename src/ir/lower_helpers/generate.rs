@@ -148,8 +148,8 @@ pub(in crate::ir) fn gather_generate(
         // A non-constant condition is behavioral, not a generate-if.
         ast::Stmt::If(iff) => {
             let at = &at.branch(iff.label.as_ref());
-            if let Some(c) = eval_const_fns(&iff.cond, env, fns, 0) {
-                if c != 0 {
+            if let Some(c) = eval_condition_fns(&iff.cond, env, fns, 0) {
+                if c {
                     for st in &iff.then.stmts {
                         gather_generate(st, env, at, fns, out);
                     }

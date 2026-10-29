@@ -4,23 +4,15 @@
 use super::*;
 
 /// Metadata integers use the kernel integer domain, not wider analysis results.
-struct MetadataIntegers<'a, 's>(&'a DeclarationIndex<'s>);
+struct MetadataIntegers<'a, 's>(consteval::Source<'a, 's>);
 
 impl consteval::Environment for MetadataIntegers<'_, '_> {
     fn domain(&self) -> consteval::IntegerDomain {
         consteval::IntegerDomain::NativeWord
     }
 
-    fn binding(&self, path: &Path) -> Option<consteval::Binding<'_>> {
-        consteval::Environment::binding(self.0, path)
-    }
-
-    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
-        consteval::Environment::function(self.0, callee)
-    }
-
-    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
-        self.0.local_name(path)
+    fn source(&self) -> Option<consteval::Source<'_, '_>> {
+        Some(self.0)
     }
 }
 
@@ -262,7 +254,9 @@ impl<'a> Checker<'a> {
                 matches!(value, Expr::Int { .. })
             }
             Some(AttrValueTy::Integer) => {
-                match consteval::evaluate(value, &MetadataIntegers(&self.declarations), 0) {
+                let source =
+                    consteval::Source::new(&self.declarations).with_enums(&self.enum_values);
+                match consteval::evaluate(value, &MetadataIntegers(source), 0) {
                     Ok(integer) => {
                         self.metadata_constants.insert(
                             expr_span(value),
@@ -489,11 +483,11 @@ impl<'a> Checker<'a> {
             // Suggest `T(...)` only where that conversion is defined: a named
             // type without a route from the value's type would reject it.
             let route = match (self.type_kind_name(&lhs), self.type_kind_name(&rhs)) {
-                (Some(target), Some(source))
+                (Some(target), Some(_))
                     if self.structs.contains_key(&target)
                         || self.enum_variants.contains_key(&target) =>
                 {
-                    self.conversion_exists(&target, &source)
+                    self.conversion_exists(&lhs, &rhs)
                 }
                 _ => true,
             };

@@ -73,6 +73,10 @@ impl Expansion {
 }
 
 impl<'a> DeclarationIndex<'a> {
+    pub(crate) fn resolved(&self) -> &'a Resolved {
+        self.resolved
+    }
+
     pub(crate) fn new(resolved: &'a Resolved) -> Self {
         Self {
             resolved,
@@ -545,46 +549,8 @@ impl<'a> DeclarationIndex<'a> {
         self.function(self.resolved.resolved(path.span)?)
     }
 
-    /// The scalar integer interpreter cannot erase a packed/real argument or
-    /// return conversion. Keep those calls unknown until typed values exist.
-    pub(crate) fn integer_function_path(&self, path: &Path) -> Option<&'a FnDecl> {
-        let function = self.function_path(path)?;
-        (self.is_integer_type(function.ret.as_ref()?)
-            && function
-                .params
-                .iter()
-                .filter(|parameter| !parameter.is_self)
-                .all(|parameter| {
-                    parameter
-                        .ty
-                        .as_ref()
-                        .is_some_and(|ty| self.is_integer_type(ty))
-                }))
-        .then_some(function)
-    }
-
-    fn is_integer_type(&self, ty: &Type) -> bool {
-        let Some(normalized) = self.normalize_type(ty) else {
-            return false;
-        };
-        let Type::Path(path) = normalized.as_ref() else {
-            return false;
-        };
-        self.resolved
-            .resolved(path.span)
-            .and_then(|id| self.resolved.def(id))
-            .is_some_and(|definition| {
-                definition.kind == DefKind::Builtin && definition.name == "integer"
-            })
-    }
-
     pub(crate) fn constant_path(&self, path: &Path) -> Option<&'a ConstDecl> {
         self.constant(self.resolved.resolved(path.span)?)
-    }
-
-    pub(crate) fn integer_constant_path(&self, path: &Path) -> Option<&'a ConstDecl> {
-        let constant = self.constant_path(path)?;
-        self.is_integer_type(&constant.ty).then_some(constant)
     }
 
     /// A bare constant use still denotes its declaration, never a caller's

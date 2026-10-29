@@ -237,6 +237,8 @@ pub struct Resolved {
     variant_owner_overrides: HashMap<Span, DefId>,
     /// Resolved members, including inheritance; identity needs no numeric encoding.
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
+    /// Kernel declarations retain their resolver identities after library loading.
+    builtins: HashMap<String, DefId>,
     /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
     /// Known kinds of explicit generic binders; absent recovery bindings stay unknown.
@@ -330,6 +332,10 @@ impl Resolved {
 
     pub(crate) fn enum_variant(&self, owner: DefId, name: &str) -> Option<DefId> {
         self.enum_variants.get(&owner)?.get(name).copied()
+    }
+
+    pub(crate) fn builtin(&self, name: &str) -> Option<DefId> {
+        self.builtins.get(name).copied()
     }
 }
 
@@ -461,6 +467,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.out.entity_aliases =
         declarations::DeclarationIndex::collect(&r.out, modules).entity_aliases();
     r.out.enum_variants = r.enum_variants;
+    r.out.builtins = r.builtins;
     r.out
 }
 

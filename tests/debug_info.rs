@@ -394,6 +394,16 @@ fn reuse(value: integer) -> integer {
     let second: integer = if value < 9 { local } else { 0 };
     return first + second;
 }
+const FOLDED: integer = reuse(30);
+enum Tag { '0' = 9, '1' }
+const TAG: Tag = '1';
+const LARGE_REAL: real = 18446744073709551615;
+const PACKED: std::bits::unsigned[8] = 165;
+fn wrapped(value: std::bits::unsigned[3]) -> integer {
+    let next: std::bits::unsigned[3] = value + 1;
+    return integer(next);
+}
+const WRAPPED: integer = wrapped(7);
 fn choose_pair(value: integer) -> Pair {
     if value > 0 {
         let local: Pair = { .first = value, .second = value + 1 };
@@ -436,6 +446,7 @@ impl T {
         let both: integer = reuse(input);
         let second_only: integer = reuse(negative_input);
         let first_only: integer = reuse(20);
+        let folded: integer = FOLDED;
         let unselected: integer = if input < 0 { reuse(input) } else { 0 };
         assert!(selected == 35 and inner == 12 and fallback == 100, "branch results");
         assert!(positive == 5 and negative == -5, "same operand returns");
@@ -444,6 +455,11 @@ impl T {
         assert!(narrow_result == -2 and next_result == 4, "shared declared integer results");
         assert!(both == 12 and second_only == -4 and first_only == 21, "shared alias results");
         assert!(unselected == 0, "inactive source call must not run");
+        assert!(folded == 31, "constant initializer calls must stay compile-time");
+        assert!(integer(TAG) == 10, "enum constants retain their declared literal context");
+        assert!(LARGE_REAL > 10000000000000000000.0, "real constants cannot reuse signed word encodings");
+        assert!(integer(PACKED) == 165, "packed constants retain their representation context");
+        assert!(WRAPPED == 0, "scalar queries cannot pretend packed arguments are integers");
     }
 }"#;
     for (increment, reuse) in [
@@ -451,17 +467,19 @@ impl T {
         ("always", "always"),
         ("never", "never"),
         ("always", "never"),
+        ("default", "default"),
     ] {
         let source = directory.join(format!("branches_{increment}_{reuse}.siox"));
+        let declaration = |hint: &str, name: &str| match hint {
+            "default" => format!("fn {name}"),
+            _ => format!("#[inline({hint})]\nfn {name}"),
+        };
         let text = text
             .replace(
                 "#[inline(never)]\nfn increment",
-                &format!("#[inline({increment})]\nfn increment"),
+                &declaration(increment, "increment"),
             )
-            .replace(
-                "#[inline(always)]\nfn reuse",
-                &format!("#[inline({reuse})]\nfn reuse"),
-            );
+            .replace("#[inline(always)]\nfn reuse", &declaration(reuse, "reuse"));
         std::fs::write(&source, &text).unwrap();
         let debug = directory.join("debug.bin");
         let ordinary = directory.join("ordinary.bin");

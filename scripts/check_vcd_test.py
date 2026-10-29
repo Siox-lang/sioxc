@@ -98,6 +98,113 @@ class EnumConstantWaveforms(unittest.TestCase):
                 check_profile("enum_constant_values_test", data)
 
 
+class ComputedWidthWaveforms(unittest.TestCase):
+    def wave(self):
+        return {"LengthExprTest.dut.source": [(0, "1001")],
+                "LengthExprTest.dut.value": [(0, "001")]}
+
+    def test_runtime_truncation_to_computed_width(self):
+        check_profile("length_expr_test", self.wave())
+
+    def test_wrong_width_value_or_time_is_rejected(self):
+        for events in [[(0, "1001")], [(0, "000")], [(1_000_000, "001")]]:
+            wave = self.wave()
+            wave["LengthExprTest.dut.value"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("length_expr_test", wave)
+
+
+class PackedLogicIndexWaveforms(unittest.TestCase):
+    def wave(self):
+        return {f"PackedLogicIndexTest.probe.{name}": events for name, events in {
+            "index": [(time * 1_000_000, f"{value:064b}")
+                      for time, value in enumerate((6, 5, 4, 3, 0, 8, 7, 6))],
+            "seen": [(0, "x"), (7_000_000, "z")],
+            "nested": [(0, "x"), (7_000_000, "z")],
+            "wide": [(0, "x")],
+            "dynamic": [(0, "x"), (1_000_000, "z"), (2_000_000, "x"),
+                        (3_000_000, "x"), (4_000_000, "x"), (5_000_000, "0"),
+                        (6_000_000, "1"), (7_000_000, "x"), (7_000_000, "z")],
+            "value.data": [(0, "01xzxx01x"), (7_000_000, "01zxxx01x")],
+            "value.wide": [(0, "01xzxx01x" * 9)],
+        }.items()}
+
+    def test_checked_indices_and_metadata_only_updates(self):
+        check_profile("packed_logic_index_test", self.wave())
+
+    def test_missing_signals_are_rejected(self):
+        for signal in self.wave():
+            wave = self.wave()
+            del wave[signal]
+            with self.assertRaises(AssertionError):
+                check_profile("packed_logic_index_test", wave)
+
+    def test_wrong_values_widths_and_times_are_rejected(self):
+        for name, events in [("index", [(0, "110")]),
+                             ("seen", [(0, "0"), (7_000_000, "z")]),
+                             ("nested", [(0, "x"), (8_000_000, "z")]),
+                             ("wide", [(0, "0")]),
+                             ("value.data", [(0, "01xzxx01x")]),
+                             ("value.wide", [(0, "01xzxx01x" * 8)])]:
+            wave = self.wave()
+            wave[f"PackedLogicIndexTest.probe.{name}"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("packed_logic_index_test", wave)
+
+    def test_dynamic_read_timeline_and_delta_updates_are_checked(self):
+        original = self.wave()["PackedLogicIndexTest.probe.dynamic"]
+        for events in [original[:-1], original[:-2] + original[-1:],
+                       original[:1] + [(2_000_000, "z")] + original[2:],
+                       original[:-2] + list(reversed(original[-2:]))]:
+            wave = self.wave()
+            wave["PackedLogicIndexTest.probe.dynamic"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("packed_logic_index_test", wave)
+
+
+class ConstantContextWaveforms(unittest.TestCase):
+    def wave(self):
+        wave = {f"ConstantContexts.dut.{name}": [(0, f"{value:064b}")]
+                for name, value in {"constant_choice": 13, "runtime_choice": 13,
+                                    "generated_choice": 14}.items()}
+        wave["ConstantContexts.dut.source"] = [(0, "low"), (1_000_000, "above")]
+        wave["ConstantContexts.dut.runtime_choice"].append((1_000_000, f"{21:064b}"))
+        wave["ConstantContexts.dut.packed_choice"] = [(0, f"{8:08b}")]
+        wave["ConstantContexts.dut.wrapped_choice"] = [(0, f"{144:08b}")]
+        return wave
+
+    def test_constant_and_runtime_source_order_agree(self):
+        check_profile("consteval_contexts_test", self.wave())
+
+    def test_wrong_constant_runtime_result_or_time_is_rejected(self):
+        for name, time, value in [("constant_choice", 0, 21),
+                                  ("runtime_choice", 0, 21),
+                                  ("generated_choice", 0, 99),
+                                  ("constant_choice", 1_000_000, 13)]:
+            wave = self.wave()
+            wave[f"ConstantContexts.dut.{name}"] = [(time, f"{value:064b}")]
+            with self.assertRaises(AssertionError):
+                check_profile("consteval_contexts_test", wave)
+
+    def test_runtime_transition_value_and_time_are_checked(self):
+        for events in [[(0, f"{13:064b}")],
+                       [(0, f"{13:064b}"), (1_000_000, f"{13:064b}")],
+                       [(0, f"{13:064b}"), (2_000_000, f"{21:064b}")]]:
+            wave = self.wave()
+            wave["ConstantContexts.dut.runtime_choice"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("consteval_contexts_test", wave)
+
+    def test_packed_initializer_width_value_and_time_are_checked(self):
+        for name, events in [("packed_choice", [(0, f"{8:064b}")]),
+                             ("wrapped_choice", [(0, f"{400:09b}")]),
+                             ("wrapped_choice", [(1_000_000, f"{144:08b}")])]:
+            wave = self.wave()
+            wave[f"ConstantContexts.dut.{name}"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("consteval_contexts_test", wave)
+
+
 class EnumPhaseWaveforms(unittest.TestCase):
     def wave(self):
         return {f"EnumPhaseValues.dut.{name}": events for name, events in {

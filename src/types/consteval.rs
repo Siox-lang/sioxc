@@ -13,6 +13,9 @@ use super::helpers::unsigned_lit_text;
 use crate::resolve::declarations::DeclarationIndex;
 use crate::resolve::DefId;
 
+mod source;
+pub(crate) use source::Source;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reason {
     Unsupported,
@@ -103,7 +106,13 @@ pub(crate) enum Binding<'a> {
 /// A stage supplies declaration identities and bound values without upward
 /// dependencies. Unsupported operations remain unknown, never fabricated.
 pub(crate) trait Environment {
-    fn binding(&self, path: &Path) -> Option<Binding<'_>>;
+    fn source(&self) -> Option<Source<'_, '_>> {
+        None
+    }
+
+    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
+        self.source()?.binding(path)
+    }
 
     fn domain(&self) -> IntegerDomain {
         IntegerDomain::Analysis
@@ -122,10 +131,16 @@ pub(crate) trait Environment {
     }
 
     fn local_key<'p>(&self, path: &'p Path) -> Option<LocalKey<'p>> {
+        if let Some(source) = self.source() {
+            return source.local_key(path);
+        }
         self.local_name(path).map(LocalKey::Name)
     }
 
     fn parameter_key<'p>(&self, parameter: &'p FnParam) -> Option<LocalKey<'p>> {
+        if let Some(source) = self.source() {
+            return source.parameter_key(parameter);
+        }
         if parameter.is_self {
             Some(LocalKey::Name("self"))
         } else {
@@ -136,54 +151,91 @@ pub(crate) trait Environment {
         }
     }
 
-    fn enum_type(&self, _ty: &Type, _receiver: Option<DefId>) -> Option<DefId> {
-        None
+    fn enum_type(&self, ty: &Type, receiver: Option<DefId>) -> Option<DefId> {
+        self.source()?.enum_type(ty, receiver)
     }
 
-    fn enum_literal(&self, _ch: char, _owner: DefId) -> Option<Value> {
-        None
+    fn declaration_key<'d>(&self, name: &'d Ident) -> Option<LocalKey<'d>> {
+        match self.source() {
+            Some(source) => source.declaration_key(name),
+            None => Some(LocalKey::Name(&name.text)),
+        }
+    }
+
+    fn enum_literal(&self, ch: char, owner: DefId) -> Option<Value> {
+        self.source()?.enum_literal(ch, owner)
     }
 
     fn unary_value(&self, expression: &Expr, value: Value) -> Option<Value> {
+        if self.source().is_some() {
+            return None;
+        }
         self.unary(expression, value.integer()?).map(Value::Integer)
     }
 
     fn binary_value(&self, expression: &Expr, left: Value, right: Value) -> Option<Value> {
+        if let Some(source) = self.source() {
+            return source.binary_value(expression, left, right, false);
+        }
         self.binary(expression, left.integer()?, right.integer()?)
             .map(Value::Integer)
     }
 
     fn condition_value(&self, value: Value) -> Option<bool> {
+        if let Some(source) = self.source() {
+            return source.condition_value(value);
+        }
         self.condition(value.integer()?)
     }
 
     fn operator_function(
         &self,
-        _expression: &Expr,
-        _left: Value,
-        _right: Option<Value>,
+        expression: &Expr,
+        left: Value,
+        right: Option<Value>,
     ) -> Option<&FnDecl> {
-        None
+        self.source()?.operator_function(expression, left, right)
     }
 
-    fn condition_function(&self, _value: Value) -> Option<&FnDecl> {
-        None
+    fn intrinsic_binary_value(
+        &self,
+        expression: &Expr,
+        left: Value,
+        right: Value,
+    ) -> Option<Value> {
+        if let Some(source) = self.source() {
+            source.binary_value(expression, left, right, true)
+        } else {
+            self.binary_value(expression, left, right)
+        }
     }
 
-    fn method_function(&self, _method: &Ident, _receiver: Value) -> Option<&FnDecl> {
-        None
+    fn condition_function(&self, value: Value) -> Option<&FnDecl> {
+        self.source()?.condition_function(value)
+    }
+
+    fn method_function(&self, method: &Ident, receiver: Value) -> Option<&FnDecl> {
+        self.source()?.method_function(method, receiver)
     }
 
     fn attribute(&self, _base: &Expr, _attr: &Ident) -> Option<i128> {
         None
     }
 
-    fn function(&self, _callee: &Expr) -> Option<&FnDecl> {
-        None
+    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
+        self.source()?.function(callee)
     }
 
-    fn transparent_conversion(&self, _callee: &Expr) -> bool {
-        false
+    fn transparent_conversion(&self, callee: &Expr) -> bool {
+        self.source()
+            .is_some_and(|source| source.transparent_conversion(callee))
+    }
+
+    fn convert_value(&self, callee: &Expr, value: Value) -> Option<Value> {
+        match self.source() {
+            Some(source) => source.convert_value(callee, value),
+            None => Some(value),
+        }
     }
 
     fn unary(&self, _expression: &Expr, _value: i128) -> Option<i128> {
@@ -200,16 +252,8 @@ pub(crate) trait Environment {
 }
 
 impl Environment for DeclarationIndex<'_> {
-    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
-        self.integer_constant_path(path)
-            .map(|declaration| Binding::Expression(&declaration.value))
-    }
-
-    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
-        let Expr::Path(path) = callee else {
-            return None;
-        };
-        self.integer_function_path(path)
+    fn source(&self) -> Option<Source<'_, '_>> {
+        Some(Source::new(self))
     }
 
     fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
@@ -259,20 +303,6 @@ pub(crate) fn evaluate(
         })
 }
 
-pub(crate) fn evaluate_statements(
-    statements: &[Stmt],
-    environment: &dyn Environment,
-    depth: u32,
-) -> Result<Option<i128>, NotConstant> {
-    let Some(value) = evaluate_value_statements(statements, environment, None, depth)? else {
-        return Ok(None);
-    };
-    value.integer().map(Some).ok_or(NotConstant {
-        span: stmt_span(&statements[0]),
-        reason: Reason::Unsupported,
-    })
-}
-
 pub(crate) fn evaluate_value(
     expression: &Expr,
     environment: &dyn Environment,
@@ -282,8 +312,24 @@ pub(crate) fn evaluate_value(
     Interpreter {
         environment,
         locals: Vec::new(),
+        operators: Vec::new(),
     }
     .expression(expression, expected_enum, depth)
+}
+
+/// Evaluate control flow without projecting a source Boolean into an integer.
+pub(crate) fn evaluate_condition(
+    expression: &Expr,
+    environment: &dyn Environment,
+    depth: u32,
+) -> Result<bool, NotConstant> {
+    let mut interpreter = Interpreter {
+        environment,
+        locals: Vec::new(),
+        operators: Vec::new(),
+    };
+    let value = interpreter.expression(expression, None, depth)?;
+    interpreter.condition(value, depth, expr_span(expression))
 }
 
 pub(crate) fn evaluate_value_statements(
@@ -295,6 +341,7 @@ pub(crate) fn evaluate_value_statements(
     Interpreter {
         environment,
         locals: Vec::new(),
+        operators: Vec::new(),
     }
     .statements(statements, expected_enum, depth)
 }
@@ -308,13 +355,36 @@ pub(crate) fn evaluate_function(
     Interpreter {
         environment,
         locals: Vec::new(),
+        operators: Vec::new(),
     }
     .invoke(function, arguments, depth, function.name.span)
 }
 
+/// Evaluate an existing call's borrowed parts without erasing argument types.
+pub(crate) fn evaluate_call(
+    callee: &Expr,
+    arguments: &[Expr],
+    environment: &dyn Environment,
+    depth: u32,
+) -> Result<Value, NotConstant> {
+    Interpreter {
+        environment,
+        locals: Vec::new(),
+        operators: Vec::new(),
+    }
+    .call(callee, arguments, depth, expr_span(callee))
+}
+
+struct LocalFrame<'a> {
+    // A hoisted but uninitialized local must not fall through to a caller binding.
+    bindings: Vec<(LocalKey<'a>, Option<Value>)>,
+    receiver: Option<DefId>,
+}
+
 struct Interpreter<'a> {
     environment: &'a dyn Environment,
-    locals: Vec<Vec<(LocalKey<'a>, Value)>>,
+    locals: Vec<LocalFrame<'a>>,
+    operators: Vec<&'a FnDecl>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -347,14 +417,15 @@ impl<'a> Interpreter<'a> {
             Expr::Path(path) => {
                 let local = environment.local_key(path).and_then(|key| {
                     self.locals
+                        .last()?
+                        .bindings
                         .iter()
                         .rev()
-                        .flat_map(|scope| scope.iter())
                         .find(|(bound, _)| *bound == key)
                         .map(|(_, value)| *value)
                 });
                 if let Some(value) = local {
-                    value
+                    value.ok_or_else(|| fail(Reason::UnknownConstant))?
                 } else {
                     match environment
                         .binding(path)
@@ -384,7 +455,18 @@ impl<'a> Interpreter<'a> {
                 }
                 let value = self.expression(rhs, None, depth + 1)?;
                 if let Some(function) = environment.operator_function(expression, value, None) {
-                    self.invoke(function, vec![value], depth + 1, expr_span(expression))?
+                    if self
+                        .operators
+                        .iter()
+                        .any(|active| std::ptr::eq(*active, function))
+                    {
+                        return Err(fail(Reason::Unsupported));
+                    }
+                    self.operators.push(function);
+                    let result =
+                        self.invoke(function, vec![value], depth + 1, expr_span(expression));
+                    self.operators.pop();
+                    result?
                 } else {
                     match (op, value) {
                         (UnOp::Neg, Value::Integer(value)) => Value::Integer(
@@ -415,48 +497,75 @@ impl<'a> Interpreter<'a> {
                 self.expression(if selected { then } else { els }, expected_enum, depth + 1)?
             }
             Expr::Call { callee, args, .. } => {
-                if environment.transparent_conversion(callee) {
-                    if args.len() != 1 {
-                        return Err(fail(Reason::ArityMismatch));
-                    }
-                    return self.expression(&args[0], expected_enum, depth + 1);
-                }
-                let (function, receiver) = if let Expr::Field { base, field, .. } = callee.as_ref()
-                {
-                    let receiver = self.expression(base, None, depth + 1)?;
-                    (environment.method_function(field, receiver), Some(receiver))
-                } else {
-                    (environment.function(callee), None)
-                };
-                let function = function.ok_or_else(|| fail(Reason::Unsupported))?;
-                let parameters = function
-                    .params
-                    .iter()
-                    .filter(|parameter| !parameter.is_self);
-                if parameters.clone().count() != args.len()
-                    || function.params.iter().any(|parameter| parameter.is_self)
-                        != receiver.is_some()
-                {
-                    return Err(fail(Reason::ArityMismatch));
-                }
-                let mut values = Vec::with_capacity(function.params.len());
-                values.extend(receiver);
-                for (parameter, argument) in parameters.zip(args) {
-                    let expected = parameter.ty.as_ref().and_then(|ty| {
-                        environment.enum_type(ty, receiver.and_then(Value::enum_owner))
-                    });
-                    values.push(self.expression(argument, expected, depth + 1)?);
-                }
-                self.invoke(function, values, depth + 1, expr_span(expression))?
+                self.call(callee, args, depth, expr_span(expression))?
             }
             _ => return Err(fail(Reason::Unsupported)),
         };
+        self.checked_value(value, expr_span(expression))
+    }
+
+    fn call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        depth: u32,
+        span: Span,
+    ) -> Result<Value, NotConstant> {
+        let fail = |reason| NotConstant { span, reason };
+        if depth > 64 {
+            return Err(fail(Reason::RecursionLimit));
+        }
+        let environment = self.environment;
+        if environment.transparent_conversion(callee) {
+            if args.len() != 1 {
+                return Err(fail(Reason::ArityMismatch));
+            }
+            let value = self.expression(&args[0], None, depth + 1)?;
+            let value = environment
+                .convert_value(callee, value)
+                .ok_or_else(|| fail(Reason::Unsupported))?;
+            return self.checked_value(value, span);
+        }
+        let (function, receiver) = if let Expr::Field { base, field, .. } = callee {
+            let receiver = self.expression(base, None, depth + 1)?;
+            (environment.method_function(field, receiver), Some(receiver))
+        } else {
+            (environment.function(callee), None)
+        };
+        let function = function.ok_or_else(|| fail(Reason::Unsupported))?;
+        let parameters = function
+            .params
+            .iter()
+            .filter(|parameter| !parameter.is_self);
+        if parameters.clone().count() != args.len()
+            || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
+        {
+            return Err(fail(Reason::ArityMismatch));
+        }
+        let mut values = Vec::with_capacity(function.params.len());
+        values.extend(receiver);
+        for (parameter, argument) in parameters.zip(args) {
+            let expected = parameter
+                .ty
+                .as_ref()
+                .and_then(|ty| environment.enum_type(ty, receiver.and_then(Value::enum_owner)));
+            values.push(self.expression(argument, expected, depth + 1)?);
+        }
+        let value = self.invoke(function, values, depth + 1, span)?;
+        self.checked_value(value, span)
+    }
+
+    fn checked_value(&self, value: Value, span: Span) -> Result<Value, NotConstant> {
         match value {
-            Value::Integer(value) => environment
+            Value::Integer(value) => self
+                .environment
                 .domain()
                 .check(value)
                 .map(Value::Integer)
-                .ok_or_else(|| fail(Reason::Overflow)),
+                .ok_or(NotConstant {
+                    span,
+                    reason: Reason::Overflow,
+                }),
             _ => Ok(value),
         }
     }
@@ -522,12 +631,28 @@ impl<'a> Interpreter<'a> {
             .environment
             .operator_function(expression, left, Some(right))
         {
-            self.invoke(
+            if self
+                .operators
+                .iter()
+                .any(|active| std::ptr::eq(*active, function))
+            {
+                return self
+                    .environment
+                    .intrinsic_binary_value(expression, left, right)
+                    .ok_or(NotConstant {
+                        span: expr_span(expression),
+                        reason: Reason::Unsupported,
+                    });
+            }
+            self.operators.push(function);
+            let result = self.invoke(
                 function,
                 vec![left, right],
                 depth + 1,
                 expr_span(expression),
-            )
+            );
+            self.operators.pop();
+            result
         } else {
             self.environment
                 .binary_value(expression, left, right)
@@ -574,11 +699,11 @@ impl<'a> Interpreter<'a> {
                     self.environment
                         .parameter_key(parameter)
                         .ok_or_else(|| fail(Reason::Unsupported))?,
-                    value,
+                    Some(value),
                 ))
             })
             .collect::<Result<Vec<_>, NotConstant>>()?;
-        self.locals.push(bindings);
+        self.locals.push(LocalFrame { bindings, receiver });
         let result = self.statements(&body.stmts, expected, depth);
         self.locals.pop();
         result?.ok_or_else(|| fail(Reason::Unsupported))
@@ -606,10 +731,44 @@ impl<'a> Interpreter<'a> {
 
     fn statements(
         &mut self,
-        statements: &[Stmt],
+        statements: &'a [Stmt],
         expected_enum: Option<DefId>,
         depth: u32,
     ) -> Result<Option<Value>, NotConstant> {
+        let root = self.locals.is_empty();
+        if root {
+            self.locals.push(LocalFrame {
+                bindings: Vec::new(),
+                receiver: None,
+            });
+        }
+        let start = self.locals.last().unwrap().bindings.len();
+        let result = self.run_statements(statements, expected_enum, depth);
+        self.locals.last_mut().unwrap().bindings.truncate(start);
+        if root {
+            self.locals.pop();
+        }
+        result
+    }
+
+    fn run_statements(
+        &mut self,
+        statements: &'a [Stmt],
+        expected_enum: Option<DefId>,
+        depth: u32,
+    ) -> Result<Option<Value>, NotConstant> {
+        for statement in statements {
+            if let Stmt::Let(declaration) = statement {
+                let key =
+                    self.environment
+                        .declaration_key(&declaration.name)
+                        .ok_or(NotConstant {
+                            span: declaration.name.span,
+                            reason: Reason::Unsupported,
+                        })?;
+                self.locals.last_mut().unwrap().bindings.push((key, None));
+            }
+        }
         for statement in statements {
             let fail = |reason| NotConstant {
                 span: stmt_span(statement),
@@ -619,6 +778,71 @@ impl<'a> Interpreter<'a> {
                 return Err(fail(Reason::RecursionLimit));
             }
             match statement {
+                Stmt::Let(declaration) => {
+                    let key = self
+                        .environment
+                        .declaration_key(&declaration.name)
+                        .ok_or_else(|| fail(Reason::Unsupported))?;
+                    if declaration.ty.as_ref().is_some_and(|ty| {
+                        self.environment.source().is_some_and(|source| {
+                            !source.supported(ty, self.locals.last().unwrap().receiver)
+                        })
+                    }) {
+                        return Err(fail(Reason::Unsupported));
+                    }
+                    let owner = declaration.ty.as_ref().and_then(|ty| {
+                        self.environment
+                            .enum_type(ty, self.locals.last().unwrap().receiver)
+                    });
+                    let value = self.expression(
+                        declaration
+                            .value
+                            .as_ref()
+                            .ok_or_else(|| fail(Reason::Unsupported))?,
+                        owner,
+                        depth,
+                    )?;
+                    self.locals
+                        .last_mut()
+                        .unwrap()
+                        .bindings
+                        .iter_mut()
+                        .rev()
+                        .find(|(bound, _)| *bound == key)
+                        .unwrap()
+                        .1 = Some(value);
+                }
+                Stmt::Assign {
+                    target: Expr::Path(path),
+                    value,
+                    after: None,
+                    ..
+                } => {
+                    let key = self
+                        .environment
+                        .local_key(path)
+                        .ok_or_else(|| fail(Reason::Unsupported))?;
+                    let previous = self
+                        .locals
+                        .last()
+                        .unwrap()
+                        .bindings
+                        .iter()
+                        .rev()
+                        .find(|(bound, _)| *bound == key)
+                        .and_then(|(_, value)| *value)
+                        .ok_or_else(|| fail(Reason::Unsupported))?;
+                    let value = self.expression(value, previous.enum_owner(), depth)?;
+                    self.locals
+                        .last_mut()
+                        .unwrap()
+                        .bindings
+                        .iter_mut()
+                        .rev()
+                        .find(|(bound, _)| *bound == key)
+                        .unwrap()
+                        .1 = Some(value);
+                }
                 Stmt::Return { value, .. } => {
                     return self
                         .expression(
@@ -641,7 +865,7 @@ impl<'a> Interpreter<'a> {
 
     fn branch(
         &mut self,
-        branch: &IfStmt,
+        branch: &'a IfStmt,
         expected_enum: Option<DefId>,
         depth: u32,
     ) -> Result<Option<Value>, NotConstant> {

@@ -28,6 +28,256 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn const_context_pure_scalar_locals_and_assignments_follow_execution_order() {
+    let (modules, resolved) = parse(&[
+        "module model;
+         type Count = integer;
+         fn calculate(seed: integer) -> Count {
+             seed = seed + 1;
+             let result: Count = seed;
+             if true { let extra: integer = 5; result = result + extra; }
+             result = result * 2;
+             return result;
+         }
+         const RESULT: integer = calculate(8);",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0),
+        Ok(28)
+    );
+}
+
+#[test]
+fn scalar_calls_do_not_erase_non_scalar_local_declarations() {
+    for ty in ["real", "natural", "integer[3]", "integer[1..3]"] {
+        let source = format!(
+            "module model;
+             type Local = {ty};
+             fn discard(value: integer) -> integer {{
+                 let local: Local = value;
+                 return 3;
+             }}
+             const RESULT: integer = discard(7);"
+        );
+        let (modules, resolved) = parse(&[&source]);
+        let declarations = DeclarationIndex::collect(&resolved, &modules);
+        assert_eq!(
+            evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0)
+                .unwrap_err()
+                .reason,
+            Reason::Unsupported,
+            "{ty}"
+        );
+    }
+}
+
+#[test]
+fn const_context_pure_scalar_locals_keep_lexical_shadowing() {
+    let (modules, resolved) = parse(&[
+        "module model;
+         const result: integer = 100;
+         fn identity(value: integer) -> integer { return value; }
+         fn calculate() -> integer {
+             let result: integer = 7;
+             if true { let result: integer = 30; result = result + 1; }
+             return identity(result);
+         }
+         const RESULT: integer = calculate();",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0),
+        Ok(7)
+    );
+}
+
+#[test]
+fn const_context_pure_scalar_locals_retain_enum_literal_context() {
+    let (modules, resolved) = parse(&[
+        "module model;
+         use core::primitive::Decision;
+         enum Code { 'L' = 9, 'H' }
+         fn calculate() -> integer {
+             let chosen: Code = 'L';
+             chosen = 'H';
+             let flag: Decision = false;
+             if flag { return 99; }
+             return integer(chosen);
+         }
+         const RESULT: integer = calculate();",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let enums = crate::types::enum_values::EnumValues::collect(&declarations);
+    let environment = crate::types::consteval::Source::new(&declarations).with_enums(&enums);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &environment, 0),
+        Ok(10)
+    );
+}
+
+#[test]
+fn const_context_pure_scalar_recursive_calls_do_not_capture_caller_locals() {
+    let (modules, resolved) = parse(&[
+        "module model;
+         fn recursive(remaining: integer) -> integer {
+             if remaining == 0 { return stored; }
+             let stored: integer = 7;
+             return recursive(remaining - 1);
+         }
+         const RESULT: integer = recursive(1);",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0)
+            .unwrap_err()
+            .reason,
+        Reason::UnknownConstant
+    );
+}
+
+#[test]
+fn const_context_pure_scalar_receiver_locals_retain_self_type() {
+    let (modules, resolved) = parse(&["module model;
+         enum Code { 'L' = 9, 'H' }
+         impl Code {
+             pub fn code(self) -> integer {
+                 let selected: Self = 'L';
+                 selected = 'H';
+                 return integer(selected);
+             }
+         }
+         fn calculate(value: Code) -> integer { return value.code(); }
+         const RESULT: integer = calculate('L');"]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let enums = crate::types::enum_values::EnumValues::collect(&declarations);
+    let environment = crate::types::consteval::Source::new(&declarations).with_enums(&enums);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &environment, 0),
+        Ok(10)
+    );
+}
+
+#[test]
+fn const_context_pure_scalar_locals_reject_nonlocal_and_delayed_writes() {
+    for body in [
+        "TARGET = 2; return TARGET;",
+        "let value: integer = 1; value = 2 after 1; return value;",
+        "let value: integer; return value;",
+    ] {
+        let source = format!(
+            "module model; const TARGET: integer = 7;
+            fn calculate() -> integer {{ {body} }}
+            const RESULT: integer = calculate();"
+        );
+        let (modules, resolved) = parse(&[&source]);
+        let declarations = DeclarationIndex::collect(&resolved, &modules);
+        assert_eq!(
+            evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0)
+                .unwrap_err()
+                .reason,
+            Reason::Unsupported,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn const_context_registered_boolean_conditions_are_available_to_integer_queries() {
+    let (modules, resolved) = parse(&[
+        "module model;
+        fn choose() -> integer {
+            if 2 > 4 { return 99; }
+            if 2 < 4 { return 3; }
+            return 1;
+        }
+        const RESULT: integer = choose();",
+        "module core::primitive;
+        pub enum Decision { false = 5, true = 17 }
+        attr lang for Decision = \"bool\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &declarations, 0),
+        Ok(3)
+    );
+}
+
+#[test]
+fn const_context_checker_queries_use_shared_enum_encodings() {
+    let (modules, resolved) = parse(&["module model;
+        enum Code { First = 9, Next }
+        fn width() -> integer { return integer(Code::Next); }
+        const WIDTH: integer = width();"]);
+    let mut sink = DiagnosticSink::default();
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    assert_eq!(
+        checker.const_int(&constant(&modules[0], "WIDTH").value),
+        Some(10)
+    );
+}
+
+#[test]
+fn const_context_checker_queries_share_scalar_receiver_methods() {
+    let (modules, resolved) = parse(&["module model;
+        enum Code { First = 9, Next }
+        trait Other { fn code(self) -> integer; }
+        impl Other for Code { fn code(self) -> integer { return 99; } }
+        impl Code { pub fn code(self) -> integer { return integer(self); } }
+        const RESULT: integer = Code::Next.code();"]);
+    let mut sink = DiagnosticSink::default();
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    assert_eq!(
+        checker.const_int(&constant(&modules[0], "RESULT").value),
+        Some(10)
+    );
+}
+
+#[test]
+fn const_context_scalar_methods_keep_owner_ids_and_borrow_trait_defaults() {
+    let sources = [
+        "module left; enum Code { Low = 9, High }
+         impl Code { pub fn code(self) -> integer { return integer(self); } }
+         const RESULT: integer = Code::High.code();",
+        "module right; enum Code { Low = 3, High }
+         trait Inspect { fn code(self) -> integer { return 17; } }
+         impl Inspect for Code {}
+         const RESULT: integer = Code::High.code();",
+    ];
+    for sources in [sources, [sources[1], sources[0]]] {
+        let (modules, resolved) = parse(&sources);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        for module in &modules {
+            let expected = if module.path.segments[0].text == "left" {
+                10
+            } else {
+                17
+            };
+            assert_eq!(
+                checker.const_int(&constant(module, "RESULT").value),
+                Some(expected)
+            );
+        }
+    }
+}
+
+#[test]
 fn enum_contracts_borrow_inherited_variants_by_resolved_owner() {
     let sources = [
         "module left; pub enum Base { Low = 9, High } pub enum Mode(Base);",
@@ -59,6 +309,58 @@ fn enum_contracts_borrow_inherited_variants_by_resolved_owner() {
             }
         }
         assert_ne!(owners[0], owners[1]);
+    }
+}
+
+#[test]
+fn checker_enum_domains_share_inherited_members_even_when_values_are_unknown() {
+    let sources = [
+        "module left;
+         extern \"C\" { fn runtime() -> integer; }
+         pub enum Base { Low = runtime(), High }
+         pub type Alias = Base;
+         pub enum Mode(Alias);
+         pub enum Top(Mode);",
+        "module right;
+         pub enum Base { Low = 3, High }
+         pub enum Mode(Base);
+         pub enum Top(Mode);",
+    ];
+    for sources in [sources, [sources[1], sources[0]]] {
+        let (modules, resolved) = parse(&sources);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        let mut owners = HashMap::new();
+        for (owner, _) in checker.declarations.enumerations() {
+            let name = resolved.qualified_name_str(owner).unwrap();
+            let members = checker.enum_values.members(owner).unwrap();
+            let names = members
+                .iter()
+                .map(|(member, _)| resolved.def(*member).unwrap().name.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(checker.enum_variants[name], names);
+            assert_eq!(names, ["Low", "High"]);
+            if name.starts_with("left::") {
+                assert!(members.iter().all(|(_, value)| value.is_none()));
+            }
+            owners.insert(name.to_owned(), owner);
+        }
+        for module in ["left", "right"] {
+            let base = Ty::Named(owners[&format!("{module}::Base")]);
+            let top = Ty::Named(owners[&format!("{module}::Top")]);
+            assert!(checker.conversion_exists(&base, &top));
+            assert!(checker.conversion_exists(&top, &base));
+        }
+        assert!(!checker.conversion_exists(
+            &Ty::Named(owners["left::Top"]),
+            &Ty::Named(owners["right::Top"]),
+        ));
+        assert!(!checker.conversion_exists(
+            &Ty::Named(owners["right::Base"]),
+            &Ty::Named(owners["left::Top"]),
+        ));
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     }
 }
 
@@ -125,6 +427,11 @@ fn generated_enum_members_keep_their_resolved_declaration_owner() {
     for (id, _) in declarations.enum_variants(derived).unwrap() {
         assert_eq!(resolved.def(id).unwrap().parent, Some(left));
     }
+    let right = resolved.declared(enums[1].name.span).unwrap();
+    let checker = Checker::new(&mut sink, &resolved, &modules);
+    assert!(checker.conversion_exists(&Ty::Named(derived), &Ty::Named(left)));
+    assert!(checker.conversion_exists(&Ty::Named(left), &Ty::Named(derived)));
+    assert!(!checker.conversion_exists(&Ty::Named(derived), &Ty::Named(right)));
 }
 
 #[test]
@@ -753,7 +1060,7 @@ fn integer_analysis_follows_aliases_but_does_not_erase_other_value_types() {
             "the declaration still exists"
         );
         assert!(
-            index.integer_function_path(path).is_none(),
+            crate::types::consteval::Environment::function(&index, callee).is_none(),
             "the value needs a typed interpreter"
         );
         assert_eq!(

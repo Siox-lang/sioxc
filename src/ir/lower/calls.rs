@@ -651,21 +651,9 @@ impl<'a> Lowering<'a> {
             );
             return Some(Val::Scalar(arena.reference(value)));
         }
-        // Constant arguments: run the body statically.
-        let consts: Option<Vec<i64>> = args
-            .iter()
-            .map(|a| eval_const_fns(a, &self.cur_env, &self.free_fns, 0))
-            .collect();
-        if let Some(cs) = consts {
-            let mut fenv = self.cur_env.clone();
-            for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
-                if let Some(n) = &p.name {
-                    fenv.insert(n.text.clone(), v);
-                }
-            }
-            if let Some(v) = eval_const_stmts(&f.body.as_ref()?.stmts, &fenv, &self.free_fns, 0) {
-                return Some(Val::Scalar(Expr::Const(v as u64)));
-            }
+        // Keep typed arguments and resolved call frames until the result's ABI projection.
+        if let Some(v) = eval_call_fns(callee, args, &self.cur_env, &self.free_fns, 0) {
+            return Some(Val::Scalar(Expr::Const(v as u64)));
         }
         // Dynamic arguments: inline against shared source-value handles.
         if self.inline_depth.get() > 16 {
@@ -1678,6 +1666,9 @@ impl<'a> Lowering<'a> {
                         l.span,
                         self.expr_types.get(&ast::expr_span(value)).cloned(),
                     );
+                    if let Some(layout) = &layout {
+                        lowered = self.bind_value_layout(lowered, layout.clone(), l.span);
+                    }
                     self.source_inline_local(&l.name.text, l.span, layout.clone(), &mut lowered);
                     if let Some(layout) = layout {
                         self.bind_source_shape(l.name.text.clone(), layout);
@@ -1718,6 +1709,9 @@ impl<'a> Lowering<'a> {
                         *span,
                         self.expr_types.get(&ast::expr_span(value)).cloned(),
                     );
+                    if let Some(layout) = &layout {
+                        lowered = self.bind_value_layout(lowered, layout.clone(), *span);
+                    }
                     self.source_inline_local(name, *span, layout, &mut lowered);
                     env.insert(name.clone(), lowered);
                 }
@@ -2405,6 +2399,9 @@ impl<'a> Lowering<'a> {
                     l.span,
                     self.expr_types.get(&ast::expr_span(value)).cloned(),
                 );
+                if let Some(layout) = &layout {
+                    lowered = self.bind_value_layout(lowered, layout.clone(), l.span);
+                }
                 self.source_inline_local(&l.name.text, l.span, layout.clone(), &mut lowered);
                 let mut attrs = HashMap::new();
                 self.bind_range_attrs(&mut attrs, &l.name.text, value, scoped.as_ref());

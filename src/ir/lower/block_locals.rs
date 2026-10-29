@@ -98,11 +98,11 @@ impl<'a> Lowering<'a> {
                 }
             }
             ast::Stmt::If(conditional) => {
-                let Some(selected) = self.eval_const(&conditional.cond, &self.cur_env) else {
+                let Some(selected) = self.eval_condition(&conditional.cond, &self.cur_env) else {
                     seen.clear();
                     return;
                 };
-                if selected != 0 {
+                if selected {
                     for nested in &conditional.then.stmts {
                         self.lint_generated_dead_statement(nested, true, seen);
                     }

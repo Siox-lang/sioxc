@@ -1,7 +1,6 @@
 //! Computed enum values, shared by analysis and downstream phase products.
 
 use super::*;
-use crate::types::consteval::{Binding, Environment, LocalKey, Value};
 
 #[cfg(test)]
 mod tests;
@@ -12,24 +11,22 @@ pub(crate) struct EnumValues {
 }
 
 impl EnumValues {
-    pub(crate) fn collect(declarations: &DeclarationIndex<'_>, resolved: &Resolved) -> Self {
-        Self::collect_with_functions(declarations, resolved, None)
+    pub(crate) fn collect(declarations: &DeclarationIndex<'_>) -> Self {
+        Self::collect_with_functions(declarations, None)
     }
 
     pub(crate) fn collect_with_functions(
         declarations: &DeclarationIndex<'_>,
-        resolved: &Resolved,
         functions: Option<&DeclarationIndex<'_>>,
     ) -> Self {
         let mut result = Self::default();
-        result.refine(declarations, resolved, functions);
+        result.refine(declarations, functions);
         result
     }
 
     fn refine(
         &mut self,
         declarations: &DeclarationIndex<'_>,
-        resolved: &Resolved,
         functions: Option<&DeclarationIndex<'_>>,
     ) {
         let sources: Vec<_> = declarations
@@ -57,17 +54,12 @@ impl EnumValues {
                         continue;
                     }
                     let value = match &member.value {
-                        Some(expression) => consteval::evaluate(
-                            expression,
-                            &Discriminants {
-                                declarations,
-                                resolved,
-                                enums: self,
-                                functions,
-                            },
-                            0,
-                        )
-                        .ok(),
+                        Some(expression) => {
+                            let source = consteval::Source::new(declarations)
+                                .with_enums(self)
+                                .with_functions(functions);
+                            consteval::evaluate(expression, &source, 0).ok()
+                        }
                         None => next,
                     };
                     next = value.and_then(|value| value.checked_add(1));
@@ -190,256 +182,11 @@ pub fn refresh_enum_values(
         .collect();
     let declarations = DeclarationIndex::collect(resolved, modules);
     let values = std::sync::Arc::make_mut(&mut typed.enum_values);
-    values.refine(&declarations, resolved, None);
+    values.refine(&declarations, None);
     // Diagnostics retain source order, independent of the fact table's hashing.
     for item in modules.iter().flat_map(|module| &module.items) {
         if let Item::Enum(declaration) = item {
             values.check_declaration(declaration, resolved, sink, Some(&known));
-        }
-    }
-}
-
-struct Discriminants<'i, 'a> {
-    declarations: &'i DeclarationIndex<'a>,
-    functions: Option<&'i DeclarationIndex<'a>>,
-    resolved: &'i Resolved,
-    enums: &'i EnumValues,
-}
-
-impl Discriminants<'_, '_> {
-    fn named(&self, owner: DefId, name: &str) -> Option<Value> {
-        Some(Value::Variant {
-            owner,
-            variant: self.resolved.enum_variant(owner, name)?,
-        })
-    }
-
-    fn boolean(&self, value: bool) -> Option<Value> {
-        self.named(
-            self.resolved.lang("bool")?,
-            if value { "true" } else { "false" },
-        )
-    }
-
-    fn supported(&self, ty: &Type) -> bool {
-        let Some(id) = self.declarations.scalar_type_id(ty) else {
-            return false;
-        };
-        self.resolved.kind_of(id) == Some(DefKind::Enum)
-            || self.resolved.def(id).is_some_and(|definition| {
-                definition.kind == DefKind::Builtin
-                    && matches!(definition.name.as_str(), "integer" | "Char")
-            })
-    }
-
-    fn boolean_operator(&self, role: &str, arity: usize) -> Option<&FnDecl> {
-        let owner = self.resolved.lang("bool")?;
-        let trait_id = self.resolved.lang(role)?;
-        let mut functions = self
-            .declarations
-            .implementations_for(owner)
-            .chain(
-                self.functions
-                    .into_iter()
-                    .flat_map(|functions| functions.implementations_for(owner)),
-            )
-            .filter(|implementation| {
-                implementation
-                    .trait_
-                    .as_ref()
-                    .and_then(|path| self.resolved.resolved(path.span))
-                    == Some(trait_id)
-            })
-            .flat_map(|implementation| &implementation.items)
-            .filter_map(|item| match item {
-                ImplItem::Fn(function)
-                    if function.name.text == role
-                        && function.params.len() == arity
-                        && function
-                            .params
-                            .first()
-                            .is_some_and(|parameter| parameter.is_self)
-                        && function
-                            .ret
-                            .as_ref()
-                            .and_then(|ty| self.enum_type(ty, Some(owner)))
-                            == Some(owner)
-                        && function
-                            .params
-                            .iter()
-                            .filter(|parameter| !parameter.is_self)
-                            .all(|parameter| {
-                                parameter
-                                    .ty
-                                    .as_ref()
-                                    .and_then(|ty| self.enum_type(ty, Some(owner)))
-                                    == Some(owner)
-                            }) =>
-                {
-                    Some(function)
-                }
-                _ => None,
-            });
-        let function = functions.next()?;
-        functions.next().is_none().then_some(function)
-    }
-}
-
-impl Environment for Discriminants<'_, '_> {
-    fn transparent_conversion(&self, callee: &Expr) -> bool {
-        let Expr::Path(path) = callee else {
-            return false;
-        };
-        self.resolved
-            .resolved(path.span)
-            .and_then(|id| self.resolved.def(id))
-            .is_some_and(|definition| {
-                definition.kind == DefKind::Builtin && definition.name == "integer"
-            })
-    }
-
-    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
-        if let Some(constant) = self.declarations.constant_path(path).or_else(|| {
-            self.functions
-                .and_then(|functions| functions.constant_path(path))
-        }) {
-            if !self.supported(&constant.ty) {
-                return None;
-            }
-            return Some(Binding::TypedExpression {
-                value: &constant.value,
-                enum_owner: self.enum_type(&constant.ty, None),
-            });
-        }
-        let owner = self.resolved.enum_owner(path)?;
-        let variant = self.resolved.resolved(path.span)?;
-        Some(Binding::Value(Value::Variant { owner, variant }))
-    }
-
-    fn local_key<'p>(&self, path: &'p Path) -> Option<LocalKey<'p>> {
-        self.declarations.local_id(path).map(LocalKey::Definition)
-    }
-
-    fn parameter_key<'p>(&self, parameter: &'p FnParam) -> Option<LocalKey<'p>> {
-        self.declarations
-            .parameter_id(parameter)
-            .map(LocalKey::Definition)
-    }
-
-    fn enum_type(&self, ty: &Type, receiver: Option<DefId>) -> Option<DefId> {
-        let id = self.declarations.scalar_type_id(ty)?;
-        if self.resolved.kind_of(id) == Some(DefKind::Enum) {
-            return Some(id);
-        }
-        self.resolved
-            .def(id)
-            .filter(|definition| {
-                definition.kind == DefKind::Local
-                    && definition.name == "Self"
-                    && definition.span.is_none()
-            })
-            .and(receiver)
-    }
-
-    fn enum_literal(&self, ch: char, owner: DefId) -> Option<Value> {
-        self.named(owner, &format!("'{ch}'"))
-    }
-
-    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
-        let Expr::Path(path) = callee else {
-            return None;
-        };
-        let function = self.declarations.function_path(path).or_else(|| {
-            self.functions
-                .and_then(|functions| functions.function_path(path))
-        })?;
-        (function.generics.params.is_empty()
-            && function.ret.as_ref().is_some_and(|ty| self.supported(ty))
-            && function.params.iter().all(|parameter| {
-                !parameter.is_self && parameter.ty.as_ref().is_some_and(|ty| self.supported(ty))
-            }))
-        .then_some(function)
-    }
-
-    fn binary_value(&self, expression: &Expr, left: Value, right: Value) -> Option<Value> {
-        let Expr::Binary { op, .. } = expression else {
-            return None;
-        };
-        let order = match (left, right) {
-            (Value::Integer(left), Value::Integer(right)) => left.cmp(&right),
-            (Value::Character(left), Value::Character(right)) => left.cmp(&right),
-            (
-                Value::Variant {
-                    owner: a,
-                    variant: left,
-                },
-                Value::Variant {
-                    owner: b,
-                    variant: right,
-                },
-            ) if a == b => match op {
-                BinOp::Eq | BinOp::Ne => {
-                    return self.boolean(if matches!(op, BinOp::Eq) {
-                        left == right
-                    } else {
-                        left != right
-                    });
-                }
-                _ => self
-                    .enums
-                    .number(a, left)?
-                    .cmp(&self.enums.number(b, right)?),
-            },
-            (
-                Value::Enum {
-                    owner: a,
-                    discriminant: left,
-                },
-                Value::Enum {
-                    owner: b,
-                    discriminant: right,
-                },
-            ) if a == b => left.cmp(&right),
-            _ => return None,
-        };
-        self.boolean(match op {
-            BinOp::Eq => order.is_eq(),
-            BinOp::Ne => !order.is_eq(),
-            BinOp::Lt => order.is_lt(),
-            BinOp::Le => !order.is_gt(),
-            BinOp::Gt => order.is_gt(),
-            BinOp::Ge => !order.is_lt(),
-            _ => return None,
-        })
-    }
-
-    fn condition_value(&self, value: Value) -> Option<bool> {
-        let owner = self.resolved.lang("bool")?;
-        if Some(value) == self.named(owner, "true") {
-            Some(true)
-        } else if Some(value) == self.named(owner, "false") {
-            Some(false)
-        } else {
-            None
-        }
-    }
-
-    fn operator_function(
-        &self,
-        expression: &Expr,
-        left: Value,
-        right: Option<Value>,
-    ) -> Option<&FnDecl> {
-        if left.enum_owner() != self.resolved.lang("bool")
-            || right.is_some_and(|value| value.enum_owner() != left.enum_owner())
-        {
-            return None;
-        }
-        match expression {
-            Expr::Binary { op: BinOp::And, .. } => self.boolean_operator("and", 2),
-            Expr::Binary { op: BinOp::Or, .. } => self.boolean_operator("or", 2),
-            Expr::Unary { op: UnOp::Not, .. } => self.boolean_operator("not", 1),
-            _ => None,
         }
     }
 }

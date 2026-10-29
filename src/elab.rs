@@ -516,6 +516,10 @@ struct Elaborator<'a> {
 }
 
 impl<'a> Elaborator<'a> {
+    fn source(&self) -> consteval::Source<'_, 'a> {
+        consteval::Source::new(&self.declarations).with_enums(&self.out.enum_values)
+    }
+
     /// Index every entity, struct and view declaration across the modules so
     /// later lookups are by definition rather than by name.
     fn collect(&mut self, modules: &'a [Module]) {
@@ -605,7 +609,7 @@ impl<'a> Elaborator<'a> {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty.as_ref(), spec.site);
-                let cparams = eval_params(sub_decl, spec.ty.as_ref(), &env, &self.declarations);
+                let cparams = eval_params(sub_decl, spec.ty.as_ref(), &env, self.source());
                 self.check_params_bound(sub_decl, &cparams, spec.site);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
@@ -804,16 +808,15 @@ impl<'a> Elaborator<'a> {
                 }
                 let declared = match index.as_ref() {
                     Expr::Range { lo, hi, .. } => {
-                        let (ParamValue::Int(left), ParamValue::Int(right)) = (
-                            eval(lo, env, &self.declarations),
-                            eval(hi, env, &self.declarations),
-                        ) else {
+                        let (ParamValue::Int(left), ParamValue::Int(right)) =
+                            (eval(lo, env, self.source()), eval(hi, env, self.source()))
+                        else {
                             continue;
                         };
                         loop_range(left, right)
                     }
                     width => {
-                        let ParamValue::Int(width) = eval(width, env, &self.declarations) else {
+                        let ParamValue::Int(width) = eval(width, env, self.source()) else {
                             continue;
                         };
                         if width < 0 {
@@ -949,7 +952,7 @@ impl<'a> Elaborator<'a> {
                 ..
             } => {
                 out.push(InstanceSpec {
-                    name: render_signal(target, env, &self.declarations),
+                    name: render_signal(target, env, self.source()),
                     ty: match self.declarations.normalize_type(ty) {
                         Some(ty) => ty,
                         None => return,
@@ -967,10 +970,9 @@ impl<'a> Elaborator<'a> {
                 body,
                 ..
             } => {
-                if let (ParamValue::Int(a), ParamValue::Int(b)) = (
-                    eval(lo, env, &self.declarations),
-                    eval(hi, env, &self.declarations),
-                ) {
+                if let (ParamValue::Int(a), ParamValue::Int(b)) =
+                    (eval(lo, env, self.source()), eval(hi, env, self.source()))
+                {
                     // Inclusive, directional range (`0..2` -> 0,1,2;
                     // `2..0` -> 2,1,0), matching slices/array ranges.
                     for i in loop_range(a, b) {
@@ -1097,8 +1099,15 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
-        match eval(&iff.cond, env, &self.declarations) {
-            ParamValue::Int(0) => match iff.else_.as_deref() {
+        match consteval::evaluate_condition(
+            &iff.cond,
+            &Parameters {
+                values: env,
+                source: self.source(),
+            },
+            0,
+        ) {
+            Ok(false) => match iff.else_.as_deref() {
                 Some(ElseBranch::Block(b)) => {
                     for st in &b.stmts {
                         self.gather_stmt(st, env, at, tparams, out);
@@ -1107,7 +1116,7 @@ impl<'a> Elaborator<'a> {
                 Some(ElseBranch::If(inner)) => self.gather_if(inner, env, at, tparams, out),
                 None => {}
             },
-            ParamValue::Int(_) => {
+            Ok(true) => {
                 for st in &iff.then.stmts {
                     self.gather_stmt(st, env, at, tparams, out);
                 }
@@ -1115,7 +1124,7 @@ impl<'a> Elaborator<'a> {
             // A non-constant condition is behavioural — a process, not a
             // generate. Instances here were dropped without a word, so the
             // design ran as though they had never been written.
-            ParamValue::Unknown => {
+            Err(_) => {
                 self.note_misplaced(&iff.then, tparams);
                 match iff.else_.as_deref() {
                     Some(ElseBranch::Block(b)) => self.note_misplaced(b, tparams),
@@ -1301,8 +1310,8 @@ impl<'a> Elaborator<'a> {
                     continue;
                 }
             }
-            let signal = render_signal(e, render_env, &self.declarations);
-            let ty = concrete_ty(port_ty, env, &self.declarations);
+            let signal = render_signal(e, render_env, self.source());
+            let ty = concrete_ty(port_ty, env, self.source());
             connected.insert(port.clone());
             conns.push(Connection {
                 port,
@@ -1351,10 +1360,7 @@ impl<'a> Elaborator<'a> {
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.declarations.entity(entity_id) {
             for p in &edecl.ports {
-                sigs.insert(
-                    p.name.text.clone(),
-                    concrete_ty(&p.ty, env, &self.declarations),
-                );
+                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env, self.source()));
             }
         }
         if let Some(impls) = self.impls.get(&entity_id) {
@@ -1362,10 +1368,7 @@ impl<'a> Elaborator<'a> {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(
-                                l.name.text.clone(),
-                                concrete_ty(t, env, &self.declarations),
-                            );
+                            sigs.insert(l.name.text.clone(), concrete_ty(t, env, self.source()));
                         }
                     }
                 }
@@ -1474,7 +1477,7 @@ fn eval_params(
     edecl: &EntityDecl,
     ty: &Type,
     env: &HashMap<String, i64>,
-    declarations: &DeclarationIndex<'_>,
+    declarations: consteval::Source<'_, '_>,
 ) -> Vec<(String, ParamValue)> {
     let args: &[GenericArg] = match ty {
         Type::Generic { args, .. } => args,
@@ -1580,27 +1583,32 @@ fn loop_range(a: i64, b: i64) -> Vec<i64> {
 
 /// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving
 /// bare identifiers against `env`.
-fn eval(e: &Expr, env: &HashMap<String, i64>, declarations: &DeclarationIndex<'_>) -> ParamValue {
-    consteval::evaluate(
+fn eval(e: &Expr, env: &HashMap<String, i64>, source: consteval::Source<'_, '_>) -> ParamValue {
+    let value = consteval::evaluate(
         e,
         &Parameters {
             values: env,
-            declarations,
+            source,
         },
         0,
-    )
-    .ok()
-    .and_then(|value| i64::try_from(value).ok())
-    .map(ParamValue::Int)
-    .unwrap_or(ParamValue::Unknown)
+    );
+    value
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
+        .map(ParamValue::Int)
+        .unwrap_or(ParamValue::Unknown)
 }
 
 struct Parameters<'a, 'd> {
     values: &'a HashMap<String, i64>,
-    declarations: &'a DeclarationIndex<'d>,
+    source: consteval::Source<'a, 'd>,
 }
 
 impl Environment for Parameters<'_, '_> {
+    fn source(&self) -> Option<consteval::Source<'_, '_>> {
+        Some(self.source)
+    }
+
     fn domain(&self) -> IntegerDomain {
         IntegerDomain::NativeWord
     }
@@ -1610,75 +1618,21 @@ impl Environment for Parameters<'_, '_> {
     }
 
     fn binding(&self, path: &Path) -> Option<Binding<'_>> {
-        if let Some(declaration) = self.declarations.integer_constant_path(path) {
-            return Some(Binding::Expression(&declaration.value));
-        }
-        let name = self.declarations.local_name(path)?;
-        self.values
-            .get(name)
-            .copied()
-            .map(|value| Binding::Value(crate::types::consteval::Value::Integer(i128::from(value))))
-    }
-
-    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
-        self.declarations.local_name(path)
-    }
-
-    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
-        let Expr::Path(path) = callee else {
-            return None;
-        };
-        self.declarations.integer_function_path(path)
-    }
-
-    fn local_key<'p>(&self, path: &'p Path) -> Option<consteval::LocalKey<'p>> {
-        self.declarations
-            .local_id(path)
-            .map(consteval::LocalKey::Definition)
-    }
-
-    fn parameter_key<'p>(
-        &self,
-        parameter: &'p crate::syntax::ast::FnParam,
-    ) -> Option<consteval::LocalKey<'p>> {
-        self.declarations
-            .parameter_id(parameter)
-            .map(consteval::LocalKey::Definition)
-    }
-
-    // shortcut: retain legacy parameter bit operations until typed source-owned
-    // operator/condition evaluation replaces raw integer parameter bindings.
-    fn unary(&self, expression: &Expr, value: i128) -> Option<i128> {
-        match expression {
-            Expr::Unary { op: UnOp::Not, .. } => Some(i128::from(!(value as i64))),
-            _ => None,
-        }
-    }
-
-    fn binary(&self, expression: &Expr, a: i128, b: i128) -> Option<i128> {
-        let Expr::Binary { op, .. } = expression else {
-            return None;
-        };
-        Some(match op {
-            BinOp::Eq => (a == b) as i128,
-            BinOp::Ne => (a != b) as i128,
-            BinOp::Lt => (a < b) as i128,
-            BinOp::Le => (a <= b) as i128,
-            BinOp::Gt => (a > b) as i128,
-            BinOp::Ge => (a >= b) as i128,
-            BinOp::And => a & b,
-            BinOp::Or => a | b,
-            _ => return None,
+        self.source.binding(path).or_else(|| {
+            let name = self.source.local_name(path)?;
+            self.values
+                .get(name)
+                .map(|value| Binding::Value(consteval::Value::Integer(i128::from(*value))))
         })
-    }
-
-    fn condition(&self, value: i128) -> Option<bool> {
-        Some(value != 0)
     }
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>, declarations: &DeclarationIndex<'_>) -> EType {
+fn concrete_ty(
+    t: &Type,
+    env: &HashMap<String, i64>,
+    declarations: consteval::Source<'_, '_>,
+) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
@@ -1709,7 +1663,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, declarations: &DeclarationI
 fn index_width(
     index: &Expr,
     env: &HashMap<String, i64>,
-    declarations: &DeclarationIndex<'_>,
+    declarations: consteval::Source<'_, '_>,
 ) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
         if let (ParamValue::Int(a), ParamValue::Int(b)) =
@@ -1732,7 +1686,7 @@ fn index_width(
 fn render_concrete(
     t: &Type,
     env: &HashMap<String, i64>,
-    declarations: &DeclarationIndex<'_>,
+    declarations: consteval::Source<'_, '_>,
 ) -> String {
     match t {
         Type::Path(p) => p
@@ -1792,7 +1746,7 @@ fn render_concrete(
 fn render_index(
     e: &Expr,
     env: &HashMap<String, i64>,
-    declarations: &DeclarationIndex<'_>,
+    declarations: consteval::Source<'_, '_>,
 ) -> String {
     match eval(e, env, declarations) {
         ParamValue::Int(v) => v.to_string(),
@@ -1921,7 +1875,7 @@ fn is_connection_target(e: &Expr) -> bool {
 fn render_signal(
     e: &Expr,
     env: &HashMap<String, i64>,
-    declarations: &DeclarationIndex<'_>,
+    declarations: consteval::Source<'_, '_>,
 ) -> String {
     match e {
         Expr::Path(p) => p
@@ -1992,20 +1946,43 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
+    fn with_boolean_contract(module: Module, sink: &mut DiagnosticSink) -> Vec<Module> {
+        vec![
+            module,
+            crate::syntax::parse_module(
+                FileId(1),
+                "module core::primitive;
+                 pub enum Bool { false, true }
+                 attr lang for Bool = \"bool\";
+                 impl core::ops::Boolean for Bool {
+                     fn as_bool(self) -> Bool { return self; }
+                 }",
+                sink,
+            ),
+            crate::syntax::parse_module(
+                FileId(2),
+                "module core::ops;
+                 pub trait Boolean { fn as_bool(self) -> core::primitive::Bool; }
+                 attr lang for Boolean = \"boolean\";",
+                sink,
+            ),
+        ]
+    }
+
     /// Elaborate `src` with the minimal library types the tests need, returning
     /// the hierarchy and its error count.
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
-        // unsigned/signed are `#[vector]` library types, not seeded.
+        // Numeric vectors and Boolean semantics come from source, not seeded values.
         let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
-        let modules = std::slice::from_ref(&module);
-        let resolved = crate::resolve::resolve(modules, &mut sink);
-        let typed = crate::types::check(modules, &resolved, &mut sink);
+        let modules = with_boolean_contract(module, &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
         let before = sink.error_count();
-        let hier = elaborate(modules, &resolved, &typed, &mut sink);
+        let hier = elaborate(&modules, &resolved, &typed, &mut sink);
         (hier, sink.error_count() - before)
     }
 
@@ -2015,12 +1992,58 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
-        let modules = std::slice::from_ref(&module);
-        let resolved = crate::resolve::resolve(modules, &mut sink);
-        let typed = crate::types::check(modules, &resolved, &mut sink);
+        let modules = with_boolean_contract(module, &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
         let before = sink.error_count();
-        elaborate_for_check(modules, &resolved, &typed, &mut sink);
+        elaborate_for_check(&modules, &resolved, &typed, &mut sink);
         sink.error_count() - before
+    }
+
+    #[test]
+    fn const_context_elaboration_keeps_source_boolean_and_enum_meaning() {
+        let sources = [
+            "module model;
+            use core::primitive::Decision;
+            enum Code { First = 9, Next }
+            fn width() -> integer { return integer(Code::Next); }
+            fn enabled() -> Decision { return true; }
+            entity Cell<N: integer> {} impl<N: integer> Cell<N> {}
+            entity Top {}
+            impl Top {
+                if false { let skipped: Cell<N = 1> = {}; }
+                else if enabled() { let selected: Cell<N = width()> = {}; }
+            }",
+            "module core::primitive;
+            pub enum Decision { false = 5, true = 17 }
+            attr lang for Decision = \"bool\";
+            impl core::ops::Boolean for Decision {
+                fn as_bool(self) -> Decision { return self; }
+            }",
+            "module core::ops;
+            pub trait Boolean { fn as_bool(self) -> core::primitive::Decision; }
+            attr lang for Boolean = \"boolean\";",
+        ];
+        let mut sink = DiagnosticSink::default();
+        let modules: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = elaborate(&modules, &resolved, &typed, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        assert!(!hierarchy
+            .instances
+            .iter()
+            .any(|instance| instance.name == "skipped"));
+        let selected = hierarchy
+            .instances
+            .iter()
+            .find(|instance| instance.name == "selected")
+            .unwrap();
+        assert_eq!(selected.params, [("N".into(), ParamValue::Int(10))]);
     }
 
     #[test]

@@ -572,6 +572,34 @@ impl<'a> Lowering<'a> {
                 let els = self.lower_const_value(els, scope)?;
                 Some(self.source_select(&cond, &then, &els, span))
             }
+            ast::Expr::Call { .. } => {
+                // Packed contracts need typed lowering before any word projection.
+                let first = self.source_values.borrow().ir.values.len();
+                let value = self.lower_scalar_env(expression, &HashMap::new());
+                let mut arena = self.source_values.borrow_mut();
+                let id = arena.append(&value, span, None);
+                // Even unused arguments/locals must be closed and effect-free.
+                let no_signal_meta = HashMap::new();
+                for index in first..arena.ir.values.len() {
+                    if arena.may_have_meta(ProcessValueId(index as u32), &no_signal_meta) {
+                        return None;
+                    }
+                    crate::ir::arena_constant_integer_with_layouts(
+                        ProcessValueId(index as u32),
+                        &arena.ir.values,
+                        &arena.ir.value_layouts,
+                    )?;
+                }
+                let value = crate::ir::arena_constant_integer_with_layouts(
+                    id,
+                    &arena.ir.values,
+                    &arena.ir.value_layouts,
+                )?;
+                let value = u64::try_from(value)
+                    .ok()
+                    .or_else(|| i64::try_from(value).ok().map(|value| value as u64))?;
+                Some(Expr::Const(value))
+            }
             // A user `impl Suffix` (`4kB`) is its function's value, and a
             // fractional number scales exactly (`1.5ns` is 1_500_000 fs).
             // Only an integer one with a fixed scale folded, so `const MEM:

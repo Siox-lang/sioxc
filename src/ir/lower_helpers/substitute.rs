@@ -572,7 +572,7 @@ pub(in crate::ir) fn int_literal(val: i64, span: crate::diag::Span) -> ast::Expr
 /// Fold constant arithmetic in an expression, so unrolled generate bodies
 /// carry concrete indices.
 pub(in crate::ir) fn fold_const(e: ast::Expr, span: crate::diag::Span) -> ast::Expr {
-    match eval_const(&e, &HashMap::new()) {
+    match eval_integer_literal(&e) {
         Some(v) => int_literal(v, span),
         None => e,
     }

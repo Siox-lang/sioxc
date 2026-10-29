@@ -626,6 +626,58 @@ fn newtype_variant_has_the_named_enums_type() {
 }
 
 #[test]
+fn enum_conversions_follow_alias_bases_and_renamed_owners_not_equal_member_names() {
+    let left = "module left;
+        pub enum Base { Low = 9, High }
+        pub type Alias = Base;
+        pub enum Middle(Alias);
+        pub enum Top(Middle);";
+    let right = "module right;
+        pub enum Base { Low = 3, High }
+        pub enum Middle(Base);
+        pub enum Top(Middle);";
+    for reverse in [false, true] {
+        for bad in [false, true] {
+            let consumer = format!(
+                "module user;
+                use LeftBase = left::Base;
+                use LeftTop = left::Top;
+                use RightTop = right::Top;
+                fn up(value: LeftBase) -> LeftTop {{ return LeftTop(value); }}
+                fn down(value: LeftTop) -> LeftBase {{ return LeftBase(value); }}
+                {}",
+                if bad {
+                    "fn wrong(value: RightTop) -> LeftTop { return LeftTop(value); }"
+                } else {
+                    "fn keep(value: RightTop) -> RightTop { return RightTop(value); }"
+                }
+            );
+            let mut sources = [
+                (left, FileId(0)),
+                (right, FileId(1)),
+                (&consumer, FileId(2)),
+            ];
+            if reverse {
+                sources.reverse();
+            }
+            let sink = check_modules(&sources);
+            assert_eq!(
+                sink.error_count(),
+                usize::from(bad),
+                "{:?}",
+                sink.diagnostics()
+            );
+            if bad {
+                assert!(sink.diagnostics().iter().any(|diagnostic| {
+                    diagnostic.code == Some(codes::TYPE_MISMATCH)
+                        && diagnostic.message.contains("no conversion from")
+                }));
+            }
+        }
+    }
+}
+
+#[test]
 /// Signal widths have no global word limit, so a very wide signal checks
 /// like any other.
 fn signal_width_has_no_global_word_limit() {
