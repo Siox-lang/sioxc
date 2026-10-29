@@ -426,6 +426,20 @@ impl<'a> FunctionIndex<'a> {
                 if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Fn) {
                     return self.free.get(&id).copied();
                 }
+                // An impl's own function called unqualified from that impl's
+                // body (`double(x)` in `impl Top`): the impl scope binds the
+                // name as a local at the function's declaration (#292).
+                if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Local) {
+                    let declared = self.resolved.def(id).and_then(|def| def.span);
+                    if let Some(function) = declared.and_then(|span| {
+                        self.associated
+                            .values()
+                            .flat_map(|functions| functions.values())
+                            .find(|function| function.name.span == span)
+                    }) {
+                        return Some(*function);
+                    }
+                }
             }
             if let Some(key) = self.associated_path_key(path) {
                 let (owner, name) = split_associated_key(&key);

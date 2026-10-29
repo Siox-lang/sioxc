@@ -17,6 +17,26 @@ impl<'a> Lowering<'a> {
     /// Lower one statement under an optional guard, which accumulates as
     /// branches nest.
     pub(super) fn lower_stmt_at(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        // `sub = arr[2..]` is `sub = arr[2..3]` (#296).
+        if let ast::Stmt::Assign {
+            label,
+            target,
+            value,
+            after,
+            span,
+        } = stmt
+        {
+            if let Some(value) = self.full_range_slice(value) {
+                let full = ast::Stmt::Assign {
+                    label: label.clone(),
+                    target: target.clone(),
+                    value,
+                    after: after.clone(),
+                    span: *span,
+                };
+                return self.lower_stmt_at(&full, cond);
+            }
+        }
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
         //
