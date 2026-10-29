@@ -539,8 +539,17 @@ pub(super) fn per_place_targets(
         .iter()
         .map(|part| static_place(design, *part))
         .collect::<Option<Vec<_>>>()?;
-    let mut roots = std::collections::HashSet::new();
-    (!places.is_empty() && places.iter().all(|place| roots.insert(place.root))).then_some(places)
+    // Each part is written in turn from one value, so parts may share a
+    // root as long as they do not overlap: `{ p.x, p.y } = v` is two fields
+    // of one `p` (#332). An overlapping pair has no single meaning.
+    let disjoint = places.iter().enumerate().all(|(index, place)| {
+        places[..index].iter().all(|other| {
+            other.root != place.root
+                || place.offset + place.width <= other.offset
+                || other.offset + other.width <= place.offset
+        })
+    });
+    (!places.is_empty() && disjoint).then_some(places)
 }
 
 pub(super) fn supported_per_place_assignment(

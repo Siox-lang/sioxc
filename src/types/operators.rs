@@ -378,7 +378,10 @@ impl<'a> Checker<'a> {
         let left = self.type_of(lhs, sym);
         let right = self.type_of(rhs, sym);
         if self.operator_accepts_expr(comparison_symbol(op), &left, &right, rhs, sym) {
-            return false;
+            let promoted = [lhs, rhs]
+                .iter()
+                .any(|operand| self.promotions.contains_key(&expr_span(operand)));
+            return !promoted && self.check_defaulted_reverse_order(op, &left, &right, span);
         }
         self.error_with_help(
             codes::TYPE_MISMATCH,
@@ -391,6 +394,61 @@ impl<'a> Checker<'a> {
             ),
             "convert one operand to the other's type, or implement `Eq<Input>`/`Ord<Input>`"
                 .to_string(),
+        );
+        true
+    }
+
+    /// `a > b` / `a >= b` through an `Ord<Rhs>` impl that leaves `gt`/`ge`
+    /// to their defaults, `rhs < self` / `rhs <= self`: right for a partial
+    /// order (an IEEE NaN), but across types `Rhs` usually has no order
+    /// against `Self`, and the comparison passed the checker and then had no
+    /// form at all (#335). A vector `Self` falls back to the built-in
+    /// comparison, and operands promoted up the numeric ladder (`sfixed >
+    /// real`) compare as their promotion: neither needs anything.
+    fn check_defaulted_reverse_order(
+        &mut self,
+        op: &BinOp,
+        left: &Ty,
+        right: &Ty,
+        span: Span,
+    ) -> bool {
+        let method = match op {
+            BinOp::Gt => "gt",
+            BinOp::Ge => "ge",
+            _ => return false,
+        };
+        let (Some(owner), Some(rhs)) = (self.ty_head(left), self.ty_head(right)) else {
+            return false;
+        };
+        let nominal = self.structs.contains_key(&owner) || self.enum_variants.contains_key(&owner);
+        if owner == rhs
+            || !nominal
+            || self
+                .method_traits
+                .contains_key(&(owner.clone(), method.to_string()))
+            || self.operator_accepts("<", right, left, false)
+            || self.promotes_to_real(left, right)
+        {
+            return false;
+        }
+        let leaf = |key: &str| key.rsplit("::").next().unwrap_or(key).to_string();
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            span,
+            format!(
+                "`{}` on `{}` and `{}` needs `{method}` in `impl Ord<{}> for {}`",
+                crate::syntax::pretty::bin_op(op),
+                self.ty_display(left),
+                self.ty_display(right),
+                leaf(&rhs),
+                leaf(&owner),
+            ),
+            format!(
+                "its default compares `rhs {} self`, and `{}` has no order against `{}`",
+                if method == "gt" { "<" } else { "<=" },
+                self.ty_display(right),
+                self.ty_display(left),
+            ),
         );
         true
     }

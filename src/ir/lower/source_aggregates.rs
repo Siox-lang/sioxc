@@ -492,8 +492,11 @@ impl Lowering<'_> {
         cond: &Option<Expr>,
     ) -> Option<Vec<(SignalId, Expr)>> {
         let env = HashMap::new();
+        // A generic's result with a parameter left open (`(B, A)` of
+        // `swap<A, B>`) is the target's, as for a whole-value store (#330).
         let source_layout = self
             .source_operand_layout(value, &env)
+            .filter(|layout| !has_open_parameter(layout))
             .or_else(|| self.tuple_target_layout(target))?;
         let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout) else {
             return None;
