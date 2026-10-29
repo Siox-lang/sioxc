@@ -656,9 +656,13 @@ impl<'a> Lowering<'a> {
                 _ => break,
             }
         }
-        // A call's result, or an array literal's elements (`[a, b][i]`, #318).
+        // A call's result, an array literal's elements (`[a, b][i]`, #318), or
+        // a string literal's characters (`"hello"[i]`, #325).
         if std::ptr::eq(base, e)
-            || !matches!(base, ast::Expr::Call { .. } | ast::Expr::Array { .. })
+            || !matches!(
+                base,
+                ast::Expr::Call { .. } | ast::Expr::Array { .. } | ast::Expr::StrLit { .. }
+            )
         {
             return None;
         }
@@ -720,6 +724,12 @@ impl<'a> Lowering<'a> {
         let joined = segments.concat();
         let path = joined.strip_prefix('.').unwrap_or(&joined).to_string();
         let value = match base {
+            ast::Expr::StrLit { text, .. } => Val::Fields(
+                text.chars()
+                    .enumerate()
+                    .map(|(position, ch)| (format!("[{position}]"), Expr::Const(ch as u64)))
+                    .collect(),
+            ),
             ast::Expr::Array { elems, .. } => {
                 let mut fields = Vec::new();
                 for (position, element) in elems.iter().enumerate() {

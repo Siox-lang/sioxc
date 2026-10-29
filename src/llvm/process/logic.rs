@@ -410,50 +410,58 @@ fn process_packed_meta_uncached<'ctx>(
                     _ => unreachable!(),
                 };
                 let table = encoding.binary_ops.get(symbol)?;
+                // Each operand in its own layout, zero-extended to the
+                // result's: a narrower one reads as leading '0's (#322).
+                let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
+                let right_layout = packed_arithmetic_operand_layout(design, layout, *right)?;
                 let left_meta = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *left,
-                    layout,
+                    &left_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let left_meta = fit(builder, left_meta, meta_width)?;
                 let right_meta = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *right,
-                    layout,
+                    &right_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let right_meta = fit(builder, right_meta, meta_width)?;
                 let left_value = process_value_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *left,
-                    layout,
+                    &left_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let left_value = fit(builder, left_value, width)?;
                 let right_value = process_value_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *right,
-                    layout,
+                    &right_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let right_value = fit(builder, right_value, width)?;
                 let mut result = ty.const_zero();
                 for position in 0..width {
                     let left_disc = packed_discriminant(

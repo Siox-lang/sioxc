@@ -450,9 +450,16 @@ pub(super) fn process_packed_meta_supported(
             left,
             right,
         } => match operation {
+            // Each operand in its own layout: a narrower one zero-extends,
+            // as in hardware (#322).
             ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor => {
-                process_packed_meta_supported(design, *left, layout, supported)
-                    && process_packed_meta_supported(design, *right, layout, supported)
+                packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
+                    process_packed_meta_supported(design, *left, &left_layout, supported)
+                }) && packed_arithmetic_operand_layout(design, layout, *right).is_some_and(
+                    |right_layout| {
+                        process_packed_meta_supported(design, *right, &right_layout, supported)
+                    },
+                )
             }
             ProcessBinaryOp::Add
             | ProcessBinaryOp::Sub

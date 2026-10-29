@@ -783,7 +783,22 @@ impl<'a> Checker<'a> {
                                     .get(key)
                                     .is_some_and(|(_, fields)| !fields.is_empty())
                             });
-                            if kernel || record {
+                            // `Bit[4](x)`, `Logic[4](x)`: an array of an enum
+                            // has no constructor either (#324). A `Logic[]`
+                            // takes a vector family implicitly, by `Into`.
+                            let enumeration = key
+                                .as_ref()
+                                .is_some_and(|key| self.enum_variants.contains_key(key));
+                            if kernel || record || enumeration {
+                                let help = if enumeration && path.segments[0].text == "Logic" {
+                                    "store the vector into a `Logic[N]` (`let v: Logic[4] = u;`), \
+                                     which converts it, or slice or build the array"
+                                        .to_string()
+                                } else {
+                                    "slice the array (`x[0..1]`) or build one from its elements \
+                                     (`[x[0], x[1]]`)"
+                                        .to_string()
+                                };
                                 self.error_with_help(
                                     codes::TYPE_MISMATCH,
                                     expr_span(callee),
@@ -791,9 +806,7 @@ impl<'a> Checker<'a> {
                                         "`{}` is an array, not a vector family, and has no constructor",
                                         crate::syntax::pretty::expr_string(callee)
                                     ),
-                                    "slice the array (`x[0..1]`) or build one from its elements \
-                                     (`[x[0], x[1]]`)"
-                                        .to_string(),
+                                    help,
                                 );
                             }
                         }
