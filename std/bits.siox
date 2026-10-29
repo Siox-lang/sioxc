@@ -554,3 +554,40 @@ impl From<Logic[]> for signed {
         return r;
     }
 }
+
+// A `Logic[]` and an `unsigned` or `signed` are different types holding the
+// same elements, so storing one where the other is expected converts
+// implicitly (conversions proposal): the elements in order, the leftmost the
+// most significant, metavalues kept.
+impl Into<unsigned> for Logic[] {
+    fn into(self) -> unsigned {
+        return unsigned(self);
+    }
+}
+
+impl Into<signed> for Logic[] {
+    fn into(self) -> signed {
+        return signed(self);
+    }
+}
+
+impl Into<Logic[]> for unsigned {
+    fn into(self) -> Logic[] {
+        return elements(self);
+    }
+}
+
+impl Into<Logic[]> for signed {
+    fn into(self) -> Logic[] {
+        return elements(self);
+    }
+}
+
+// A vector's elements as a `Logic[]`, the most significant first.
+fn elements<T>(value: T) -> Logic[] {
+    let r: Logic[value'length];
+    for k in 0..value'length - 1 {
+        r[k] = value[value'length - 1 - k];
+    }
+    return r;
+}

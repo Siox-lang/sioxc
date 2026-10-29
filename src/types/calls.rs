@@ -623,7 +623,7 @@ impl<'a> Checker<'a> {
             if self.report_bitless_concat(&want, arg, sym) {
                 continue;
             }
-            if want == Ty::Error || self.assignable(&want, arg, sym) {
+            if want == Ty::Error || self.site_assignable(&want, arg, sym) {
                 continue;
             }
             let got = self.type_of(arg, sym);

@@ -473,6 +473,18 @@ impl<'a> Checker<'a> {
         let target = &implementation.target;
         let supported = match target {
             Type::Tuple { .. } => false,
+            // `impl Into<unsigned> for Logic[]`: an implicit conversion is
+            // filed under `Logic[]`, apart from `Logic` (conversions proposal).
+            Type::Indexed { index: None, .. }
+                if implementation
+                    .trait_
+                    .as_ref()
+                    .and_then(|path| self.trait_key(path))
+                    .as_deref()
+                    == Some("Into") =>
+            {
+                true
+            }
             Type::Indexed { base, .. } => {
                 let generic = type_head_name(base).is_some_and(|name| {
                     implementation

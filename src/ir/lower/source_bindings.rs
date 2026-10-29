@@ -314,11 +314,34 @@ impl Lowering<'_> {
         function: &ast::FnDecl,
         parameter: impl Fn(&str) -> Option<SourceLayout>,
     ) -> Option<SourceLayout> {
+        // A returned local sized from a parameter (`let r: Logic[v'length]`)
+        // reads that parameter's attributes from its argument's shape.
+        let mut env = self.cur_env.clone();
+        for name in function.params.iter().map(|parameter| {
+            parameter
+                .name
+                .as_ref()
+                .map_or("self", |name| name.text.as_str())
+        }) {
+            let Some(range) = parameter(name).and_then(|layout| layout.index_range()) else {
+                continue;
+            };
+            for (attribute, value) in [
+                ("left", range.left),
+                ("right", range.right),
+                ("high", range.left.max(range.right)),
+                ("low", range.left.min(range.right)),
+                ("length", range.left.abs_diff(range.right) as i64 + 1),
+            ] {
+                env.insert(format!("{name}::{attribute}"), value);
+            }
+        }
         returned_shapes(function)
             .into_iter()
             .find_map(|(name, declared)| match declared {
-                Some(ty) => Some(self.source_layout(ty, &self.cur_env))
-                    .filter(|layout| layout.bit_width().is_some()),
+                Some(ty) => {
+                    Some(self.source_layout(ty, &env)).filter(|layout| layout.bit_width().is_some())
+                }
                 None => parameter(name),
             })
     }

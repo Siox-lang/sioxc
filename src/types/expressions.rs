@@ -329,6 +329,60 @@ impl<'a> Checker<'a> {
                     }
                     return;
                 }
+                // `u + arr`: an `unsigned` and a `Logic[]` are different
+                // types, and an operator's operand never converts implicitly
+                // (conversions proposal), so one is converted by hand.
+                let literal = |e: &Expr| {
+                    matches!(
+                        e,
+                        Expr::StrLit { .. }
+                            | Expr::BitStrLit { .. }
+                            | Expr::Array { .. }
+                            | Expr::Concat { .. }
+                            | Expr::Int { .. }
+                            | Expr::CharLit { .. }
+                    )
+                };
+                if !literal(lhs) && !literal(rhs) {
+                    let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
+                    if let (
+                        Ty::Array {
+                            family: a,
+                            elem: ea,
+                            ..
+                        },
+                        Ty::Array {
+                            family: b,
+                            elem: eb,
+                            ..
+                        },
+                    ) = (&left, &right)
+                    {
+                        if a.is_some() != b.is_some() && ea == eb {
+                            let (family, plain) = if a.is_some() {
+                                (&left, rhs)
+                            } else {
+                                (&right, lhs)
+                            };
+                            self.error_with_help(
+                                codes::TYPE_MISMATCH,
+                                expr_span(plain),
+                                format!(
+                                    "`{}` mixes {} and {}",
+                                    crate::syntax::pretty::bin_op(op),
+                                    self.ty_display(&left),
+                                    self.ty_display(&right)
+                                ),
+                                format!(
+                                    "an operand is not converted implicitly; write `{}({})`",
+                                    self.ty_display(family),
+                                    crate::syntax::pretty::expr_string(plain)
+                                ),
+                            );
+                            return;
+                        }
+                    }
+                }
                 // Mixed numbers: each operand that is not already of the
                 // promoted type widens to it (spec 3.17).
                 if !matches!(

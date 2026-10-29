@@ -52,9 +52,83 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// A value stored where an `impl Into` converts it: the impl's `into`,
+    /// inlined on it (conversions proposal). The value's span is held while
+    /// the body runs, so the receiver itself lowers unconverted.
+    pub(super) fn converted_value(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Option<Val> {
+        let span = ast::expr_span(e);
+        let conversion = self.conversions.get(&span)?;
+        if !self.widening.borrow_mut().insert(span) {
+            return None;
+        }
+        let value = self
+            .free_fns
+            .get_into(&conversion.target_key, &conversion.source_key)
+            .and_then(|function| {
+                // A plain array target (`Logic[8]`) is sized by the site,
+                // the `into` that builds it by its receiver.
+                let result = match (&conversion.target, conversion.target_key.strip_suffix("[]")) {
+                    (crate::types::Ty::Array { len, .. }, Some(element)) if *len > 0 => {
+                        let element = self.named_source_layout(element, span)?;
+                        Some(SourceLayout {
+                            span,
+                            kind: LayoutKind::Array {
+                                range: Some(crate::ir::LayoutRange {
+                                    left: 0,
+                                    right: i64::from(*len) - 1,
+                                }),
+                                element: Box::new(element),
+                            },
+                        })
+                    }
+                    // A vector family (`unsigned[8]`, `ufixed<8, 4>`) at
+                    // its declared width and labels.
+                    (
+                        crate::types::Ty::Array {
+                            len,
+                            family: Some(family),
+                            low,
+                            ..
+                        },
+                        None,
+                    ) if *len > 0 => {
+                        let family = self.free_fns.canonical_type_key(family);
+                        Some(SourceLayout {
+                            span,
+                            kind: LayoutKind::Packed {
+                                width: *len,
+                                range: Some(crate::ir::LayoutRange {
+                                    left: low + i64::from(*len) - 1,
+                                    right: *low,
+                                }),
+                                element_enum: self.array_element_enum(&family),
+                                family,
+                            },
+                        })
+                    }
+                    _ => None,
+                };
+                self.inline_method(
+                    function,
+                    &conversion.source_key,
+                    "into",
+                    e,
+                    e,
+                    &[],
+                    env,
+                    result,
+                )
+            });
+        self.widening.borrow_mut().remove(&span);
+        value
+    }
+
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(value) = self.converted_value(e, env) {
+            return value;
+        }
         if let Some(full) = self.full_range_slice(e) {
             return self.lower_val_env(&full, env);
         }

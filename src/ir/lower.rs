@@ -60,6 +60,7 @@ pub fn lower_in(
     let mut l = Lowering::new(sink, resolved);
     l.expr_types = hier.expr_types.clone();
     l.promotions = hier.promotions.clone();
+    l.conversions = hier.conversions.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
     // Enum discriminants first: `collect` folds constants, and a constant may
@@ -254,6 +255,8 @@ struct Lowering<'a> {
     expr_types: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Operands of mixed numeric operations that widen (spec 3.17), by span.
     promotions: HashMap<crate::diag::Span, crate::types::Ty>,
+    /// Values an `impl Into` converts where stored.
+    conversions: HashMap<crate::diag::Span, crate::types::Conversion>,
     /// Operands being widened now: their source value is lowered as written.
     widening: std::cell::RefCell<HashSet<crate::diag::Span>>,
     /// Root for relative compile-time file reads (the source directory).

@@ -12,3 +12,15 @@ pub trait From {
 }
 
 attr lang for From = "from";
+
+// Implicit conversion (docs/proposals/conversions.md): `impl Into<T> for S`
+// converts an `S` wherever a `T` is expected — a `let` initializer, an
+// assignment, an argument, a returned value — through its own `into` body.
+// Never an operator's operand: `a + b` dispatches on the operands' types, so a
+// conversion there is written `T(x)`. Unlike Rust's, it is not implied by
+// `From`.
+pub trait Into {
+    fn into(self) -> Self;
+}
+
+attr lang for Into = "into";

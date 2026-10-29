@@ -193,6 +193,20 @@ impl<'a> Checker<'a> {
             })
     }
 
+    /// The key an `impl Into` is filed under: a type's head, or `Logic[]` for
+    /// a plain array of `Logic` — a different type from the vector families
+    /// over it. A family keeps only its last segment, as declared and as
+    /// carried by checked types alike.
+    pub(super) fn conversion_key(&self, t: &Ty) -> Option<String> {
+        let short = |name: String| name.rsplit("::").next().unwrap_or(&name).to_string();
+        match t {
+            Ty::Array {
+                family: None, elem, ..
+            } => Some(format!("{}[]", short(self.ty_head(elem)?))),
+            other => Some(short(self.ty_head(other)?)),
+        }
+    }
+
     /// The head name of a checked type, for diagnostics and impl lookup.
     pub(super) fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {

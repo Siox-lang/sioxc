@@ -44,6 +44,8 @@ pub struct FunctionIndex<'a> {
     /// Exact `impl From<Source> for Target` bodies, keyed by both nominal
     /// identities so equal leaves in different modules cannot collide.
     conversions: HashMap<(String, String), &'a ast::FnDecl>,
+    /// `impl Into<T> for S` bodies by the checker's `(T, S)` keys.
+    intos: HashMap<(String, String), &'a ast::FnDecl>,
     /// Functions of an `extern "intrinsic"` block (`core::intrinsics`): the
     /// compiler emits them natively instead of calling a foreign symbol.
     intrinsics: std::collections::HashSet<DefId>,
@@ -59,6 +61,7 @@ impl<'a> FunctionIndex<'a> {
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
+            intos: HashMap::new(),
             intrinsics: std::collections::HashSet::new(),
         }
     }
@@ -68,6 +71,10 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_path) = implementation.trait_.as_ref() else {
             return;
         };
+        if self.trait_path_key(trait_path).as_deref() == Some("Into") {
+            self.insert_into_impl(implementation);
+            return;
+        }
         if self.trait_path_key(trait_path).as_deref() != Some("From") {
             return;
         }
@@ -91,6 +98,47 @@ impl<'a> FunctionIndex<'a> {
         }) {
             self.conversions.insert((target, source), function);
         }
+    }
+
+    /// Register `impl Into<T> for S` under the checker's keys: a head's last
+    /// segment, or `Logic[]` for a plain array.
+    fn insert_into_impl(&mut self, implementation: &'a ast::ImplDecl) {
+        let short = |key: String| key.rsplit("::").next().unwrap_or(&key).to_string();
+        let key = |ty: &ast::Type| match ty {
+            ast::Type::Indexed {
+                base, index: None, ..
+            } => Some(format!("{}[]", short(self.type_head_key(base)?))),
+            other => self.type_head_key(other).map(short),
+        };
+        let Some(source) = key(&implementation.target) else {
+            return;
+        };
+        let Some(target) = implementation
+            .trait_args
+            .first()
+            .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path)) => {
+                    self.type_path_key(path).map(short)
+                }
+                ast::GenericArg::PositionalType(ty) => key(ty),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        if let Some(function) = implementation.items.iter().find_map(|item| match item {
+            ast::ImplItem::Fn(function) if function.name.text == "into" => Some(function),
+            _ => None,
+        }) {
+            self.intos.insert((target, source), function);
+        }
+    }
+
+    /// The `into` body of `impl Into<target> for source`.
+    pub fn get_into(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
+        self.intos
+            .get(&(target.to_string(), source.to_string()))
+            .copied()
     }
 
     /// Select the exact source/target conversion body.

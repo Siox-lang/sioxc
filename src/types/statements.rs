@@ -538,7 +538,7 @@ impl<'a> Checker<'a> {
                     match (expected_return, value) {
                         (Some(expected), Some(value))
                             if !matches!(expected, Ty::Error)
-                                && !self.assignable(expected, value, sym) =>
+                                && !self.site_assignable(expected, value, sym) =>
                         {
                             let actual = self.type_of(value, sym);
                             self.error_with_help(
