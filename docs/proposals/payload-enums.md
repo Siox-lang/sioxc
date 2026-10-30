@@ -1,6 +1,8 @@
 # Payload enums
 
-Status: **proposal**. Nothing here is implemented. It supersedes language
+Status: **proposal, on hold** (owner, 2026-10-30). Nothing here is
+implemented; the owner asked not to start it yet, and the rule in *Value enums
+and sum types* below was agreed then. It supersedes language
 §3.8's "Phase 1 should avoid Rust-style payload enums" once accepted, and
 builds on tuples ([language §3.7a](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md#37a-tuples-are-anonymous-structs)).
 
@@ -101,6 +103,45 @@ keep their metavalue companions.
   code uses `match` or `unwrap_or`.
 - `std::bits` gains `checked_add`, `checked_sub`, `checked_mul` returning
   `Option<unsigned>` / `Option<signed>`.
+
+### Value enums and sum types
+
+An enum is one of two kinds, decided by its declaration:
+
+| | Value enum (today's enums) | Sum type (payload enum) |
+| --- | --- | --- |
+| Variants | names, characters, or both | names only |
+| Discriminants | explicit allowed (`Add = 0`, `'U' = 4`) | the tag, chosen by the compiler |
+| Payloads | none | allowed on any variant |
+| Examples | `Bit`, `ULogic`, `Opcode`, `State` | `Option<T>`, `Result<T, E>`, `Command` |
+
+A character variant is a discriminant: `'X'` is a fixed encoding the logic
+tables, metavalue planes and string literals rely on. As in Rust, where a
+variant with an explicit discriminant carries no data, a character or
+explicitly numbered variant has no payload, and a payload variant has no
+discriminant:
+
+```siox
+enum A { '0', '1'(unsigned[4]) }         // a character variant has no payload
+enum B { Add = 0, Jmp(unsigned[8]) }     // an enum with an explicit discriminant has no payloads
+enum C { Idle, Read(unsigned[16]) = 2 }  // a payload variant has no discriminant
+```
+
+So `Bit`, `ULogic`, `Logic` and every user character enum keep their
+representation, and an enum with no payloads is a value enum exactly as today.
+An enum newtype (`enum Logic(ULogic);`) stays value-enum-only. A character
+literal inside a payload takes the payload's type from context:
+`let b: Option<Bit> = Some('1');` and the pattern `Some('1') =>` both read
+`'1'` as a `Bit`, which needs the expected type to flow into generic payload
+constructors and patterns.
+
+### What exists to build on (2026-10-30)
+
+Match coverage already proves more than enum variants: a catch-all arm, every
+combination of a tuple of enums (sioxc #342) and every value of a number
+(#347) are recorded as complete matches and reach the latch lint and the
+testbench's last arm. Variant coverage for payload enums extends that one
+place. Binding patterns are still the largest missing piece.
 
 ## Not in this proposal
 

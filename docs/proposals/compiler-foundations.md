@@ -3,7 +3,8 @@
 Status: **partially implemented; remaining work only**. Core loading, lang-item
 registration and library-declared built-in macros have landed. UI snapshots,
 structured diagnostics, shared constant evaluation, declaration-ID registries
-and residual name-based hook cleanup remain. Each part lands independently.
+and residual name-based hook cleanup remain; as of 2026-10-30 none of the five
+has landed. Each part lands independently.
 
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
@@ -95,6 +96,14 @@ fixes.
 | `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` |
 | `ir/lower_helpers/substitute.rs` | `fold_const` |
 | `ir/lower/collect.rs` | `fold_const`, `eval_const` |
+
+Since this was written (2026-10-30) more folders have appeared, mostly from
+bug fixes that each needed constants in one more place: `eval` in
+`resolve.rs`; `fold_const_literal`, `fold_aggregate_const` and
+`const_table_index` in `ir/lower/collect.rs`; `lower_const_value` in
+`ir/lower/initializers.rs`; `constant_expr` in `ir/lower/calls.rs`; and
+`literal_arithmetic` in `ir/lower/source_processes.rs`. The case for one
+evaluator has only grown.
 
 They have different reach. Only `eval_const_fns` calls const functions; the
 two in `types` see no generic or loop bindings at all, while `elab`'s `eval`
