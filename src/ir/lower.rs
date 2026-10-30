@@ -61,6 +61,7 @@ pub fn lower_in(
     l.expr_types = hier.expr_types.clone();
     l.promotions = hier.promotions.clone();
     l.conversions = hier.conversions.clone();
+    l.covered_matches = hier.covered_matches.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
     // Enum discriminants first: `collect` folds constants, and a constant may
@@ -257,6 +258,8 @@ struct Lowering<'a> {
     promotions: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Values an `impl Into` converts where stored.
     conversions: HashMap<crate::diag::Span, crate::types::Conversion>,
+    /// Matches the checker proved complete without a `_` arm.
+    covered_matches: std::collections::HashSet<crate::diag::Span>,
     /// Operands being widened now: their source value is lowered as written.
     widening: std::cell::RefCell<HashSet<crate::diag::Span>>,
     /// Root for relative compile-time file reads (the source directory).

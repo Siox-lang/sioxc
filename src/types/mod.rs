@@ -142,8 +142,9 @@ pub struct Typed {
     /// Each value an `impl Into` converts where it is stored, keyed by its
     /// span (conversions proposal).
     conversions: HashMap<Span, Conversion>,
-    /// Each tuple `match` whose arms cover every combination without a `_`,
-    /// by the match's span: its last arm needs no condition.
+    /// Each `match` whose arms cover its scrutinee without a `_` (every
+    /// combination of a tuple, every value of a number), by the match's
+    /// span: its last arm needs no condition.
     covered_tuple_matches: HashSet<Span>,
 }
 
@@ -178,6 +179,11 @@ impl Typed {
     /// Every implicit conversion, keyed by the converted value's span.
     pub fn conversions(&self) -> &HashMap<Span, Conversion> {
         &self.conversions
+    }
+
+    /// The matches [`Self::covers_tuple_match`] answers for.
+    pub fn covered_matches(&self) -> &HashSet<Span> {
+        &self.covered_tuple_matches
     }
 
     /// Every operand promotion, keyed by the operand's span.

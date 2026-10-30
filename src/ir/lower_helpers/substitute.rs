@@ -340,8 +340,13 @@ pub(in crate::ir) fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt
         ast::Stmt::Let(l) => {
             let mut l = l.clone();
             l.value = l.value.as_ref().map(|v| subst_expr(v, var, val));
+            l.ty = l.ty.as_ref().map(|ty| subst_type(ty, var, val));
             ast::Stmt::Let(l)
         }
+        ast::Stmt::Return { value, span } => ast::Stmt::Return {
+            value: value.as_ref().map(|v| subst_expr(v, var, val)),
+            span: *span,
+        },
         ast::Stmt::For {
             label,
             var: v,

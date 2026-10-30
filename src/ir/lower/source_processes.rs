@@ -3672,13 +3672,18 @@ fn capture_process_operand(
         return value;
     }
     let local = ProcessLocalId(process.locals.len() as u32);
+    // A checked runtime index is the label it passed with, a plain word: as
+    // the index's own `unsigned[2]` it needed metavalue planes it has none
+    // of, and `swap(arr[i], arr[j])` did not lower (#348).
+    let checked = matches!(node.kind, ProcessValueKind::CheckedIndex { .. });
     let layout = process_value_source_layout(value, context.process_ir)
         .cloned()
         .or_else(|| {
             node.ty
                 .as_ref()
                 .and_then(|ty| process_layout_for_type(ty, node.span, context))
-        });
+        })
+        .filter(|_| !checked);
     // A kernel integer wider than its word (`x << 6` keeps the operand's
     // bits) wraps to the word it is captured as, as any `integer` does.
     let word = layout.as_ref().and_then(SourceLayout::packed_width);
@@ -10619,8 +10624,53 @@ fn inline_pattern_condition(
             }
             return Some(condition);
         }
+        // A number (`0 =>`) or an inclusive range (`1..9 =>`) of literals:
+        // a function matching on one did not inline (#347).
+        ast::Pattern::Range { lo, hi, span } => {
+            let node = context.process_ir.values.get(scrutinee.0 as usize)?;
+            let (ty, width) = (node.ty.clone(), node.bit_width);
+            let signed = ty.as_ref().is_some_and(process_type_is_signed);
+            if !signed && *lo < 0 {
+                return None;
+            }
+            let bound = |value: i64, context: &mut LoweringContext<'_>| {
+                push_value(
+                    *span,
+                    ty.clone(),
+                    width,
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64])),
+                    context,
+                )
+            };
+            if lo == hi {
+                let candidate = bound(*lo, context);
+                return Some(Some(push_inline_binary(
+                    *span,
+                    ProcessBinaryOp::Eq,
+                    scrutinee,
+                    candidate,
+                    Some(1),
+                    context,
+                )));
+            }
+            let (ge, le) = if signed {
+                (ProcessBinaryOp::SignedGe, ProcessBinaryOp::SignedLe)
+            } else {
+                (ProcessBinaryOp::Ge, ProcessBinaryOp::Le)
+            };
+            let (low, high) = (bound(*lo.min(hi), context), bound(*lo.max(hi), context));
+            let above = push_inline_binary(*span, ge, scrutinee, low, Some(1), context);
+            let below = push_inline_binary(*span, le, scrutinee, high, Some(1), context);
+            return Some(Some(push_inline_binary(
+                *span,
+                ProcessBinaryOp::And,
+                above,
+                below,
+                Some(1),
+                context,
+            )));
+        }
         ast::Pattern::BitPattern { .. }
-        | ast::Pattern::Range { .. }
         | ast::Pattern::Bounds { .. }
         | ast::Pattern::Tuple { .. } => return None,
     };
