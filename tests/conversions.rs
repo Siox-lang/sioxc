@@ -230,3 +230,39 @@ impl T { process {
     assert!(out.contains("`+` mixes unsigned[8] and Logic[8]"), "{out}");
     assert!(out.contains("write `unsigned[8](arr)`"), "{out}");
 }
+
+/// A struct-literal field is a store site: `Pkt { .data = u }` with
+/// `data: Logic[8]` and `u: unsigned[8]` converts through std's `Into`, in a
+/// combinational assignment, a process local and a testbench.
+#[test]
+fn into_converts_into_struct_fields() {
+    let out = run(
+        "struct_fields",
+        r#"module p;
+use std::bits::unsigned;
+struct Pkt { pub data: Logic[8], pub id: unsigned[4] }
+entity Top { u: unsigned[8] in, pd: Logic[8] out, pr: Logic[8] out }
+impl Top {
+    let p: Pkt;
+    p = Pkt { .data = u, .id = 3 };
+    q: process { let r: Pkt = Pkt { .data = u, .id = 2 }; pr = r.data; }
+    pd = p.data;
+}
+#[test] entity T {}
+impl T {
+    let u: unsigned[8] = 0xA5; let pd: Logic[8]; let pr: Logic[8];
+    let t: Top = { .u = u, .pd = pd, .pr = pr };
+    process {
+        await 1ns;
+        let q: Pkt = Pkt { .data = u, .id = 1 };
+        print!("{} {} {}\n", pd, pr, q.data);
+        assert!(pd == "10100101" and pr == "10100101" and q.data == "10100101");
+    }
+}
+"#,
+    );
+    assert!(
+        out.contains("10100101 10100101 10100101") && out.contains("1 passed"),
+        "{out}"
+    );
+}

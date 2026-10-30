@@ -2,9 +2,11 @@
 
 Status: **mostly implemented** (owner decisions of 2026-10-29). `Default`,
 `Into` and the std conversions have landed (sioxc #304, #305); all three
-steps of *Order of work* are done. Port connections and struct literal fields
-are not yet implicit `Into` sites; both are on the project board, and closing
-them finishes this proposal. It settles sioxc #298 and the element-array half
+steps of *Order of work* are done, and struct-literal fields are store sites
+too (2026-10-30). Port connections are not yet an implicit `Into` site: the
+checker does not type a connection against its port today, and Codex's
+port-connection type checking (`src/types/connections.rs`, in progress) is
+where that site belongs. Landing it finishes this proposal. It settles sioxc #298 and the element-array half
 of #301.
 
 Related fixes since (2026-10-30): a vector family or kernel type built from a
