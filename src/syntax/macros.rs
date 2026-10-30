@@ -1423,72 +1423,97 @@ fn derive_text(
     sink: &mut DiagnosticSink,
 ) -> Option<String> {
     let name = &declaration.name.text;
-    let report = |sink: &mut DiagnosticSink, message: String, help: &str| {
-        sink.emit(
-            Diagnostic::error(message)
-                .with_code(codes::INVALID_DERIVE)
-                .at(derive.span)
-                .help(help.to_string()),
-        );
-    };
     if !matches!(derive.text.as_str(), "Eq" | "Ord") {
-        report(
-            sink,
-            format!(
+        sink.emit(
+            Diagnostic::error(format!(
                 "cannot derive `{}`: only `Eq` and `Ord` derive",
                 derive.text
-            ),
-            "write the impl by hand",
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
         );
         return None;
     }
-    if !declaration.params.params.is_empty() || declaration.base.is_some() {
-        report(
-            sink,
-            format!(
-                "cannot derive `{}` for `{name}`: a generic or newtype struct does not derive yet",
+    // ponytail: a generic newtype reads its value as `unsigned[W](self)`,
+    // which a testbench cannot lower yet (the generic-integer gap on the
+    // board); its forwarded base operators usually cover it meanwhile.
+    if declaration.base.is_some() && !declaration.params.params.is_empty() {
+        sink.emit(
+            Diagnostic::error(format!(
+                "cannot derive `{}` for `{name}`: a generic newtype does not derive yet",
                 derive.text
-            ),
-            "write the impl by hand",
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
         );
         return None;
     }
-    let fields: Vec<&str> = declaration
-        .fields
+    // A generic struct derives for every instance: `impl<A, B> Eq<Pair<A, B>>
+    // for Pair<A, B>`, its parameters and bounds as declared.
+    let binder = crate::syntax::pretty::params(&declaration.params);
+    let arguments: Vec<&str> = declaration
+        .params
+        .params
         .iter()
-        .map(|f| f.name.text.as_str())
+        .map(|param| param.name.text.as_str())
         .collect();
+    let applied = if arguments.is_empty() {
+        name.clone()
+    } else {
+        format!("{name}<{}>", arguments.join(", "))
+    };
+    // What is compared, in order: each field, or a newtype's value read as
+    // its base (`integer(self)` for `struct Count(integer)`), which a
+    // newtype over a kernel type has no operator for of its own.
+    let operands: Vec<(String, String)> = match &declaration.base {
+        Some(base) => {
+            let base = crate::syntax::pretty::type_str(base);
+            vec![(format!("{base}(self)"), format!("{base}(rhs)"))]
+        }
+        None => declaration
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    format!("self.{}", field.name.text),
+                    format!("rhs.{}", field.name.text),
+                )
+            })
+            .collect(),
+    };
     Some(match derive.text.as_str() {
         "Eq" => {
-            let body = if fields.is_empty() {
+            let body = if operands.is_empty() {
                 "true".to_string()
             } else {
-                fields
+                operands
                     .iter()
-                    .map(|f| format!("(self.{f} == rhs.{f})"))
+                    .map(|(left, right)| format!("({left} == {right})"))
                     .collect::<Vec<_>>()
                     .join(" and ")
             };
-            format!("impl Eq<{name}> for {name} {{ fn eq(self, rhs: {name}) -> Bool {{ return {body}; }} }}")
+            format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(self, rhs: {applied}) -> Bool {{ return {body}; }} }}")
         }
         _ => format!(
-            "impl Ord<{name}> for {name} {{ \
-             fn lt(self, rhs: {name}) -> Bool {{ return {}; }} \
-             fn le(self, rhs: {name}) -> Bool {{ return {}; }} }}",
-            lexicographic(&fields, "<"),
-            lexicographic(&fields, "<="),
+            "impl{binder} Ord<{applied}> for {applied} {{ \
+             fn lt(self, rhs: {applied}) -> Bool {{ return {}; }} \
+             fn le(self, rhs: {applied}) -> Bool {{ return {}; }} }}",
+            lexicographic(&operands, "<"),
+            lexicographic(&operands, "<="),
         ),
     })
 }
 
-/// `self < rhs` (or `<=`) over `fields` in order: the first that differs
-/// decides, and the last compares with `last`.
-fn lexicographic(fields: &[&str], last: &str) -> String {
-    match fields {
+/// `self < rhs` (or `<=`) over `operands` in order: the first pair that
+/// differs decides, and the last compares with `last`.
+fn lexicographic(operands: &[(String, String)], last: &str) -> String {
+    match operands {
         [] => if last == "<=" { "true" } else { "false" }.to_string(),
-        [only] => format!("(self.{only} {last} rhs.{only})"),
-        [first, rest @ ..] => format!(
-            "((self.{first} < rhs.{first}) or ((self.{first} == rhs.{first}) and {}))",
+        [(left, right)] => format!("({left} {last} {right})"),
+        [(left, right), rest @ ..] => format!(
+            "(({left} < {right}) or (({left} == {right}) and {}))",
             lexicographic(rest, last)
         ),
     }

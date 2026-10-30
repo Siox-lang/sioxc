@@ -93,7 +93,54 @@ impl T { process {
     );
 }
 
-/// Only `Eq` and `Ord` derive, and not yet for a generic struct (E-P040).
+/// Generic structs derive for every instance, and a newtype compares as its
+/// base (`struct Count(integer)` had no `==` of its own).
+#[test]
+fn generic_and_newtype_structs_derive() {
+    let generic = run(
+        "generic",
+        r#"module g1;
+use std::bits::unsigned;
+#[derive(Eq, Ord)]
+struct Pair<A, B> { pub a: A, pub b: B }
+#[derive(Eq)]
+struct Word<W: integer> { pub v: unsigned[W] }
+#[test] entity T {}
+impl T { process {
+    let x: Pair<unsigned[4], Bit> = Pair { .a = 3, .b = '1' };
+    let y: Pair<unsigned[4], Bit> = Pair { .a = 3, .b = '0' };
+    let p: Word<8> = Word { .v = 200 };
+    let q: Word<8> = Word { .v = 200 };
+    print!("{} {} {} {}\n", x == y, y < x, x >= y, p == q);
+    assert!(not (x == y) and y < x and x >= y and p == q);
+} }
+"#,
+    );
+    assert!(
+        generic.contains("false true true true") && generic.contains("1 passed"),
+        "{generic}"
+    );
+    let newtype = run(
+        "newtype",
+        r#"module n2;
+use std::bits::unsigned;
+#[derive(Eq, Ord)]
+struct Count(integer);
+#[test] entity T {}
+impl T { process {
+    let c: Count = Count(3); let d: Count = Count(4);
+    print!("{} {} {}\n", c == d, c < d, d >= c);
+    assert!(not (c == d) and c < d and d >= c);
+} }
+"#,
+    );
+    assert!(
+        newtype.contains("false true true") && newtype.contains("1 passed"),
+        "{newtype}"
+    );
+}
+
+/// Only `Eq` and `Ord` derive, and not yet for a generic newtype (E-P040).
 #[test]
 fn unsupported_derives_are_reported() {
     let (_, out) = sioxc(
@@ -102,7 +149,7 @@ fn unsupported_derives_are_reported() {
 #[derive(Debug)]
 struct A { pub x: integer }
 #[derive(Eq)]
-struct B<T> { pub v: T }
+struct Tagged<W: integer>(integer);
 "#,
         false,
     );
@@ -111,7 +158,7 @@ struct B<T> { pub v: T }
         "{out}"
     );
     assert!(
-        out.contains("a generic or newtype struct does not derive yet"),
+        out.contains("a generic newtype does not derive yet"),
         "{out}"
     );
 }

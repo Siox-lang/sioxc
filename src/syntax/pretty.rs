@@ -982,7 +982,7 @@ fn trait_name_str(name: &str) -> String {
 }
 
 /// Render a parameter list as `<W: integer>`; empty when there are none.
-fn params(p: &Params) -> String {
+pub(crate) fn params(p: &Params) -> String {
     if p.params.is_empty() {
         return String::new();
     }

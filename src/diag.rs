@@ -468,7 +468,7 @@ pub mod codes {
     /// its body names no parameter, or expansions nest too deep.
     pub const MACRO_EXPANSION: &str = "E-P035";
     /// A `#[derive(..)]` that cannot be expanded: a trait other than `Eq` or
-    /// `Ord`, or a generic or newtype struct.
+    /// `Ord`, or a generic newtype struct.
     pub const INVALID_DERIVE: &str = "E-P040";
     /// A misused compiler hook: `attr lang` bound outside `core`/`std`,
     /// naming nothing, or one role bound twice; or `extern "intrinsic"`
