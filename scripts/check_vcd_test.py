@@ -98,6 +98,29 @@ class EnumConstantWaveforms(unittest.TestCase):
                 check_profile("enum_constant_values_test", data)
 
 
+class EnumOwnerAliasWaveforms(unittest.TestCase):
+    def wave(self):
+        data = {f"EnumOwnerAliasTest.dut.{name}": [(0, f"{first:064b}"),
+                                                (1_000_000, f"{second:064b}")]
+                for name, first, second in (("left_code", 9, 17), ("right_code", 3, 5),
+                                            ("matched_code", 9, 17), ("forwarded_code", 9, 17))}
+        data["EnumOwnerAliasTest.dut.zero_code"] = [(0, f"{31:064b}")]
+        return data
+
+    def test_aliases_keep_distinct_domains_and_explicit_constructors(self):
+        check_profile("enum_owner_alias_test", self.wave())
+
+    def test_wrong_owner_default_value_or_time_is_rejected(self):
+        for name, events in (("right_code", [(0, f"{9:064b}"), (1_000_000, f"{17:064b}")]),
+                             ("left_code", [(0, f"{9:064b}")]),
+                             ("zero_code", [(0, f"{23:064b}")]),
+                             ("forwarded_code", [(0, f"{9:064b}"), (2_000_000, f"{17:064b}")])):
+            wave = self.wave()
+            wave[f"EnumOwnerAliasTest.dut.{name}"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("enum_owner_alias_test", wave)
+
+
 class ComputedWidthWaveforms(unittest.TestCase):
     def wave(self):
         return {"LengthExprTest.dut.source": [(0, "1001")],

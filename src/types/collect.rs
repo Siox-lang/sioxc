@@ -62,20 +62,6 @@ impl<'a> Checker<'a> {
             .collect();
         let declarations = DeclarationIndex::collect(resolved, modules);
         let enum_values = enum_values::EnumValues::collect(&declarations);
-        // Compatibility names come from shared member identities, never another inheritance walk.
-        let enum_variants = declarations
-            .enumerations()
-            .filter_map(|(owner, _)| {
-                let name = resolved.qualified_name_str(owner)?.to_owned();
-                let members = enum_values.members(owner)?;
-                let names = members
-                    .iter()
-                    .filter_map(|(member, _)| resolved.def(*member))
-                    .map(|member| member.name.clone())
-                    .collect();
-                Some((name, names))
-            })
-            .collect();
         Checker {
             declarations,
             enum_values,
@@ -99,7 +85,6 @@ impl<'a> Checker<'a> {
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
-            enum_variants,
             conversion_sigs: HashSet::new(),
             structs: HashMap::new(),
             field_visibility: HashMap::new(),

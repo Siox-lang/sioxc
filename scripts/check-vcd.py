@@ -97,6 +97,13 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         assert changes[root + "code"] == [(0, f"{9:064b}"), (1_000_000, f"{10:064b}")]
         assert changes[root + "macro_value"] == [(0, "next")]
         assert changes[root + "macro_code"] == [(0, f"{22:064b}")]
+    elif profile == "enum_owner_alias_test":
+        root = "EnumOwnerAliasTest.dut."
+        assert changes[root + "zero_code"] == [(0, f"{31:064b}")]
+        for name, first, second in (("left_code", 9, 17), ("right_code", 3, 5),
+                                    ("matched_code", 9, 17), ("forwarded_code", 9, 17)):
+            assert changes[root + name] == [(0, f"{first:064b}"),
+                                            (1_000_000, f"{second:064b}")], name
     elif profile == "enum_constant_values_test":
         root = "EnumConstantValues.dut."
         for signal, expected in {

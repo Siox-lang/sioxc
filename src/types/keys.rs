@@ -3,6 +3,21 @@
 use super::*;
 
 impl<'a> Checker<'a> {
+    /// Borrow the effective enum domain from the shared member identities.
+    pub(super) fn enum_member_names(&self, owner: DefId) -> Option<impl Iterator<Item = &str>> {
+        Some(
+            self.enum_values
+                .members(owner)?
+                .iter()
+                .filter_map(|(member, _)| self.resolved.def(*member))
+                .map(|member| member.name.as_str()),
+        )
+    }
+
+    pub(super) fn is_enum_ty(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named(owner) if self.enum_values.members(*owner).is_some())
+    }
+
     /// A checked entity type already carries its resolver-selected identity.
     pub(super) fn entity_id(&self, ty: &Ty) -> Option<DefId> {
         match ty {
@@ -83,12 +98,28 @@ impl<'a> Checker<'a> {
             .and_then(|id| self.definition_key(id))
     }
 
-    /// The owner's key for an associated path such as `Type::CONST`.
+    /// Prefer an explicitly registered alias method, otherwise its checked owner.
     pub(super) fn associated_owner_key(&self, path: &Path) -> Option<String> {
-        (path.segments.len() >= 2).then(|| {
-            let owner = &path.segments[path.segments.len() - 2];
-            self.ident_key(owner).unwrap_or_else(|| owner.text.clone())
-        })
+        let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
+        let source = self.ident_key(owner).unwrap_or_else(|| owner.text.clone());
+        if self
+            .methods
+            .contains_key(&(source.clone(), path.segments.last()?.text.clone()))
+        {
+            return Some(source);
+        }
+        self.associated_owner_ty(path)
+            .and_then(|ty| self.ty_head(&ty))
+            .or(Some(source))
+    }
+
+    /// Interpret a qualifier using its resolver span, including aliases and `Self`.
+    pub(super) fn associated_owner_ty(&self, path: &Path) -> Option<Ty> {
+        let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
+        Some(self.path_ty(&Path {
+            segments: vec![owner.clone()],
+            span: owner.span,
+        }))
     }
 
     /// The key for a type expression.

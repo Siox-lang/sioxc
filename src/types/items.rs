@@ -461,7 +461,7 @@ impl<'a> Checker<'a> {
                         let packed = match inner.as_ref() {
                             Type::Path(path) => match self.path_key(path) {
                                 Some(key) => {
-                                    self.enum_variants.contains_key(&key)
+                                    self.is_enum_ty(&self.path_ty(path))
                                         || self.array_families.contains(&key)
                                         || path.segments.len() == 1
                                             && generic(&path.segments[0].text)

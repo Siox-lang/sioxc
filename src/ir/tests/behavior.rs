@@ -3,6 +3,164 @@
 use super::*;
 
 #[test]
+fn aliased_enum_variant_keys_share_the_selected_domain() {
+    let source = "module model;
+        enum Base { Low = 9, High = 17 }
+        enum Mode(Base);
+        type Alias = Mode;
+        fn value() -> Alias { return Alias::High; }";
+    let mut sink = DiagnosticSink::new();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    for item in &module.items {
+        functions.insert_declaration(item);
+    }
+    let ast::Item::Fn(function) = &module.items[3] else {
+        panic!("function")
+    };
+    let ast::Stmt::Return {
+        value: Some(ast::Expr::Path(path)),
+        ..
+    } = &function.body.as_ref().unwrap().stmts[0]
+    else {
+        panic!("variant")
+    };
+    assert_eq!(
+        functions.enum_variant_key(path),
+        Some(("Mode".into(), "High".into()))
+    );
+}
+
+#[test]
+fn associated_self_calls_keep_their_lexical_owner_not_the_result_type() {
+    let source = "module model;
+        enum Mode { Low, High }
+        impl Mode {
+            pub fn new() -> integer { return 9; }
+            fn forwarded() -> integer { return Self::new(); }
+        }
+        struct Packet { pub data: integer }
+        impl Packet {
+            pub fn new() -> integer { return 17; }
+            fn forwarded() -> integer { return Self::new(); }
+        }
+        entity Device {}
+        impl Device {
+            pub fn new() -> integer { return 42; }
+            fn forwarded() -> integer { return Self::new(); }
+        }";
+    let mut sink = DiagnosticSink::new();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    for item in &module.items {
+        functions.insert_declaration(item);
+        if let ast::Item::Impl(implementation) = item {
+            let owner = functions.type_head_key(&implementation.target).unwrap();
+            for item in &implementation.items {
+                if let ast::ImplItem::Fn(function) = item {
+                    functions
+                        .insert_associated(format!("{owner}::{}", function.name.text), function);
+                }
+            }
+        }
+    }
+    let mut count = 0;
+    for item in &module.items {
+        let ast::Item::Impl(implementation) = item else {
+            continue;
+        };
+        let ast::ImplItem::Fn(expected) = &implementation.items[0] else {
+            panic!("constructor")
+        };
+        let ast::ImplItem::Fn(forwarded) = &implementation.items[1] else {
+            panic!("caller")
+        };
+        let ast::Stmt::Return {
+            value: Some(ast::Expr::Call { callee, .. }),
+            ..
+        } = &forwarded.body.as_ref().unwrap().stmts[0]
+        else {
+            panic!("call")
+        };
+        assert!(std::ptr::eq(functions.get(callee).unwrap(), expected));
+        count += 1;
+    }
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn unresolved_generic_self_does_not_select_a_same_spelled_concrete_owner() {
+    let mut sink = DiagnosticSink::new();
+    let sources = [
+        "module model;
+         pub struct T {}
+         impl T { pub fn new() -> integer { return 42; } }
+         trait Make { fn new() -> integer; fn forwarded() -> integer; }
+         impl<T> Make for T {
+             fn new() -> integer { return 9; }
+             fn forwarded() -> integer { return Self::new(); }
+         }",
+        "module other; pub struct T {}",
+    ];
+    let modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(file, source)| crate::syntax::parse_module(FileId(file as u32), source, &mut sink))
+        .collect();
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut functions = FunctionIndex::new(&resolved);
+    let mut call = None;
+    for module in &modules {
+        for item in &module.items {
+            functions.insert_declaration(item);
+            if let ast::Item::Impl(implementation) = item {
+                let owner = functions.type_head_key(&implementation.target).unwrap();
+                for item in &implementation.items {
+                    if let ast::ImplItem::Fn(function) = item {
+                        functions.insert_associated(
+                            format!("{owner}::{}", function.name.text),
+                            function,
+                        );
+                        if !implementation.params.params.is_empty()
+                            && function.name.text == "forwarded"
+                        {
+                            let ast::Stmt::Return {
+                                value: Some(ast::Expr::Call { callee, .. }),
+                                ..
+                            } = &function.body.as_ref().unwrap().stmts[0]
+                            else {
+                                panic!("call")
+                            };
+                            call = Some(callee.as_ref());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let call = call.unwrap();
+    let ast::Expr::Path(path) = call else {
+        panic!("path")
+    };
+    let owner = functions.declarations().associated_owner(path).unwrap();
+    assert_eq!(
+        resolved.kind_of(owner),
+        Some(crate::resolve::DefKind::Param)
+    );
+    assert_eq!(
+        functions.nominal_type_key(owner).as_deref(),
+        Some("model::T")
+    );
+    assert!(functions.get_associated("model::T", "new").is_some());
+    assert!(functions.get(call).is_none());
+}
+
+#[test]
 fn inherited_variant_keys_use_the_recorded_owner_not_generated_qualifier_spans() {
     let source = "module user;
         enum Base { A, B }

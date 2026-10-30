@@ -205,17 +205,14 @@ impl<'a> Checker<'a> {
         match self.type_of(scrutinee, names) {
             Ty::Tuple(elems) => self.tuple_arms_missing(&elems, arms).is_none(),
             Ty::Named(id) => {
-                let Some(enum_name) = self.definition_key(id) else {
-                    return false;
-                };
-                let Some(variants) = self.enum_variants.get(&enum_name) else {
+                let Some(mut variants) = self.enum_member_names(id) else {
                     return false;
                 };
                 let covered: HashSet<String> = arms
                     .iter()
                     .flat_map(|arm| pattern_covers(&arm.pattern).0)
                     .collect();
-                variants.iter().all(|variant| covered.contains(variant))
+                variants.all(|variant| covered.contains(variant))
             }
             ty => self.numeric_match_is_exhaustive(&ty, arms),
         }

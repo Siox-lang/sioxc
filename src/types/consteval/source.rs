@@ -120,11 +120,8 @@ impl<'i, 'a> Source<'i, 'a> {
                 enum_owner: self.enum_type(&constant.ty, None),
             });
         }
-        let owner = self.resolved().enum_owner(path)?;
-        Some(Binding::Value(Value::Variant {
-            owner,
-            variant: self.resolved().resolved(path.span)?,
-        }))
+        let (owner, variant) = self.declarations.enum_variant(path)?;
+        Some(Binding::Value(Value::Variant { owner, variant }))
     }
 
     pub(super) fn local_key<'p>(&self, path: &'p Path) -> Option<LocalKey<'p>> {

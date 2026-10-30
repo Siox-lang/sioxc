@@ -2,6 +2,43 @@
 
 use super::*;
 
+#[test]
+fn aliased_enum_matches_use_only_the_selected_domain() {
+    let left = "module left;
+        pub enum Base { Low = 9, High = 17 }
+        pub enum Mode(Base);
+        pub type Alias = Mode;";
+    let right = "module right; pub enum Mode { Low = 3, High = 4, Extra = 5 }";
+    let caller = "module caller;
+        use Local = left::Alias;
+        use Remote = right::Mode;
+        const HIGH: Local = Local::High;
+        fn constant() -> Local { return HIGH; }
+        fn expression(value: Local) -> integer {
+            return match value { Local::Low => 1, Local::High => 2 };
+        }
+        fn statements(value: Local) -> integer {
+            match value { Local::Low => return 1, Local::High => return 2 }
+        }
+        fn incomplete(value: Remote) -> integer {
+            return match value { Remote::Low => 1, Remote::High => 2 };
+        }";
+    for sources in [
+        [(left, FileId(0)), (right, FileId(1)), (caller, FileId(2))],
+        [(caller, FileId(2)), (right, FileId(1)), (left, FileId(0))],
+    ] {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::NON_EXHAUSTIVE_MATCH_VALUE));
+        assert!(errors[0].message.contains("Extra"), "{errors:?}");
+    }
+}
+
 /// Exhaustiveness was only ever computed over enum variants, so a hole in
 /// a numeric match was silent. Warnings do not count as errors here, so
 /// these assert on the diagnostic text.

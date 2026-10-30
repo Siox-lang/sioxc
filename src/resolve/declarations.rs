@@ -219,6 +219,65 @@ impl<'a> DeclarationIndex<'a> {
         self.resolved.resolved(path.span)
     }
 
+    /// Keep the selected nominal enum, while transparent aliases name its domain.
+    pub(crate) fn enum_owner(&self, path: &Path) -> Option<DefId> {
+        self.enum_variant(path).map(|(owner, _)| owner)
+    }
+
+    pub(crate) fn enum_variant(&self, path: &Path) -> Option<(DefId, DefId)> {
+        let owner = self.resolved.enum_owner(path).or_else(|| {
+            let qualifier = path.segments.get(path.segments.len().checked_sub(2)?)?;
+            self.resolved.resolved(qualifier.span)
+        })?;
+        let owner = self.lexical_owner(owner)?;
+        let owner = match self.declarations.get(&owner) {
+            Some(Declaration::Alias(_, target)) => self.scalar_type_id(target)?,
+            _ => owner,
+        };
+        if self.resolved.kind_of(owner) != Some(DefKind::Enum) {
+            return None;
+        }
+        Some((
+            owner,
+            self.resolved
+                .enum_variant(owner, &path.segments.last()?.text)?,
+        ))
+    }
+
+    /// A lexical associated qualifier, with transparent aliases and impl `Self`.
+    pub(crate) fn associated_owner(&self, path: &Path) -> Option<DefId> {
+        let qualifier = path.segments.get(path.segments.len().checked_sub(2)?)?;
+        self.nominal_owner(self.resolved.resolved(qualifier.span)?)
+    }
+
+    fn lexical_owner(&self, owner: DefId) -> Option<DefId> {
+        let definition = self.resolved.def(owner)?;
+        if definition.kind == DefKind::Local
+            && definition.span.is_none()
+            && definition.name == "Self"
+        {
+            definition.parent
+        } else {
+            Some(owner)
+        }
+    }
+
+    fn nominal_owner(&self, owner: DefId) -> Option<DefId> {
+        let owner = self.lexical_owner(owner)?;
+        let Some(Declaration::Alias(_, target)) = self.declarations.get(&owner) else {
+            return Some(owner);
+        };
+        let normalized = self.normalize_type(target)?;
+        let mut target = normalized.as_ref();
+        while let Type::Generic { base, .. } | Type::Indexed { base, .. } = target {
+            target = base;
+        }
+        let Type::Path(path) = target else {
+            return None;
+        };
+        self.resolved.resolved(path.span)
+    }
+
     pub(crate) fn implementations_for(
         &self,
         owner: DefId,

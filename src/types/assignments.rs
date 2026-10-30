@@ -242,7 +242,7 @@ impl<'a> Checker<'a> {
         let ok = match expected {
             Some(AttrValueTy::Bool) => {
                 matches!(value, Expr::Path(path)
-                    if self.resolved.enum_owner(path).is_some_and(|owner|
+                    if self.declarations.enum_owner(path).is_some_and(|owner|
                         self.resolved.lang_of(owner) == Some("bool")))
             }
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
@@ -484,8 +484,7 @@ impl<'a> Checker<'a> {
             // type without a route from the value's type would reject it.
             let route = match (self.type_kind_name(&lhs), self.type_kind_name(&rhs)) {
                 (Some(target), Some(_))
-                    if self.structs.contains_key(&target)
-                        || self.enum_variants.contains_key(&target) =>
+                    if self.structs.contains_key(&target) || self.is_enum_ty(&lhs) =>
                 {
                     self.conversion_exists(&lhs, &rhs)
                 }
@@ -532,24 +531,19 @@ impl<'a> Checker<'a> {
     /// Whether `id` is an enum declaring the character variant `ch`.
     /// An enum whose every variant is a character literal (`Bit`, `Logic`).
     pub(super) fn is_char_enum(&self, id: crate::resolve::DefId) -> bool {
-        let Some(key) = self.definition_key(id) else {
-            return false;
-        };
-        self.enum_variants.get(&key).is_some_and(|vars| {
-            !vars.is_empty()
-                && vars
-                    .iter()
+        self.enum_member_names(id).is_some_and(|mut variants| {
+            variants.next().is_some_and(|first| {
+                std::iter::once(first)
+                    .chain(variants)
                     .all(|v| v.len() == 3 && v.starts_with('\'') && v.ends_with('\''))
+            })
         })
     }
 
     pub(super) fn enum_has_char_variant(&self, id: crate::resolve::DefId, ch: char) -> bool {
-        let Some(key) = self.definition_key(id) else {
-            return false;
-        };
-        self.enum_variants
-            .get(&key)
-            .is_some_and(|vars| vars.iter().any(|v| v.trim_matches('\'') == ch.to_string()))
+        let name = format!("'{ch}'");
+        self.enum_member_names(id)
+            .is_some_and(|mut variants| variants.any(|variant| variant == name))
     }
 
     /// Enforce a generic fn's type contracts at the call site (spec: generic

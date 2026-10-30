@@ -3,6 +3,36 @@
 use super::*;
 
 #[test]
+fn equal_enum_and_struct_leaves_keep_distinct_member_contracts() {
+    let left = "module left; pub enum Mode { Low, High }";
+    let right = "module right; pub struct Mode { pub data: integer }";
+    let caller = "module caller;
+        use Scalar = left::Mode;
+        use Record = right::Mode;
+        fn valid(value: Record) -> integer { return value.data; }
+        fn invalid_field(value: Scalar) -> integer { return value.data; }
+        fn invalid_method(value: Scalar) { value.missing(); }";
+    for sources in [
+        [(left, FileId(0)), (right, FileId(1)), (caller, FileId(2))],
+        [(caller, FileId(2)), (right, FileId(1)), (left, FileId(0))],
+    ] {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME)));
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.code == Some(codes::INVALID_METHOD_CALL)));
+    }
+}
+
+#[test]
 /// Private struct members are scoped to the owning type's module, while
 /// `pub` ones cross the boundary.
 fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {

@@ -21812,3 +21812,250 @@ updated afterward. Next commit only the43 owned compiler files in isolated
 feat/proposal-foundations, including the new borrowed Source context file.
 All five sections remain required; broader typed values/attributes, remaining
 registries and residual hooks are not declared done. No wiki or push operation.
+
+### 2026-10-29 — Codex — enum compatibility table removal in flight
+
+Starting from clean owned compiler f845a32 (accepted full1055479) and corpus
+fixture commit a176965. Own isolated /home/max/siox-proposal-integration changes
+in types mod/collect/keys/calls/inference/expressions/patterns/statements/members/
+assignments/items and focused tests/docs only. Remove the effective-variant
+String table; borrow member names from shared EnumValues IDs and resolver facts.
+Carry resolved paths/checked owner types through conversion classification rather
+than reverse-scanning strings or adding another registry. Preserve derived and
+aliased enum domains, contextual variants, diagnostic ordering and explicit new
+methods. Tests will cover equal leaves/renames/generated owners and matching
+returns/fields/conversions. No parser/std/IR/LLVM or peer worktree changes planned.
+All five foundation sections remain required; current accepted estimate84percent.
+New work stays local/uncommitted until fresh required gates are green; no push/wiki.
+
+
+### 2026-10-29 — Codex — enum compatibility table removed locally; focused gate waiting
+
+Owned checkout /home/max/siox-proposal-integration now removes the final checker
+HashMap<String, Vec<String>> enum registry. Consumers borrow resolved member names
+from EnumValues IDs. Conversion/default-new classification follows source paths
+and alias-normalized checked types, preserving entity/array-of-entity exclusions
+and explicit fn new priority. Added regressions for renamed aliases, reversed
+module order, equal enum/entity/struct leaves, exhaustive expression/statement
+matches and generated member-name borrowing. No parser/std/IR/LLVM edits.
+Formatting and git diff --check pass; implementation tests have NOT run yet.
+Lightweight watcher exec session34516 waits for verified-live peer flock1620594
+(parent1620591) before guarded submission of cache script
+~/.cache/siox-jobs/tmp/enum-member-ids-focused-20261029.sh (20m/2GiB).
+No guarded unit exists yet; do not confuse a waiting launcher with a test pass.
+Graphify AST update completed:7702 nodes; existing partial vendor libfst C
+extraction warnings retained, no API/labeling/wiki operations. GitHub #295 was
+observed CLOSED upstream; availability of that fix in this owned branch remains
+to verify separately. All17 current dirty compiler paths are this local slice;
+all20 peer actual-corpus artifacts/probes remain untouched. No commit/push.
+Accepted checkpoint remains f845a32/a176965 and about84percent of the full five
+foundation sections; current enum cleanup does not change acceptance yet.
+
+
+### 2026-10-29 — Codex — focused1696458 red; normalize selected alias owners
+
+Focused guarded1696458 is terminal failed/exit-code/101:703 frontend cases pass,
+two new regressions fail. Explicit Self::new(value) and Alias::new(value) are
+misclassified as zero-arg defaults; alias-qualified patterns are compared as an
+Alias owner against the normalized Mode owner. Clippy did not run after failure.
+Prior watcher34516 vanished (no process/unit); replacement20499 submitted1696458
+only after peer flock1620594 exited. No peer job was restarted or stopped.
+Expand owned isolated scope to src/resolve/declarations.rs, types/consteval/source.rs
+and src/ir/functions.rs plus existing types callers/tests: use one borrowed
+alias-normalized enum-owner query across phases, preserving generated overrides
+and nominal derived identities. Resolve associated call owners via checked source
+types, retaining explicit method priority and avoiding reverse leaf scans.
+No extra registry, parser/std/LLVM changes or external commits planned. No push.
+All five foundation sections remain required; accepted estimate stays84percent.
+
+
+### 2026-10-29 — Codex — alias enum facts green; native constructor route exposed
+
+Focused1725977 finishes exited/success/0:706 frontend tests and strict frontend
+Clippy pass after shared owner fixes. Native1729080 passes64 runner tests but
+fails frontend E-P001 on valid alias-qualified HIGH; fix routes expression
+validation through the same enum query. Native1732406 then reaches IR and fails
+E-P017 at Left::new(value): associated-function lookup still keys the alias,
+not the borrowed normalized owner. Busy1728109 ran no tests.
+Own new corpus enum_owner_alias_test.siox plus enum_owner_alias/{left,right}.siox
+and strict four-code VCD profile; all20 peer corpus probes/artifacts unchanged.
+Expand isolated scope to src/resolve.rs synthetic Self's existing parent DefId
+and borrowed associated-owner queries, plus focused tests. Do not add another
+identity registry or infer an owner from a function's result/leaf spelling.
+Need native ordinary/debug and both packing modes before any acceptance claim.
+Full proposal remains active; no commit, push, wiki or peer worktree changes.
+
+
+### 2026-10-29 — Codex — lexical Self and associated alias dispatch awaiting validation
+
+Latest owned patch retains the impl target DefId in synthetic Self's existing
+DefInfo.parent. FunctionIndex associated lookup preserves explicit source methods
+then follows the borrowed normalized qualifier owner; no result-type guessing,
+leaf-name scan or additional registry. Added one IR regression covering enum,
+struct and entity Self calls whose three results are all integer. Scalar enum
+alias queries reject array aliases instead of exposing their element variants.
+Latest source changes are UNVALIDATED: prior focused1725977 passed706 frontend
+and frontend Clippy, but subsequent alias-expression/associated/Self fixes and
+new regression need a new run. Native1732406 remains an IR failure;1744426 exited
+busy75 with no tests.64 runner tests were green before the latest Rust changes.
+Watcher exec45444 waits for currently-live peer flock1740199 (parent1740197,
+peer ci-u.log) before submitting cache script enum-member-ids-focused-native-
+20261029.sh through normal30m/2GiB guard. That script refreshes AST graph, runs
+all frontend tests/Clippy and64 runners, then plans24 direct native/debug/VCD
+cases across both packing modes. No new guarded unit yet; do not duplicate it.
+Own corpus additions remain enum_owner_alias_test.siox and two support modules;
+all20 peer probes/artifacts preserved.24 dirty compiler paths remain owned here.
+No commits/push/wiki. Full frozen gate and BOTH actual corpora still required.
+Accepted checkpoint f845a32/a176965 and84percent estimate remain unchanged.
+
+
+### 2026-10-29 — Codex —707 frontend green; native default constructor priority red
+
+Combined1751820 is terminal failed/exit-code/1, peak1321009152. It refreshes AST
+graph7719nodes (known partial libfst extraction warnings), passes707 frontend,
+strict frontend Clippy and64 runner tests, then builds the new native fixture.
+Executing that fixture fails incomplete Process lowering for process1block0.
+Diagnostic1796278 exited busy75, no IR dump. API diagnostic1808738 is terminal
+failed/exit-code/101: direct alias construction and Self forwarding execute
+correctly; explicit zero-arg new fails its assertion because retained IR contains
+Default (23), not the declared new's value31. Its old loaded script ran three
+cases; the subsequent fourth alias-constant case was NOT tested yet. Original
+fixture's incomplete-lowering error is still separate until that case runs.
+Own new tests/enum_owner_alias.rs preserves compiler products on failure.
+Expand isolated scope to src/ir/lower/source_processes.rs default-construction
+classification: a resolver-selected source function must precede synthesized
+Default. No LLVM change or waiver of runtime/assertion/waveform checks.
+Accepted f845a32/a176965 and84percent estimate remain unchanged; no commits/push.
+
+
+### 2026-10-29 — Codex — explicit Default guard written; four-case rerun waiting
+
+One-line Process default classifier now defers to FunctionIndex.get(callee)
+before synthesized T()/T::new() defaults. It is NOT validated yet: attempt1819650
+exited busy75 with no tests. API diagnostic1808738 tested three cases only:
+direct alias and lexical Self forwarding execute correctly in ordinary default
+mode; zero-arg new asserted wrong value and retained ProcessValueKind::Default.
+The independent alias-qualified constant test was added afterward (four cases
+now in tests/enum_owner_alias.rs), to isolate the original multi-module fixture's
+incomplete-lowering failure; that failure is NOT claimed fixed by the guard.
+Watcher exec64983 currently waits for verified-live peer flock1815682 (parent
+1815680, tests5.sh), then guarded enum-owner-api-diagnostic-20261029.sh (20m/2GiB).
+Prior watcher75501 completed with1808738; no other own watcher or unit is live.
+Next script performs AST-only graph refresh and executes all four native API
+cases; graph>5000 uses aggregated view (announced), no LLM/wiki operations.
+Formatting/diff checks pass; old707 frontend and64 runner pass belong to1751820,
+not to a completed gate over the latest Default guard. New corpus/profile still
+needs24 ordinary/debug/default/bitpack native runs, then full frozen matrix and
+both actual corpora before any commit. All20 peer probes/artifacts untouched.
+No commit/push; accepted f845a32/a176965 and84percent remain unchanged.
+
+
+### 2026-10-29 — Codex — alias constant failure isolated; use shared member ID in Process paths
+
+API diagnostic1826040 is terminal failed/exit-code/101, peak910307328. All four
+cases actually ran: direct alias, Self forwarding and explicit zero-arg new pass;
+alias-qualified constant read fails incomplete Process lowering. Retained IR
+shows Intrinsic("Alias::High") as the operand of integer's RawResize. Source
+validation/type inference already know its enum, but Process Expr::Path requires
+a raw resolver whole-path use, absent for this transparent alias qualifier.
+Extend the owned Process path classifier to ask the existing borrowed enum query
+for the resolved member ID before ordinary definition/intrinsic fallback. No
+numeric guessing or LLVM patch. Next run all four native API cases, then24
+native/debug/VCD cases across both modes under one guard. No source snapshot is
+accepted yet; full frozen matrix and actual corpora remain mandatory. No push.
+
+
+### 2026-10-29 — Codex — enum identity slice frozen for conditional native/full gate
+
+Latest change makes Process path lowering consume the borrowed enum member ID,
+so Alias::High no longer depends on a raw whole-path resolver entry. The one-line
+explicit new() guard and this path fix still require verification. Attempt1836823
+exited busy75, no tests. Last707 frontend/Clippy and64 runner passes are1751820;
+1826040 proved three native API cases and isolated the fourth constant read red.
+Freeze owned compiler Rust/std/Python/docs/chat and our three actual corpus files
+(enum_owner_alias_test.siox, enum_owner_alias/{left,right}.siox). Next guarded
+2h/2GiB script enum-owner-api-native-full-20261029.sh first requires all FOUR
+native API cases and24 ordinary/debug/default/bitpack native/VCD runs, then runs
+the separate enum-owner-ids-full-20261029.sh matrix only if those gates pass.
+Full matrix keeps prior coverage, adds this fixture (140 direct runs planned),
+both complete Rust suites and both ACTUAL corpora/UI/JSON/Clippy/artifacts,
+with before/after source and whole actual-corpus fingerprints. New evidence is
+in cache enum-owner-ids-full-20261029; accepted1055479 files are not overwritten.
+Wait for currently-live peer flock1833571 before guarded submission; no other
+own watcher/unit is live. Append further live monitoring ONLY to shared root
+chat, outside this frozen snapshot. No commit until terminal success and matching
+hashes; no push/wiki. Full five-section foundation goal remains active,84percent
+accepted estimate unchanged. All20 peer corpus probes/artifacts preserved.
+
+
+### 2026-10-29 — Codex —1849501 native APIs green, hardware zero-new priority still red
+
+Watcher34389 already completed and submitted1849501 before the review message;
+no watcher/job was killed.1849501 is terminal failed/exit-code/1, peak882712576:
+all FOUR native API cases and64 runner tests pass, proving the Process alias
+constant fix. The first multi-module executable now runs but asserts at line46:
+dut.zero_code is not31. Hardware lower_new still selects structural defaults
+before a declared new(), unlike the fixed procedural classifier. Full matrix
+never started; no full fingerprints were generated. Thaw owned snapshot only
+now, after terminal failure. Native APIs do NOT prove the hardware path green.
+Expand owned isolated scope to lower/calls.rs: use the same FunctionIndex.get
+priority before a hardware synthesized default. Also restore the associated
+lookup's nominal-kind boundary: raw synthetic locals/unbound generic Self must
+not choose an unrelated same-spelled concrete type. Add a source-accurate IR
+regression with parameter T and colliding concrete T declarations. No LLVM or
+peer worktree changes. Freeze again only after the review patch is ready; no
+commit/push/wiki, all five foundation sections and84percent estimate unchanged.
+
+
+### 2026-10-29 — Codex — revised nominal/default snapshot frozen for validation
+
+Hardware lower_new now uses the same FunctionIndex.get-before-default priority
+as Process lowering. Associated lookup again accepts only concrete nominal kind
+candidates (struct/enum/entity/alias), not a raw synthetic local or unresolved
+parameter sharing a qualified spelling. Added the T-shadowing IR regression;
+five native API cases now include a structural Dut/zero-constructor assertion.
+These latest changes have NO test pass yet: focused1930576 exited busy75.
+Freeze owned source/docs/chat and our three corpus files again. Wait for current
+peer flock1915592, then request normal2h/2GiB enum-owner-nominal-full-20261029.sh:
+all frontend tests/Clippy FIRST, all5 native API cases,64 runners,24 profiled
+ordinary/debug/native runs in both packing modes, then only on success the full
+140-direct-run/complete-Rust/actual-corpus/UI/JSON/Clippy/artifact matrix and
+matching source/whole-corpus before/after fingerprints. Earlier1849501 failed
+hardware zero_code and never started that full matrix; its four API cases pass.
+Further monitoring belongs only in shared root chat outside the frozen checkout.
+No source changes/commits before terminal validation review. Do not duplicate a
+live watcher or mistake busy75/submission for success. No push/wiki; all five
+foundation sections remain required, accepted f845a32/a176965 and84percent unchanged.
+
+
+### 2026-10-30 — Codex —1939640 full gate accepted; enum identity slice thawed
+
+Authoritative unit siox-job-3000-1793313080920130670-1939640.service is terminal
+exited/success/0, MemoryPeak1612902400 under the normal2GiB budget. Retained full
+stdout:~/.cache/siox-jobs/siox-job-3000-1793313080920130670-1939640.log; per-stage
+evidence:~/.cache/siox-jobs/enum-owner-ids-full-20261029/. Both complete Rust suites
+pass (765default/744bitpack library cases,23DWARF/18hardware/8recursion each),
+708 frontend, strict frontend/all-target/all-feature Clippy,64 runner tests,
+12 Phase1 artifacts,5 API native cases per mode,164 directly executed native/
+debug/VCD cases (24targeted+140full), and BOTH ACTUAL273-program corpora (0fails).
+Each mode passes66 UI and66 JSON cases,54/54 active codes and2 apply/recompile
+migrations. Source/corpus before/after hashes match exactly:
+ec01fb517d55fd85a0f177faf34e8c26e445521d6f2d60eae65cac8cdac29e67(source),
+213c65af4cd03cd87c5006caa1e307a2f8cf028a14889e656c3bc6ae8b807ce4(corpus).
+
+Accept checker enum-name table removal; borrowed owner/member contracts across
+checking, scalar evaluation and Process lowering; lexical Self owner IDs; alias/
+nominal-kind-safe associated lookup; declared new() priority in hardware and
+procedures. No LLVM, parser/std syntax or representation-limit workaround.
+Hardware/procedural constructor outputs and distinct module encodings are pinned
+by native assertions and strict reactive waveform profiles, not compilation alone.
+All prior failed/busy jobs retain their actual status; no failed run is acceptance.
+
+Thaw only after terminal success and matching hashes. After this gate only
+acceptance Markdown and coordination logs change, not compiled Rust/std/Python
+or corpus fixtures. Estimate about85percent of compiler-foundations, NOT whole
+compiler completion. Fully typed values/static attrs, remaining registries,
+associated/generic availability and hooks stay open; all five sections still
+required before another proposal. Commit only owned27 compiler paths and three
+corpus files (enum_owner_alias_test.siox and enum_owner_alias/{left,right}.siox).
+Preserve all20 peer probes/artifacts and shared-root edits. Local only; no push/wiki.

@@ -827,7 +827,7 @@ impl<'a> Checker<'a> {
                 // read as "unknown function `name`".
                 let failed_macro = *bang
                     && matches!(callee.as_ref(), Expr::Path(path)
-                        if path.segments.last().is_some_and(|name| !self.callee_is_declared(&name.text)));
+                        if !self.callee_is_declared(path));
                 if !failed_macro {
                     self.check_call_arity(callee, args, sym);
                 }
@@ -966,12 +966,17 @@ impl<'a> Checker<'a> {
                 // they are known values even without a span -> DefId entry.
                 let unqualified_variant = path.segments.first().is_some_and(|name| {
                     path.segments.len() == 1
-                        && self
-                            .enum_variants
-                            .values()
-                            .any(|variants| variants.contains(&name.text))
+                        && self.enum_values.owners().any(|owner| {
+                            self.enum_member_names(owner).is_some_and(|mut variants| {
+                                variants.any(|variant| variant == name.text)
+                            })
+                        })
                 });
-                if !local && !unqualified_variant && self.resolved.resolved(path.span).is_none() {
+                if !local
+                    && !unqualified_variant
+                    && self.resolved.resolved(path.span).is_none()
+                    && self.declarations.enum_owner(path).is_none()
+                {
                     self.error(
                         codes::UNKNOWN_NAME,
                         path.span,

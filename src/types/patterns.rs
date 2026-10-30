@@ -192,7 +192,7 @@ impl<'a> Checker<'a> {
             Pattern::Path(path) if path.segments.len() == 2 => {
                 let qualifier = &path.segments[0];
                 let qualifier_key = self
-                    .resolved
+                    .declarations
                     .enum_owner(path)
                     .and_then(|id| self.definition_key(id))
                     .or_else(|| self.ident_key(qualifier))
@@ -316,16 +316,14 @@ impl<'a> Checker<'a> {
         if matches!(ty, Ty::Char) {
             return;
         }
-        let variants = match ty {
-            Ty::Named(id) => self
-                .definition_key(*id)
-                .and_then(|name| self.enum_variants.get(&name).map(|v| (name, v.clone()))),
+        let enum_name = match ty {
+            Ty::Named(id) if self.is_enum_ty(ty) => self.definition_key(*id),
             _ => None,
         };
         let mut bad: Vec<(char, Span)> = Vec::new();
         collect_char_patterns(pattern, &mut bad);
         for (ch, span) in bad {
-            match &variants {
+            match &enum_name {
                 None => self.error(
                     codes::TYPE_MISMATCH,
                     span,
@@ -333,8 +331,8 @@ impl<'a> Checker<'a> {
                      through an encoding table (std::text)"
                         .to_string(),
                 ),
-                Some((name, vs)) if !vs.iter().any(|v| v == &format!("'{ch}'")) => self
-                    .error_with_help(
+                Some(name) if !matches!(ty, Ty::Named(id) if self.enum_has_char_variant(*id, ch)) => {
+                    self.error_with_help(
                         codes::INVALID_PATTERN,
                         span,
                         format!("`'{ch}'` is not a variant of enum `{name}`"),
@@ -342,7 +340,8 @@ impl<'a> Checker<'a> {
                             "`{name}` names its variants without quotes; a character pattern \
                              only matches an enum declared with character literals, like `Logic`"
                         ),
-                    ),
+                    )
+                }
                 Some(_) => {}
             }
         }
@@ -395,7 +394,7 @@ impl<'a> Checker<'a> {
         let Some(enum_name) = self.definition_key(id) else {
             return;
         };
-        let Some(variants) = self.enum_variants.get(&enum_name).cloned() else {
+        let Some(variants) = self.enum_member_names(id) else {
             return;
         };
 
@@ -410,8 +409,8 @@ impl<'a> Checker<'a> {
             covered.extend(vars);
         }
         let missing: Vec<String> = variants
-            .into_iter()
-            .filter(|v| !covered.contains(v.as_str()))
+            .filter(|v| !covered.contains(*v))
+            .map(str::to_owned)
             .collect();
         if !missing.is_empty() {
             let names = missing
@@ -601,7 +600,7 @@ impl<'a> Checker<'a> {
     /// The variant names of an enum type, `'0'`-quoted for a character enum.
     fn enum_variant_names(&self, ty: &Ty) -> Option<Vec<String>> {
         let Ty::Named(id) = ty else { return None };
-        self.enum_variants.get(&self.definition_key(*id)?).cloned()
+        Some(self.enum_member_names(*id)?.map(str::to_owned).collect())
     }
 
     /// An integer constant expression's value: literals, named constants and

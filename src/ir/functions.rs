@@ -726,24 +726,30 @@ impl<'a> FunctionIndex<'a> {
         let function = path.segments.last()?;
         let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
         let id = self.resolved.resolved(owner.span)?;
-        let owner = match self.resolved.kind_of(id)? {
-            crate::resolve::DefKind::Enum => self.enum_id_key(id),
-            crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
-            crate::resolve::DefKind::Struct => self.struct_id_key(id),
-            crate::resolve::DefKind::Entity => self.resolved.qualified_name(id),
-            _ => None,
-        }?;
+        let nominal_key = |id| {
+            matches!(
+                self.resolved.kind_of(id),
+                Some(
+                    crate::resolve::DefKind::Enum
+                        | crate::resolve::DefKind::Struct
+                        | crate::resolve::DefKind::Entity
+                        | crate::resolve::DefKind::TypeAlias
+                )
+            )
+            .then(|| self.nominal_type_key(id))
+            .flatten()
+        };
+        let owner = nominal_key(id)
+            .filter(|owner| self.get_associated(owner, &function.text).is_some())
+            .or_else(|| nominal_key(self.declarations.associated_owner(path)?))?;
         Some(format!("{owner}::{}", function.text))
     }
 
     /// Enum identity and variant leaf selected by a variant expression path.
     pub fn enum_variant_key(&self, path: &ast::Path) -> Option<(String, String)> {
-        let variant = self.resolved.resolved(path.span)?;
+        let (owner, variant) = self.declarations.enum_variant(path)?;
         let definition = self.resolved.def(variant)?;
-        if definition.kind != crate::resolve::DefKind::EnumVariant {
-            return None;
-        }
-        let owner = self.enum_id_key(self.resolved.enum_owner(path)?)?;
+        let owner = self.enum_id_key(owner)?;
         Some((owner, definition.name.clone()))
     }
 

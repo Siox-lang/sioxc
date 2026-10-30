@@ -114,16 +114,9 @@ impl<'a> Checker<'a> {
                 } else {
                     // `Enum::Variant` and Boolean literals carry their
                     // resolver-selected owner, including inherited variants.
-                    match self
-                        .resolved
-                        .resolved(p.span)
-                        .and_then(|id| self.resolved.def(id))
-                    {
-                        Some(d) if d.kind == DefKind::EnumVariant => {
-                            self.resolved.enum_owner(p).map_or(Ty::Error, Ty::Named)
-                        }
-                        _ => self.named_ty(p.span),
-                    }
+                    self.declarations
+                        .enum_owner(p)
+                        .map_or_else(|| self.named_ty(p.span), Ty::Named)
                 }
             }
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
@@ -533,10 +526,9 @@ impl<'a> Checker<'a> {
                     _ => self.free_call_return_type(p, args, sym),
                 },
                 Expr::Path(path) if path.segments.len() >= 2 => {
-                    let owner_segment = &path.segments[path.segments.len() - 2];
-                    let owner = self
-                        .ident_key(owner_segment)
-                        .unwrap_or_else(|| owner_segment.text.clone());
+                    let Some(owner) = self.associated_owner_key(path) else {
+                        return Ty::Error;
+                    };
                     let name = &path.segments[path.segments.len() - 1].text;
                     match self.methods.get(&(owner.clone(), name.clone())) {
                         // `ufixed<6, 2>::resize(x)`: the applied type is
@@ -553,11 +545,14 @@ impl<'a> Checker<'a> {
                                 self.ast_ty_for_owner(ret, &applied)
                             }
                         }
-                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(&owner)),
+                        Some(Some(ret)) => self.ast_ty_for_owner(
+                            ret,
+                            &self.associated_owner_ty(path).unwrap_or(Ty::Error),
+                        ),
                         Some(None) => Ty::Void,
-                        None if name == "new" && self.is_conversion_name(&owner) => {
-                            self.ty_from_head(&owner)
-                        }
+                        None if name == "new" => self
+                            .associated_conversion_ty(path)
+                            .unwrap_or_else(|| self.free_call_return_type(path, args, sym)),
                         None => self.free_call_return_type(path, args, sym),
                     }
                 }

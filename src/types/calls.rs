@@ -19,10 +19,11 @@ impl<'a> Checker<'a> {
         if self.function_id(path).is_some() {
             return;
         }
-        let Some(target) = self.path_key(path) else {
+        let target_ty = self.path_ty(path);
+        let Some(target) = self.type_kind_name(&target_ty) else {
             return;
         };
-        if !self.structs.contains_key(&target) && !self.enum_variants.contains_key(&target) {
+        if !self.structs.contains_key(&target) && !self.is_enum_ty(&target_ty) {
             return;
         }
         // Nominal packed-array newtypes use the same explicit raw-resize
@@ -35,10 +36,7 @@ impl<'a> Checker<'a> {
         let Some(source) = self.type_kind_name(&source_ty) else {
             return;
         };
-        let Some(target_id) = self.resolved.resolved(path.span) else {
-            return;
-        };
-        if self.conversion_exists(&Ty::Named(target_id), &source_ty) {
+        if self.conversion_exists(&target_ty, &source_ty) {
             return;
         }
         self.error_with_help(
@@ -222,12 +220,12 @@ impl<'a> Checker<'a> {
                 let associated = self
                     .associated_owner_key(path)
                     .is_some_and(|owner| self.methods.contains_key(&(owner, name.clone())));
-                let target = self.path_key(path).unwrap_or_else(|| name.clone());
-                !associated && self.function_id(path).is_none() && self.is_conversion_name(&target)
+                !associated
+                    && self.function_id(path).is_none()
+                    && self.conversion_ty(path).is_some()
             }
             Expr::Index { base, .. } => {
-                matches!(base.as_ref(), Expr::Path(path) if self.path_key(path)
-                    .is_some_and(|name| self.is_conversion_name(&name)))
+                matches!(base.as_ref(), Expr::Path(path) if self.conversion_ty(path).is_some())
             }
             _ => false,
         };
@@ -539,7 +537,7 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(&owner))
+                || (name.text == "new" && self.associated_conversion_ty(p).is_some())
             {
                 return;
             }
@@ -551,8 +549,7 @@ impl<'a> Checker<'a> {
             // so a misspelled or unimported call passed every stage and failed
             // in the backend as "unsupported call `abs` in testbench
             // expression", blaming the emitter for a missing `use`.
-            let callee_key = self.path_key(p).unwrap_or_else(|| name.text.clone());
-            if !self.callee_is_declared(&callee_key) {
+            if !self.callee_is_declared(p) {
                 self.error_with_help(
                     codes::UNKNOWN_NAME,
                     expr_span(callee),
@@ -667,7 +664,7 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(&owner))
+                || (name.text == "new" && self.associated_conversion_ty(path).is_some())
             {
                 return;
             }
@@ -949,7 +946,12 @@ impl<'a> Checker<'a> {
     /// Whether a bare call name is something the language declares somewhere:
     /// a `fn`, a type used as a conversion, or one of the runtime-provided std
     /// functions with no source declaration. Anything else does not exist.
-    pub(super) fn callee_is_declared(&self, name: &str) -> bool {
+    pub(super) fn callee_is_declared(&self, path: &Path) -> bool {
+        let Some(last) = path.segments.last() else {
+            return false;
+        };
+        let key = self.path_key(path);
+        let name = key.as_deref().unwrap_or(&last.text);
         // Runtime-provided (std::rand, std::fs) — declared by the runtime, not
         // by a `fn`. Kept beside `check_runtime_call_arity`'s list.
         if matches!(
@@ -980,7 +982,7 @@ impl<'a> Checker<'a> {
         }
         // A conversion names a value type. Entities are instantiated with a
         // struct literal and are never callable values.
-        if self.is_conversion_name(name) {
+        if self.conversion_ty(path).is_some() {
             return true;
         }
         // A method reached through UFCS-ish sugar, or a trait method the
@@ -996,22 +998,35 @@ impl<'a> Checker<'a> {
             .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
     }
 
-    /// Whether `name` is one of the built-in conversions rather than an ordinary
-    /// call.
-    pub(super) fn is_conversion_name(&self, name: &str) -> bool {
-        if matches!(name, "integer" | "natural" | "real" | "Char" | "string")
-            || self.is_array_family(name)
-            || self.structs.contains_key(name)
-            || self.enum_variants.contains_key(name)
-        {
-            return true;
-        }
-        let Some(alias) = self.aliases.get(name) else {
-            return false;
+    /// A conversion target is the checked, alias-normalized value type selected
+    /// by the source path, never another declaration with the same leaf name.
+    pub(super) fn conversion_ty(&self, path: &Path) -> Option<Ty> {
+        self.checked_conversion_ty(self.path_ty(path))
+    }
+
+    fn checked_conversion_ty(&self, ty: Ty) -> Option<Ty> {
+        let value_type = match &ty {
+            Ty::Integer | Ty::Natural | Ty::Real | Ty::Char => true,
+            Ty::Array { .. } => {
+                let mut element = &ty;
+                while let Ty::Array { elem, .. } = element {
+                    element = elem;
+                }
+                self.entity_id(element).is_none()
+            }
+            Ty::Named(id) => {
+                self.resolved.kind_of(*id) == Some(DefKind::Struct)
+                    || self.is_enum_ty(&ty)
+                    || self.resolved.builtin("string") == Some(*id)
+            }
+            _ => false,
         };
-        self.resolve_alias_type(alias).as_ref().is_some_and(|ty| {
-            self.type_key(ty).is_some() && self.declarations.entity_type_id(ty).is_none()
-        })
+        value_type.then_some(ty)
+    }
+
+    /// Preserve the qualifier's resolver span for synthetic `T::new()` calls.
+    pub(super) fn associated_conversion_ty(&self, path: &Path) -> Option<Ty> {
+        self.checked_conversion_ty(self.associated_owner_ty(path)?)
     }
 
     /// The write restrictions `self` carries inside an impl on a view: each

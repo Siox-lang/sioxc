@@ -7607,7 +7607,7 @@ fn lower_process_default(
     else {
         return None;
     };
-    if !type_args.is_empty() || !args.is_empty() {
+    if !type_args.is_empty() || !args.is_empty() || context.functions.get(callee).is_some() {
         return None;
     }
     let definition = match callee.as_ref() {
@@ -10791,7 +10791,9 @@ fn value_ref_with_type_inner(
                 }
             } else if let Some(storage) = testbench_storage(path, process.owner, context) {
                 ProcessValueKind::Storage(storage)
-            } else if let Some(definition) = context.resolved.resolved(path.span) {
+            } else if let Some(definition) = context.functions.declarations().enum_variant(path)
+                .map(|(_, member)| member)
+                .or_else(|| context.resolved.resolved(path.span)) {
                 match definition_number(definition, context) {
                     Some(number) => ProcessValueKind::Number(number),
                     None => ProcessValueKind::Definition(definition),

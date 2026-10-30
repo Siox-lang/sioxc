@@ -335,7 +335,6 @@ struct Checker<'a> {
     /// sites.
     operator_precedence: HashMap<String, (u8, Span)>,
     /// Enum name -> its EFFECTIVE variant names (inherited + own).
-    enum_variants: HashMap<String, Vec<String>>,
     /// Explicit `impl From<Source> for Target` conversion routes. Keeping the
     /// source in the key prevents an unrelated `From` implementation from
     /// making every one-argument constructor appear legal.

@@ -42,9 +42,7 @@ impl<'a> Checker<'a> {
         let fieldless = match &base_ty {
             Ty::Integer | Ty::Real | Ty::Char => true,
             Ty::Array { family: None, .. } => true,
-            Ty::Named(id) => self
-                .definition_key(*id)
-                .is_some_and(|key| self.enum_variants.contains_key(&key)),
+            Ty::Named(_) => self.is_enum_ty(&base_ty),
             _ => false,
         };
         if fieldless {
@@ -339,7 +337,7 @@ impl<'a> Checker<'a> {
         // impl (`p.foo()` on a bare struct passed and did not lower, #222).
         if !self.methods.keys().any(|(h, _)| *h == head)
             && !self.structs.contains_key(&head)
-            && !self.enum_variants.contains_key(&head)
+            && !self.is_enum_ty(&recv)
             && !matches!(head.as_str(), "integer" | "natural" | "real" | "Char")
         {
             return;
@@ -373,16 +371,13 @@ impl<'a> Checker<'a> {
         if path.segments.len() < 2 {
             return;
         }
-        let owner_name = &path.segments[path.segments.len() - 2];
-        let owner = self
-            .resolved
-            .resolved(owner_name.span)
-            .and_then(|id| self.definition_key(id))
-            .unwrap_or_else(|| owner_name.text.clone());
+        let Some(owner) = self.associated_owner_key(path) else {
+            return;
+        };
         let name = &path.segments[path.segments.len() - 1].text;
         // A type's own `fn new(..)` replaces the derived `T::new()` (#264).
         let declared_new = self.methods.contains_key(&(owner.clone(), name.clone()));
-        if name == "new" && !declared_new && self.is_conversion_name(&owner) {
+        if name == "new" && !declared_new && self.associated_conversion_ty(path).is_some() {
             if !args.is_empty() {
                 self.error(
                     codes::TYPE_MISMATCH,

@@ -1819,7 +1819,7 @@ impl<'a> Resolver<'a> {
             }
         }
         // `Self` refers to the impl target type inside the body.
-        self.bind_synthetic_local("Self");
+        let self_type = self.bind_synthetic_local("Self");
         // Impl-level names are visible to the whole body regardless of order.
         for it in &im.items {
             match it {
@@ -1888,6 +1888,7 @@ impl<'a> Resolver<'a> {
         // renamed parameter counted as unused.
         let saved_renames = std::mem::take(&mut self.current_impl_renames);
         let impl_owner = type_head_path(&im.target).and_then(|path| self.out.resolved(path.span));
+        self.out.defs[self_type.0 as usize].parent = impl_owner;
         if let Some(owner) = impl_owner {
             if let Some(order) = self.decl_param_order.get(&owner).cloned() {
                 let args = match &im.target {

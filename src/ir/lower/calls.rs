@@ -398,12 +398,12 @@ impl<'a> Lowering<'a> {
     /// member of the same `T(...)` family whose one-argument form `T(x)` is the
     /// conversion of §3.28. An enum yields its first variant (`T'LEFT`); a
     /// numeric / vector / `Char` / `real` / kernel `integer` yields `0`; a
-    /// struct yields its fields defaulted the same way. The `impl New for T`
-    /// *override* waits on trait resolution; this is the derived default only.
+    /// struct yields its fields defaulted the same way. A declared constructor
+    /// goes through source function dispatch instead of this derived default.
     /// (An array `T[N]()` of a composite defaults through its per-element signal
     /// inits, not an expression value.)
     pub(super) fn lower_new(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Option<Val> {
-        if !args.is_empty() {
+        if !args.is_empty() || self.free_fns.get(callee).is_some() {
             return None;
         }
         // The head type name — a bare `T` or the family of a sized `T[N]` (the

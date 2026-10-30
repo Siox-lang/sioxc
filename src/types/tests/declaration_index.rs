@@ -339,7 +339,13 @@ fn checker_enum_domains_share_inherited_members_even_when_values_are_unknown() {
                 .iter()
                 .map(|(member, _)| resolved.def(*member).unwrap().name.clone())
                 .collect::<Vec<_>>();
-            assert_eq!(checker.enum_variants[name], names);
+            assert_eq!(
+                checker
+                    .enum_member_names(owner)
+                    .unwrap()
+                    .collect::<Vec<_>>(),
+                names
+            );
             assert_eq!(names, ["Low", "High"]);
             if name.starts_with("left::") {
                 assert!(members.iter().all(|(_, value)| value.is_none()));
@@ -360,6 +366,98 @@ fn checker_enum_domains_share_inherited_members_even_when_values_are_unknown() {
             &Ty::Named(owners["right::Base"]),
             &Ty::Named(owners["left::Top"]),
         ));
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    }
+}
+
+#[test]
+fn conversion_targets_keep_resolved_owners_through_renamed_aliases() {
+    let sources = [
+        "module left;
+         pub enum Mode { Low = 9, High = 17 }
+         pub type Alias = Mode;",
+        "module right;
+         pub entity Mode {}
+         pub type Alias = Mode;",
+        "module caller;
+         use Local = left::Alias;
+         use Remote = right::Alias;
+         type RemoteGroup = Remote[2];
+         type Numbers = integer[2];
+         type Modes = Local[2];
+         const ENUM: Local = Local();
+         const ENTITY: Remote = Remote();
+         const GROUP: RemoteGroup = RemoteGroup();
+         const ARRAY: Numbers = Numbers();
+         const VARIANT: Local = Local::High;
+         const NOT_VARIANT: Local = Modes::High;
+         const DEFAULT: Local = Local::new();
+         const NOT_DEFAULT: Remote = Remote::new();
+         const TEXT: string = string();
+         const NUMBER: integer = integer();",
+    ];
+    for sources in [sources, [sources[2], sources[1], sources[0]]] {
+        let (modules, resolved) = parse(&sources);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        let caller = modules
+            .iter()
+            .find(|module| module.path.segments[0].text == "caller")
+            .unwrap();
+        let callee = |name| {
+            let Expr::Call { callee, .. } = &constant(caller, name).value else {
+                panic!("{name} must be a call")
+            };
+            let Expr::Path(path) = callee.as_ref() else {
+                panic!("{name} must name a path")
+            };
+            path
+        };
+        let enumeration = checker.ast_ty(&constant(caller, "ENUM").ty);
+        assert!(checker.is_enum_ty(&enumeration));
+        let variant_value = &constant(caller, "VARIANT").value;
+        let Expr::Path(variant_path) = variant_value else {
+            panic!("variant path")
+        };
+        let (owner, variant) = checker.declarations.enum_variant(variant_path).unwrap();
+        let Expr::Path(array_variant) = &constant(caller, "NOT_VARIANT").value else {
+            panic!("path")
+        };
+        assert!(checker.declarations.enum_variant(array_variant).is_none());
+        assert_eq!(enumeration, Ty::Named(owner));
+        assert_eq!(checker.type_of(variant_value, &HashMap::new()), enumeration);
+        assert_eq!(
+            consteval::evaluate_value(
+                variant_value,
+                &consteval::Source::new(&checker.declarations).with_enums(&checker.enum_values),
+                None,
+                0
+            ),
+            Ok(consteval::Value::Variant { owner, variant })
+        );
+        assert_eq!(
+            checker.conversion_ty(callee("ENUM")),
+            Some(enumeration.clone())
+        );
+        assert_eq!(
+            checker.associated_conversion_ty(callee("DEFAULT")),
+            Some(enumeration)
+        );
+        assert!(checker.callee_is_declared(callee("ENUM")));
+        assert!(checker.conversion_ty(callee("ENTITY")).is_none());
+        assert!(checker
+            .associated_conversion_ty(callee("NOT_DEFAULT"))
+            .is_none());
+        assert!(!checker.callee_is_declared(callee("ENTITY")));
+        assert!(checker.conversion_ty(callee("GROUP")).is_none());
+        assert!(!checker.callee_is_declared(callee("GROUP")));
+        assert!(matches!(
+            checker.conversion_ty(callee("ARRAY")),
+            Some(Ty::Array { len: 2, .. })
+        ));
+        assert!(checker.conversion_ty(callee("TEXT")).is_some());
+        assert_eq!(checker.conversion_ty(callee("NUMBER")), Some(Ty::Integer));
         assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     }
 }
@@ -429,6 +527,22 @@ fn generated_enum_members_keep_their_resolved_declaration_owner() {
     }
     let right = resolved.declared(enums[1].name.span).unwrap();
     let checker = Checker::new(&mut sink, &resolved, &modules);
+    for owner in [left, right, derived] {
+        let names = checker
+            .enum_member_names(owner)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Low", "High"]);
+        for (name, (member, _)) in names
+            .iter()
+            .zip(checker.enum_values.members(owner).unwrap())
+        {
+            assert!(std::ptr::eq(
+                *name,
+                resolved.def(*member).unwrap().name.as_str()
+            ));
+        }
+    }
     assert!(checker.conversion_exists(&Ty::Named(derived), &Ty::Named(left)));
     assert!(checker.conversion_exists(&Ty::Named(left), &Ty::Named(derived)));
     assert!(!checker.conversion_exists(&Ty::Named(derived), &Ty::Named(right)));

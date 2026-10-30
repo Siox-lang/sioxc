@@ -2,6 +2,75 @@
 
 use super::*;
 
+#[test]
+fn aliased_enum_conversions_check_the_selected_domain() {
+    let provider = "module model;
+        pub enum Base { Low = 3, High = 9 }
+        pub enum Derived(Base);
+        pub type Alias = Derived;";
+    let unrelated = "module other; pub enum Base { Low = 3, High = 9 }";
+    let caller = "module caller;
+        use Local = model::Alias;
+        use Original = model::Base;
+        use Remote = other::Base;
+        fn up(value: Local) -> Original { return Original(value); }
+        fn down(value: Original) -> Local { return Local(value); }
+        fn invalid(value: Remote) -> Local { return Local(value); }";
+    for sources in [
+        [
+            (provider, FileId(0)),
+            (unrelated, FileId(1)),
+            (caller, FileId(2)),
+        ],
+        [
+            (caller, FileId(2)),
+            (unrelated, FileId(1)),
+            (provider, FileId(0)),
+        ],
+    ] {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+        assert!(
+            errors[0].message.contains("no conversion from"),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn default_enum_new_does_not_override_a_declared_constructor() {
+    let sink = check_modules(&[(
+        "module m;
+        enum DefaultMode { Low = 9, High = 17 }
+        enum CustomMode { Low = 3, High = 4 }
+        impl CustomMode {
+            pub fn new(value: integer) -> CustomMode { return CustomMode::High; }
+            pub fn forwarded(value: integer) -> Self { return Self::new(value); }
+        }
+        type Alias = CustomMode;
+        fn default_value() -> DefaultMode { return DefaultMode::new(); }
+        fn custom_value() -> CustomMode { return CustomMode::new(42); }
+        fn alias_value() -> Alias { return Alias::new(42); }
+        fn forwarded_value() -> Alias { return Alias::forwarded(42); }",
+        FileId(0),
+    )]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    assert_eq!(
+        check_src(
+            "module m;
+        enum Mode { Low = 9, High = 17 }
+        fn invalid() -> Mode { return Mode::new(42); }"
+        ),
+        1
+    );
+}
+
 /// A call to a function nothing declares passed every stage and failed in
 /// the backend as "unsupported call `abs` in testbench expression",
 /// blaming the emitter for a missing `use`.

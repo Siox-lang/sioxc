@@ -9,7 +9,19 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-29, shared scalar contexts/local statements, typed
+Local acceptance (2026-10-30, borrowed enum members, alias-qualified values and
+lexical associated owners): the checker's final enum-name compatibility table
+is removed. Both complete Rust suites pass (765 default/744 bitpack library
+cases, all 23 DWARF tests per mode), 708 frontend cases, strict Clippy, 64 runner
+tests, five native API cases per mode, 164 direct native/debug/VCD checks,
+12 artifacts and both actual 273-program corpora. Each packing mode passes
+66 UI and 66 JSON cases, all 54 active codes and two apply/recompile migrations.
+Frozen gate 1939640 is terminal successful with matching source/corpus hashes.
+The engineering estimate is about **85% of compiler foundations**, not the whole
+compiler. Fully typed values/static attributes, remaining registries, callable
+availability and residual hooks remain open; this is not five-section completion.
+
+Previous local acceptance (2026-10-29, shared scalar contexts/local statements, typed
 initializer/storage boundaries, shared enum inheritance and selected packed
 elements): both complete Rust suites pass (757 default/736 bitpack library cases,
 all 23 DWARF tests per mode), 700 frontend cases, strict Clippy, 62 runner tests,
@@ -718,6 +730,29 @@ generated member spans. Combined focused validation and the subsequent full
 frozen gate 1055479 pass the matrix described above, with matching source/corpus
 fingerprints. The remaining compatibility-name table is not a completed
 declaration-ID migration; the earlier failed full gate remains historical failure.
+
+**Implemented borrowed enum queries (accepted 2026-10-30).** The checker's final
+effective-variant name table is removed, with no replacement registry. Pattern
+coverage, character membership and member checks borrow names from shared member
+IDs on demand. Conversion/default classification retains resolved paths and
+alias-normalized checked types. Shared declaration queries handle alias-qualified
+patterns, constants and Process values without making an array alias an enum.
+
+Synthetic impl `Self` retains its lexical owner ID. Associated lookup normalizes
+aliases while preserving explicit methods and nominal-kind boundaries: an
+unbound generic parameter cannot select an unrelated same-spelled concrete type,
+and a result type never determines its function's owner. Declared `new()` bodies
+precede synthesized defaults in both hardware and procedural lowering. No LLVM
+workaround, extra signature table or source representation limit is introduced.
+
+Regressions cover equal leaves, renamed aliases, reversed module order,
+coincident generated spans, unknown discriminants, constructor arity, complete
+matches and selected member contracts. Five native API cases isolate direct and
+forwarded calls, procedural/hardware zero-argument overrides and alias constants.
+The multi-module fixture checks different encodings, reactive outputs and strict
+VCD traces in ordinary/debug and default/bitpack builds. Terminal successful
+frozen gate 1939640 passes the full matrix above with matching fingerprints.
+Other string-keyed registries and all remaining foundation requirements stay open.
 
 **Implemented cross-module owner coverage (2026-10-25).** Additional tests
 combine equal enum/base/variant leaves, renamed imports, reversed module order
