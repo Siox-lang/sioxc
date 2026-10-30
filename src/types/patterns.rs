@@ -85,10 +85,13 @@ impl<'a> Checker<'a> {
             }
             frontier = frontier.max(end.saturating_add(1));
             if frontier > hi {
-                return;
+                break;
             }
         }
+        // Every value is named: a target every arm assigns is no latch, and
+        // a function's arms all return (#347).
         if frontier > hi {
+            self.covered_tuple_matches.insert(span);
             return;
         }
         let missing = if frontier == gap_end {

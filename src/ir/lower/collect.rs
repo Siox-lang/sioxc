@@ -36,6 +36,7 @@ impl<'a> Lowering<'a> {
             expr_types: HashMap::new(),
             promotions: HashMap::new(),
             conversions: HashMap::new(),
+            covered_matches: std::collections::HashSet::new(),
             widening: std::cell::RefCell::new(HashSet::new()),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),

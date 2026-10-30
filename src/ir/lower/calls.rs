@@ -798,6 +798,13 @@ impl<'a> Lowering<'a> {
                 return Some(Val::Scalar(Expr::Const(v as u64)));
             }
         }
+        // `fn widen<W: integer>(x: unsigned[W]) -> unsigned[W + 4]`: a generic
+        // integer is the length of the argument whose type it sizes. The body
+        // inlines with it written in, as rustc monomorphizes; read as a name,
+        // its types, slices and constructors had no size (#349).
+        if let Some(instance) = self.integer_instance(f, args, env) {
+            return self.inline_function(&instance, display_name, callee, args, env);
+        }
         // Dynamic arguments: inline against shared source-value handles.
         if self.inline_depth.get() > 16 {
             // Bailing here leaves an `Unknown` in the middle of a driver, so
@@ -2480,6 +2487,65 @@ impl<'a> Lowering<'a> {
 
     /// The integer a lowered expression always has: constants and arithmetic
     /// over them, through the value arena.
+    /// `f` with each generic integer it can infer written in: the length of
+    /// the argument of a parameter `T[W]`. `None` when it binds none.
+    fn integer_instance(
+        &self,
+        f: &ast::FnDecl,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<ast::FnDecl> {
+        let mut instance = f.clone();
+        let mut bound = false;
+        for generic in &f.generics.params {
+            let name = &generic.name.text;
+            let length = f
+                .params
+                .iter()
+                .filter(|p| !p.is_self)
+                .zip(args)
+                .find_map(|(p, a)| {
+                    let ast::Type::Indexed {
+                        index: Some(index), ..
+                    } = p.ty.as_ref()?
+                    else {
+                        return None;
+                    };
+                    if !matches!(index.as_ref(), ast::Expr::Path(path)
+                        if matches!(path.segments.as_slice(), [only] if only.text == *name))
+                    {
+                        return None;
+                    }
+                    Some(
+                        match self.source_operand_layout(a, env).map(|layout| layout.kind) {
+                            Some(LayoutKind::Array {
+                                range: Some(range), ..
+                            }) => i64::try_from(range.len()?).ok()?,
+                            _ => i64::from(self.ast_width(a)),
+                        },
+                    )
+                    .filter(|length| *length > 0)
+                })?;
+            bound = true;
+            instance
+                .generics
+                .params
+                .retain(|param| param.name.text != *name);
+            for parameter in &mut instance.params {
+                parameter.ty = parameter.ty.as_ref().map(|ty| subst_type(ty, name, length));
+            }
+            instance.ret = instance.ret.as_ref().map(|ty| subst_type(ty, name, length));
+            if let Some(body) = instance.body.as_mut() {
+                body.stmts = body
+                    .stmts
+                    .iter()
+                    .map(|statement| subst_stmt(statement, name, length))
+                    .collect();
+            }
+        }
+        bound.then_some(instance)
+    }
+
     /// `cur_env` with the constant attributes an inlined body has bound
     /// (`value::length`), so a type can size itself by an argument:
     /// `let r: unsigned[value'length]`.

@@ -162,6 +162,9 @@ pub struct Hierarchy {
     /// Each value an `impl Into` converts where stored (Stage 4's
     /// `Typed::conversions`).
     pub(crate) conversions: HashMap<Span, crate::types::Conversion>,
+    /// Matches proved to cover their scrutinee without a `_` arm (see
+    /// `Typed::covered_matches`).
+    pub(crate) covered_matches: std::collections::HashSet<Span>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
     /// beside the instance forest lets downstream consumers disambiguate equal
     /// root leaves without rediscovering module ownership from source text.
@@ -498,6 +501,7 @@ fn elaborate_roots(
     e.out.expr_types = typed.expr_types().clone();
     e.out.promotions = typed.promotions().clone();
     e.out.conversions = typed.conversions().clone();
+    e.out.covered_matches = typed.covered_matches().clone();
     e.collect(modules);
 
     let mut stack = Vec::new();

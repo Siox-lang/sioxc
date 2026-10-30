@@ -990,7 +990,10 @@ impl<'a> Lowering<'a> {
         // targets alone were taken as covered, so `0 => {}` / `_ => y = 1`
         // drew no latch warning, and an aggregate the `_` arm wrote whole
         // drew one per element (#331).
-        if !m.arms.iter().any(|arm| catches_all(&arm.pattern)) && !self.names_every_value(m) {
+        if !m.arms.iter().any(|arm| catches_all(&arm.pattern))
+            && !self.covered_matches.contains(&m.span)
+            && !self.names_every_value(m)
+        {
             return BTreeSet::new();
         }
         let mut covered: Option<BTreeSet<u32>> = None;
