@@ -181,7 +181,8 @@ Its `apply(rhs)` and `apply()` examples use this same implicit receiver model;
 neither is static. The two migrations must preserve operand count explicitly.
 
 Associated constructors and conversions must instead become static explicitly:
-`New::new` requirements/implementations use `static fn new() -> Self`, and
+`Default::default` requirements/implementations use `static fn default() -> Self`
+(`New` was renamed `Default` in sioxc #304), and
 `From` requirements/implementations use `static fn from(value: Source) -> Self`.
 The existing `T(value)` conversion syntax and lang-item selection remain intact;
 there is no implicit conversion or compiler-owned truth table added here.
@@ -286,7 +287,7 @@ must replace assumptions that parameter presence alone identifies a method.
   `Self::Variant`; invalid static access to ports, state and receivers.
 - Generic type/value parameters in associated calls, returns and widths,
   including named arguments and multiple concrete specializations.
-- Trait defaults, receiver-kind mismatches, operator bodies, `New`/`From`,
+- Trait defaults, receiver-kind mismatches, operator bodies, `Default`/`From`,
   qualified trait calls and standard conversion syntax after migration.
 - Separate state for two entities of the same specialization, generated
   processes and successive test runs; repeated activation and `await` retention.

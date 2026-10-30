@@ -16,6 +16,13 @@ This is speculative. It needs a decision about where generated implementations
 live for coherence (3.26 restricts inherent implementations to the defining
 module), and it should not be built before there is a second real user.
 
+Candidates for that second user (2026-10-30): `Default` is now a trait
+(sioxc #304), so `#[derive(Default)]` would spell what the structural default
+already does; `std::math::Complex` has no `Eq` at all, which a derive would
+supply field by field; and
+[payload enums](payload-enums.md) would want `Eq` on `Option<T>`/`Result<T, E>`
+for any payload with one.
+
 ## What does not qualify: `cfg`
 
 Conditional compilation is already decided against. The compile-time target

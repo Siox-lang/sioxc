@@ -1,9 +1,18 @@
 # Conversions: `Default`, `From` and `Into`
 
 Status: **mostly implemented** (owner decisions of 2026-10-29). `Default`,
-`Into` and the std conversions have landed; port connections and struct
-literal fields are not yet implicit `Into` sites. It settles sioxc #298 and
-the element-array half of #301.
+`Into` and the std conversions have landed (sioxc #304, #305); all three
+steps of *Order of work* are done. Port connections and struct literal fields
+are not yet implicit `Into` sites; both are on the project board, and closing
+them finishes this proposal. It settles sioxc #298 and the element-array half
+of #301.
+
+Related fixes since (2026-10-30): a vector family or kernel type built from a
+struct or unpacked array needs an `impl From` for that pair (#327);
+`From<unsigned[8]>` and other sized trait arguments are registered (#334);
+`integer(x)` / `natural(x)` use a user `impl From<S> for integer`, as `real(x)`
+does (#337); a declared `T::new()` or `impl Default` runs its body rather than
+the structural default (#361).
 
 ## Three traits, three jobs
 

@@ -59,6 +59,10 @@ The receiver is the left operand. The right operand and result may have
 different types, and `Out` retains its complete width, range and alias
 identity. A chained expression consumes the declared result, not the input's
 format. Contextual literals and existing explicit-conversion rules still apply.
+Today's `CustomOperator` already behaves this way since sioxc #339 (#143,
+#144): the checker keeps the written result type, aliases included, and
+lowering reads its width, labels and type for the next operator, so the new
+contract inherits the behaviour rather than introducing it.
 
 ### Unary example
 
