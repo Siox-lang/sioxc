@@ -398,13 +398,23 @@ impl Lowering<'_> {
             return None;
         };
         let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
-        let labels = self.local_array.get(&path)?;
+        // A local's labels, or a port's declared range: `a[..1]` of a port
+        // had neither end to fill (#353).
+        let (first, last) = match self.local_array.get(&path) {
+            Some(labels) => (*labels.first()?, *labels.last()?),
+            None => match &self.persisted_layout(&path)?.kind {
+                LayoutKind::Array {
+                    range: Some(range), ..
+                } => (range.left, range.right),
+                _ => return None,
+            },
+        };
         let bound = |given: &Option<Box<ast::Expr>>, open: i64| match given {
             Some(given) => self.eval_const(given, &self.cur_env),
             None => Some(open),
         };
-        let left = bound(lo, *labels.first()?)?;
-        let right = bound(hi, *labels.last()?)?;
+        let left = bound(lo, first)?;
+        let right = bound(hi, last)?;
         let bound = |value: i64| {
             Box::new(ast::Expr::Int {
                 text: value.to_string(),
