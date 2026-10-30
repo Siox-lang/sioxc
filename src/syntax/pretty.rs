@@ -310,6 +310,10 @@ impl Printer {
     /// Print a `struct`. A newtype (`struct B(A);`) never carries a body, so it
     /// prints on one line.
     fn struct_decl(&mut self, s: &StructDecl) {
+        if !s.derives.is_empty() {
+            let traits: Vec<&str> = s.derives.iter().map(|t| t.text.as_str()).collect();
+            self.line(&format!("#[derive({})]", traits.join(", ")));
+        }
         let kw = pub_kw(s.is_pub);
         // Newtype: `struct B(A);` — it never carries a body.
         if let Some(t) = &s.base {

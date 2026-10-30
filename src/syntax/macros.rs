@@ -1368,3 +1368,128 @@ fn form_home(index: &Index, form: &MacroDecl) -> bool {
         .find(|(_, forms)| forms.iter().any(|f| f.span == form.span))
         .is_some_and(|((module, _), _)| module == "core" || module.starts_with("core::"))
 }
+
+/// `#[derive(Eq)]` / `#[derive(Ord)]` on a struct: the comparison impls a
+/// user would write, field by field in declared order (`Ord`
+/// lexicographically), appended to the struct's module (derive proposal).
+/// Each is a source file of its own in `sources` (`<derive Eq for P>`), so
+/// its spans are distinct and a diagnostic in it shows the generated code.
+/// `gt`/`ge` and `ne` keep their trait defaults.
+pub fn derive(
+    modules: &mut [Module],
+    operators: &HashMap<String, u8>,
+    sources: &mut crate::diag::SourceMap,
+    sink: &mut DiagnosticSink,
+) {
+    for module in modules.iter_mut() {
+        let mut generated = Vec::new();
+        for item in &module.items {
+            let Item::Struct(declaration) = item else {
+                continue;
+            };
+            for derive in &declaration.derives {
+                let Some(text) = derive_text(declaration, derive, sink) else {
+                    continue;
+                };
+                let name = format!("<derive {} for {}>", derive.text, declaration.name.text);
+                let text = format!("module {};\n{text}\n", path_text(&module.path));
+                let file = sources.add(name, text.clone());
+                module.derived_files.push(file);
+                let whole = Span {
+                    file,
+                    start: 0,
+                    end: u32::try_from(text.len()).unwrap_or(u32::MAX),
+                };
+                sink.note_inside(
+                    whole,
+                    format!(
+                        "in the `{}` impl that `#[derive({})]` writes for `{}`",
+                        derive.text, derive.text, declaration.name.text
+                    ),
+                );
+                generated.extend(
+                    crate::syntax::parse_module_with_operators(file, &text, operators, sink).items,
+                );
+            }
+        }
+        module.items.extend(generated);
+    }
+}
+
+/// The source of one derived impl, or `None` after reporting why not.
+fn derive_text(
+    declaration: &StructDecl,
+    derive: &Ident,
+    sink: &mut DiagnosticSink,
+) -> Option<String> {
+    let name = &declaration.name.text;
+    let report = |sink: &mut DiagnosticSink, message: String, help: &str| {
+        sink.emit(
+            Diagnostic::error(message)
+                .with_code(codes::INVALID_DERIVE)
+                .at(derive.span)
+                .help(help.to_string()),
+        );
+    };
+    if !matches!(derive.text.as_str(), "Eq" | "Ord") {
+        report(
+            sink,
+            format!(
+                "cannot derive `{}`: only `Eq` and `Ord` derive",
+                derive.text
+            ),
+            "write the impl by hand",
+        );
+        return None;
+    }
+    if !declaration.params.params.is_empty() || declaration.base.is_some() {
+        report(
+            sink,
+            format!(
+                "cannot derive `{}` for `{name}`: a generic or newtype struct does not derive yet",
+                derive.text
+            ),
+            "write the impl by hand",
+        );
+        return None;
+    }
+    let fields: Vec<&str> = declaration
+        .fields
+        .iter()
+        .map(|f| f.name.text.as_str())
+        .collect();
+    Some(match derive.text.as_str() {
+        "Eq" => {
+            let body = if fields.is_empty() {
+                "true".to_string()
+            } else {
+                fields
+                    .iter()
+                    .map(|f| format!("(self.{f} == rhs.{f})"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            };
+            format!("impl Eq<{name}> for {name} {{ fn eq(self, rhs: {name}) -> Bool {{ return {body}; }} }}")
+        }
+        _ => format!(
+            "impl Ord<{name}> for {name} {{ \
+             fn lt(self, rhs: {name}) -> Bool {{ return {}; }} \
+             fn le(self, rhs: {name}) -> Bool {{ return {}; }} }}",
+            lexicographic(&fields, "<"),
+            lexicographic(&fields, "<="),
+        ),
+    })
+}
+
+/// `self < rhs` (or `<=`) over `fields` in order: the first that differs
+/// decides, and the last compares with `last`.
+fn lexicographic(fields: &[&str], last: &str) -> String {
+    match fields {
+        [] => if last == "<=" { "true" } else { "false" }.to_string(),
+        [only] => format!("(self.{only} {last} rhs.{only})"),
+        [first, rest @ ..] => format!(
+            "((self.{first} < rhs.{first}) or ((self.{first} == rhs.{first}) and {}))",
+            lexicographic(rest, last)
+        ),
+    }
+}
