@@ -1368,3 +1368,153 @@ fn form_home(index: &Index, form: &MacroDecl) -> bool {
         .find(|(_, forms)| forms.iter().any(|f| f.span == form.span))
         .is_some_and(|((module, _), _)| module == "core" || module.starts_with("core::"))
 }
+
+/// `#[derive(Eq)]` / `#[derive(Ord)]` on a struct: the comparison impls a
+/// user would write, field by field in declared order (`Ord`
+/// lexicographically), appended to the struct's module (derive proposal).
+/// Each is a source file of its own in `sources` (`<derive Eq for P>`), so
+/// its spans are distinct and a diagnostic in it shows the generated code.
+/// `gt`/`ge` and `ne` keep their trait defaults.
+pub fn derive(
+    modules: &mut [Module],
+    operators: &HashMap<String, u8>,
+    sources: &mut crate::diag::SourceMap,
+    sink: &mut DiagnosticSink,
+) {
+    for module in modules.iter_mut() {
+        let mut generated = Vec::new();
+        for item in &module.items {
+            let Item::Struct(declaration) = item else {
+                continue;
+            };
+            for derive in &declaration.derives {
+                let Some(text) = derive_text(declaration, derive, sink) else {
+                    continue;
+                };
+                let name = format!("<derive {} for {}>", derive.text, declaration.name.text);
+                let text = format!("module {};\n{text}\n", path_text(&module.path));
+                let file = sources.add(name, text.clone());
+                module.derived_files.push(file);
+                let whole = Span {
+                    file,
+                    start: 0,
+                    end: u32::try_from(text.len()).unwrap_or(u32::MAX),
+                };
+                sink.note_inside(
+                    whole,
+                    format!(
+                        "in the `{}` impl that `#[derive({})]` writes for `{}`",
+                        derive.text, derive.text, declaration.name.text
+                    ),
+                );
+                generated.extend(
+                    crate::syntax::parse_module_with_operators(file, &text, operators, sink).items,
+                );
+            }
+        }
+        module.items.extend(generated);
+    }
+}
+
+/// The source of one derived impl, or `None` after reporting why not.
+fn derive_text(
+    declaration: &StructDecl,
+    derive: &Ident,
+    sink: &mut DiagnosticSink,
+) -> Option<String> {
+    let name = &declaration.name.text;
+    if !matches!(derive.text.as_str(), "Eq" | "Ord") {
+        sink.emit(
+            Diagnostic::error(format!(
+                "cannot derive `{}`: only `Eq` and `Ord` derive",
+                derive.text
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
+        );
+        return None;
+    }
+    // ponytail: a generic newtype reads its value as `unsigned[W](self)`,
+    // which a testbench cannot lower yet (the generic-integer gap on the
+    // board); its forwarded base operators usually cover it meanwhile.
+    if declaration.base.is_some() && !declaration.params.params.is_empty() {
+        sink.emit(
+            Diagnostic::error(format!(
+                "cannot derive `{}` for `{name}`: a generic newtype does not derive yet",
+                derive.text
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
+        );
+        return None;
+    }
+    // A generic struct derives for every instance: `impl<A, B> Eq<Pair<A, B>>
+    // for Pair<A, B>`, its parameters and bounds as declared.
+    let binder = crate::syntax::pretty::params(&declaration.params);
+    let arguments: Vec<&str> = declaration
+        .params
+        .params
+        .iter()
+        .map(|param| param.name.text.as_str())
+        .collect();
+    let applied = if arguments.is_empty() {
+        name.clone()
+    } else {
+        format!("{name}<{}>", arguments.join(", "))
+    };
+    // What is compared, in order: each field, or a newtype's value read as
+    // its base (`integer(self)` for `struct Count(integer)`), which a
+    // newtype over a kernel type has no operator for of its own.
+    let operands: Vec<(String, String)> = match &declaration.base {
+        Some(base) => {
+            let base = crate::syntax::pretty::type_str(base);
+            vec![(format!("{base}(self)"), format!("{base}(rhs)"))]
+        }
+        None => declaration
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    format!("self.{}", field.name.text),
+                    format!("rhs.{}", field.name.text),
+                )
+            })
+            .collect(),
+    };
+    Some(match derive.text.as_str() {
+        "Eq" => {
+            let body = if operands.is_empty() {
+                "true".to_string()
+            } else {
+                operands
+                    .iter()
+                    .map(|(left, right)| format!("({left} == {right})"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            };
+            format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(self, rhs: {applied}) -> Bool {{ return {body}; }} }}")
+        }
+        _ => format!(
+            "impl{binder} Ord<{applied}> for {applied} {{ \
+             fn lt(self, rhs: {applied}) -> Bool {{ return {}; }} \
+             fn le(self, rhs: {applied}) -> Bool {{ return {}; }} }}",
+            lexicographic(&operands, "<"),
+            lexicographic(&operands, "<="),
+        ),
+    })
+}
+
+/// `self < rhs` (or `<=`) over `operands` in order: the first pair that
+/// differs decides, and the last compares with `last`.
+fn lexicographic(operands: &[(String, String)], last: &str) -> String {
+    match operands {
+        [] => if last == "<=" { "true" } else { "false" }.to_string(),
+        [(left, right)] => format!("({left} {last} {right})"),
+        [(left, right), rest @ ..] => format!(
+            "(({left} < {right}) or (({left} == {right}) and {}))",
+            lexicographic(rest, last)
+        ),
+    }
+}

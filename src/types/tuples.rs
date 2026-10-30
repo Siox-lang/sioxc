@@ -38,6 +38,7 @@ pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
         .map(|&arity| {
             let param = |index: usize| format!("T{index}");
             Item::Struct(StructDecl {
+                derives: Vec::new(),
                 is_pub: true,
                 name: ident(tuple_struct_name(arity)),
                 params: Params {
@@ -74,6 +75,7 @@ pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
         lints: Vec::new(),
         span,
         macro_args: Default::default(),
+        derived_files: Vec::new(),
     });
 }
 

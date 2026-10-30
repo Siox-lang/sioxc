@@ -322,7 +322,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         .collect();
     r.file_modules = modules
         .iter()
-        .map(|m| {
+        .flat_map(|m| {
             let path = m
                 .path
                 .segments
@@ -330,7 +330,10 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
                 .map(|s| s.text.as_str())
                 .collect::<Vec<_>>()
                 .join("::");
-            (m.span.file, path)
+            // A derived impl's file belongs to the module it was written for.
+            std::iter::once(m.span.file)
+                .chain(m.derived_files.iter().copied())
+                .map(move |file| (file, path.clone()))
         })
         .collect();
     for m in modules {

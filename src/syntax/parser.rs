@@ -519,6 +519,7 @@ impl<'a> Parser<'a> {
             lints: std::mem::take(&mut self.lints),
             span,
             macro_args: std::mem::take(&mut self.macro_args),
+            derived_files: Vec::new(),
         }
     }
 
@@ -641,6 +642,26 @@ impl<'a> Parser<'a> {
                 .collect::<Vec<_>>();
             (Inline::Auto, attrs)
         };
+        // `#[derive(Eq, Ord)]` belongs to the struct that follows (derive
+        // proposal); every other directive stays on entities and impls.
+        let mut derives = Vec::new();
+        let mut kept = Vec::new();
+        for attr in attrs {
+            if path_text(&attr.name) != "derive" {
+                kept.push(attr);
+                continue;
+            }
+            if !self.at(TokenKind::Struct) {
+                self.error_at(attr.span, "`#[derive(...)]` applies to a struct");
+            }
+            if let Some(Expr::Tuple { elems, .. }) = &attr.value {
+                derives.extend(elems.iter().filter_map(|elem| match elem {
+                    Expr::Path(path) => path.segments.last().cloned(),
+                    _ => None,
+                }));
+            }
+        }
+        let attrs = kept;
         if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Impl) {
             self.error_here("attributes are only allowed on entities and implementations");
         }
@@ -658,7 +679,11 @@ impl<'a> Parser<'a> {
                 function.inline = inline;
                 Item::Fn(function)
             }
-            TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
+            TokenKind::Struct => {
+                let mut declaration = self.parse_struct(is_pub);
+                declaration.derives = derives;
+                Item::Struct(declaration)
+            }
             TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => {
@@ -768,6 +793,29 @@ impl<'a> Parser<'a> {
             let name = self.parse_path();
             if let Some(directive) = self.parse_lint_directive(start, &name) {
                 self.pending_lints.push(directive);
+                continue;
+            }
+            // `#[derive(Eq, Ord)]`: the traits, kept as a tuple of paths.
+            if path_text(&name) == "derive" && self.eat(TokenKind::LParen) {
+                let list = self.span();
+                let mut elems = Vec::new();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    elems.push(Expr::Path(self.parse_path()));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "to close `#[derive(...)]`");
+                self.expect(TokenKind::RBracket, "to close an attribute");
+                attrs.push(Attr {
+                    name,
+                    value: Some(Expr::Tuple {
+                        elems,
+                        span: list.to(self.prev_span()),
+                    }),
+                    span: start.to(self.prev_span()),
+                    directive: true,
+                });
                 continue;
             }
             // `#[inline(always)]`: the mode is kept as a path value.
@@ -1121,6 +1169,7 @@ impl<'a> Parser<'a> {
                 params,
                 base: Some(base),
                 fields: Vec::new(),
+                derives: Vec::new(),
                 span: start.to(self.prev_span()),
             };
         } else {
@@ -1154,6 +1203,7 @@ impl<'a> Parser<'a> {
             params,
             base,
             fields,
+            derives: Vec::new(),
             span: start.to(self.prev_span()),
         }
     }

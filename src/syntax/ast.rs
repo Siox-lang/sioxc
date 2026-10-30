@@ -25,6 +25,9 @@ pub struct Module {
     /// which is all a built-in macro needs; a user macro re-reads the tokens
     /// by its parameters' fragment kinds (`syntax::macros`).
     pub macro_args: MacroArgTable,
+    /// Source files the compiler wrote for this module (`#[derive]` impls).
+    /// Their items belong to it, for visibility as for everything else.
+    pub derived_files: Vec<crate::diag::FileId>,
 }
 
 /// Every `name!(…)` call's argument tokens, by the call's span. A macro body
@@ -330,6 +333,9 @@ pub struct StructDecl {
     /// Declared fields, in layout order. Empty for a derived leaf type whose
     /// representation comes entirely from `base`.
     pub fields: Vec<Field>,
+    /// The traits `#[derive(..)]` asks for (`Eq`, `Ord`), expanded into
+    /// ordinary impls with the macros, before names resolve.
+    pub derives: Vec<Ident>,
     /// `struct` keyword through the closing brace.
     pub span: Span,
 }
