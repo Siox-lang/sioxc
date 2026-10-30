@@ -263,7 +263,9 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        if !matches!(expected, Ty::Error) && !self.assignable(&expected, value, sym) {
+        // A field is a store site: an `impl Into` converts into it, as into a
+        // `let` (conversions proposal).
+        if !matches!(expected, Ty::Error) && !self.site_assignable(&expected, value, sym) {
             let actual = self.type_of(value, sym);
             self.error_with_help(
                 codes::TYPE_MISMATCH,
