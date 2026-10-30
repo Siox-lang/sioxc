@@ -958,6 +958,28 @@ impl<'a> Lowering<'a> {
                 self.report_bad_indices(bad);
             }
             match s {
+                // `sub = arr[2..]` is `sub = arr[2..3]` under a clock too (#353).
+                ast::Stmt::Assign {
+                    label,
+                    target,
+                    value,
+                    after,
+                    span,
+                } if self.full_range_slice(value).is_some() => {
+                    let full = ast::Block {
+                        stmts: vec![ast::Stmt::Assign {
+                            label: label.clone(),
+                            target: target.clone(),
+                            value: self
+                                .full_range_slice(value)
+                                .unwrap_or_else(|| value.clone()),
+                            after: after.clone(),
+                            span: *span,
+                        }],
+                        span: *span,
+                    };
+                    self.lower_event_block(&full, cond.clone(), out);
+                }
                 // `mem[i][0..1] = v` under a clock (#320).
                 ast::Stmt::Assign {
                     target,
