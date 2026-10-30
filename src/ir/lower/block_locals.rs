@@ -243,6 +243,48 @@ impl<'a> Lowering<'a> {
             .map(|(_, value)| Val::Scalar(value))
     }
 
+    /// `loc[1..2]`, `loc[1..]` of a block-local array: its elements, numbered
+    /// from 0 as any slice's are. A block local has no signals for the
+    /// signal-array slice paths to find (#354).
+    pub(super) fn block_local_slice(&self, expression: &ast::Expr) -> Option<Val> {
+        let ast::Expr::Index { base, index, .. } = expression else {
+            return None;
+        };
+        let (lo, hi) = match index.as_ref() {
+            ast::Expr::Range { lo, hi, .. } => (Some(lo), Some(hi)),
+            ast::Expr::PartialRange { lo, hi, .. } => (lo.as_ref(), hi.as_ref()),
+            _ => return None,
+        };
+        let (scope, name, suffix) = self.block_local_path(base)?;
+        // ponytail: a whole local only; `loc.f[1..2]` would need the field's range.
+        if !suffix.is_empty() {
+            return None;
+        }
+        let binding = self.block_scopes.borrow().get(scope)?.get(&name)?.clone();
+        let Val::Fields(fields) = binding.value else {
+            return None;
+        };
+        let (left, right) = self.declared_range(&binding.ty, &self.cur_env)?;
+        let bound = |given: Option<&Box<ast::Expr>>, open: i64| match given {
+            Some(given) => self.eval_const(given, &self.cur_env),
+            None => Some(open),
+        };
+        let (left, right) = (bound(lo, left)?, bound(hi, right)?);
+        let mut elements = Vec::new();
+        for (position, label) in loop_range(left, right).into_iter().enumerate() {
+            let element = format!("[{label}]");
+            for (field, value) in &fields {
+                let Some(rest) = field.strip_prefix(&element) else {
+                    continue;
+                };
+                if rest.is_empty() || rest.starts_with('.') || rest.starts_with('[') {
+                    elements.push((format!("[{position}]{rest}"), value.clone()));
+                }
+            }
+        }
+        (!elements.is_empty()).then_some(Val::Fields(elements))
+    }
+
     /// Runtime aggregate access into a storage-free block local. Its leaves
     /// use the same flattened suffixes as signals (`[0][1]`, `[0].data`), but
     /// live as expressions inside `Val::Fields` rather than `SignalId`s.

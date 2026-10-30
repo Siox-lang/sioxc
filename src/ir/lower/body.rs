@@ -810,7 +810,31 @@ impl<'a> Lowering<'a> {
                 // leaf from the matching field. Without this the whole
                 // connection was dropped in silence and the port kept its
                 // default — a scalar port has always accepted a value here.
-                if expr_path(value).is_none() {
+                if expr_path(value).is_none()
+                    && self.slice_connection(value, &leaves, field).is_none()
+                {
+                    // Read through the port's own layout, any nesting of
+                    // arrays and structs drives its leaves (#355).
+                    if let Some(values) = self.port_literal_leaves(value, &leaves, field) {
+                        for (k, child_id, dir) in &leaves {
+                            if *dir == Some(ast::Direction::Out) {
+                                continue;
+                            }
+                            let Some(expr) = values.get(&k[field.len()..]) else {
+                                continue;
+                            };
+                            let ctx = self.next_ctx_at(ast::expr_span(value));
+                            self.hardware.drivers.push(Driver {
+                                span: self.cur_span,
+                                target: *child_id,
+                                cond: None,
+                                expr: expr.clone(),
+                                meta: None,
+                                ctx,
+                            });
+                        }
+                        continue;
+                    }
                     if let ast::Expr::Construct { args, .. } = value {
                         let mut fields: HashMap<String, &ast::Expr> = HashMap::new();
                         literal_leaves(args, "", &mut fields);
@@ -871,12 +895,36 @@ impl<'a> Lowering<'a> {
                 // A composite (struct/array) port: wire each leaf to the matching
                 // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
                 // The parent side must be a signal path.
-                let Some(base) = expr_path(value) else {
-                    continue;
+                // `.inp = arr[1..2]`: a slice of an array signal, whose port
+                // position `p` is the array's `p`-th selected label. The
+                // connection was dropped in silence (#358).
+                let (base, relabel) = match expr_path(value) {
+                    Some(base) => (base, None),
+                    None => match self.slice_connection(value, &leaves, field) {
+                        Some((base, relabel)) => (base, Some(relabel)),
+                        None => continue,
+                    },
                 };
                 leaves.sort_by(|a, b| a.0.cmp(&b.0));
                 for (k, child_id, dir) in leaves {
                     let suffix = &k[field.len()..]; // ".valid", "[0]"
+                    let suffix = match &relabel {
+                        Some(relabel) => {
+                            let Some((label, rest)) = suffix
+                                .strip_prefix('[')
+                                .and_then(|inner| inner.split_once(']'))
+                            else {
+                                continue;
+                            };
+                            let Some(parent) =
+                                label.parse().ok().and_then(|l: i64| relabel.get(&l))
+                            else {
+                                continue;
+                            };
+                            format!("[{parent}]{rest}")
+                        }
+                        None => suffix.to_string(),
+                    };
                     let Some(&parent_id) = self.locals.get(&format!("{base}{suffix}")) else {
                         continue;
                     };

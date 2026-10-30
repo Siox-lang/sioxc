@@ -125,11 +125,18 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         span: crate::diag::Span,
     ) {
+        // ...or part of one (`= TABLE[1..2]`, `= TABLE[2..]`), as a `const`
+        // already folds it (#357).
+        let slice = || match self.const_table_index(value, &self.cur_env) {
+            Some(Ok(values)) => Some(values),
+            _ => None,
+        };
         if let Some(values) = self
             .free_fns
             .constant_expr_key(value)
             .and_then(|key| self.const_arrays.get(&key))
             .cloned()
+            .or_else(slice)
         {
             let indices = self.local_array.get(prefix).cloned().unwrap_or_default();
             for (folded, index) in values.into_iter().zip(indices) {
@@ -635,6 +642,14 @@ impl<'a> Lowering<'a> {
                 let mut words = vec![pattern as u64, (pattern >> 64) as u64];
                 words.resize(64, fill);
                 return Some(words);
+            }
+        }
+        // An element of a constant table (`= TABLE[1]`, #357).
+        if let Some(Err(element)) = self.const_table_index(expression, &self.cur_env) {
+            match element {
+                Expr::Const(value) => return Some(vec![value]),
+                Expr::WideConst(words) => return Some(words),
+                _ => {}
             }
         }
         match self.lower_const_value(expression, &self.cur_env) {

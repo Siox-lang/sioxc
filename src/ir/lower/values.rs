@@ -139,6 +139,9 @@ impl<'a> Lowering<'a> {
             return value;
         }
         if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
+            if let Some(value) = self.block_local_slice(e) {
+                return value;
+            }
             if let Some(value) = self.source_env_access(e, env) {
                 return value;
             }

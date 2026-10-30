@@ -588,6 +588,43 @@ impl<'a> Lowering<'a> {
                                     // belongs in the canonical hardware graph:
                                     // flatten it against the child's retained
                                     // leaves instead of silently dropping it.
+                                    // Read through the port's layout, any
+                                    // nesting of arrays and structs (#355).
+                                    let mut leaves: Vec<_> = sub_ports
+                                        .iter()
+                                        .filter(|(name, _)| {
+                                            name.strip_prefix(&port).is_some_and(|rest| {
+                                                rest.starts_with('.') || rest.starts_with('[')
+                                            })
+                                        })
+                                        .map(|(name, &(signal, direction))| {
+                                            (name.clone(), signal, direction)
+                                        })
+                                        .collect();
+                                    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+                                    if let Some(values) =
+                                        self.port_literal_leaves(&value, &leaves, &port)
+                                    {
+                                        for (name, signal, direction) in &leaves {
+                                            if *direction == Some(ast::Direction::Out) {
+                                                continue;
+                                            }
+                                            let Some(expression) = values.get(&name[port.len()..])
+                                            else {
+                                                continue;
+                                            };
+                                            let ctx = self.next_ctx_at(ast::expr_span(&value));
+                                            self.hardware.drivers.push(Driver {
+                                                span: Some(ast::expr_span(&value)),
+                                                target: *signal,
+                                                cond: None,
+                                                expr: expression.clone(),
+                                                meta: None,
+                                                ctx,
+                                            });
+                                        }
+                                        continue;
+                                    }
                                     if let ast::Expr::Construct {
                                         args, spread: None, ..
                                     } = &value
@@ -1204,6 +1241,19 @@ impl<'a> Lowering<'a> {
         match index.as_ref() {
             ast::Expr::Range { lo, hi, .. } => {
                 loop_range(self.eval_const(lo, scope)?, self.eval_const(hi, scope)?)
+                    .into_iter()
+                    .map(element)
+                    .collect::<Option<Vec<_>>>()
+                    .map(Ok)
+            }
+            // `TABLE[2..]`: an open end is the table's own (#357).
+            ast::Expr::PartialRange { lo, hi, .. } => {
+                let bound = |given: &Option<Box<ast::Expr>>, open: i64| match given {
+                    Some(given) => self.eval_const(given, scope),
+                    None => Some(open),
+                };
+                let last = i64::try_from(table.len()).ok()? - 1;
+                loop_range(bound(lo, 0)?, bound(hi, last)?)
                     .into_iter()
                     .map(element)
                     .collect::<Option<Vec<_>>>()
