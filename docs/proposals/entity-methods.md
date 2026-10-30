@@ -1,7 +1,22 @@
 # Public methods on entities
 
-Status: **partially implemented**. Tier 1 associated functions are complete;
-tiers 2 and 3 receiver methods remain a proposal and are rejected (`E-P024`).
+Status: **partially implemented; tiers 2 and 3 deferred**. Tier 1 associated
+functions are complete. Tiers 2 and 3 (receiver methods) are rejected
+(`E-P024`) and were put on hold by the owner on 2026-10-10: an entity's `impl`
+body *is* the entity and names its ports and state without a receiver, so a
+`self` parameter on an entity method would look unlike everything else in that
+body, while a struct method needs it to tell itself apart from an associated
+function. Updated 2026-10-30 for the work below that has landed since.
+
+**Syntax follow-up:** [Implicit receivers and static declarations](implicit-receivers-and-static.md)
+answers that objection. It proposes `static fn` for associated functions and an
+implicit receiver for ordinary `fn`, consistently across entities, structs,
+enums and applied views, so an entity method needs no `self` parameter at all.
+The `self` parameters in the examples below describe today's distinction, not
+the proposed spelling; under that proposal `pub fn write(self, v)` is
+`pub fn write(v)`, and tier 1's `pub fn clamp(v)` is `pub static fn clamp(v)`.
+That proposal settles declarations only; the generated ports, call-site rules
+and scheduling here remain this proposal's work.
 
 An entity's interface is its ports. Reaching a child instance therefore means
 declaring a port for every value that crosses the boundary and wiring each one
@@ -161,7 +176,39 @@ purely additive.
    the intermediate levels' ports.
 4. **Generic entities.** A method on `Fifo<W>` materialises ports whose widths
    depend on the specialization, so port generation must happen after
-   parameter substitution.
+   parameter substitution. Const-generic functions already do this per call
+   (#349); see *Since this was written*.
+5. **Spelling.** Whether to land tiers 2 and 3 only together with
+   [implicit receivers](implicit-receivers-and-static.md), so entity methods
+   never take a `self` parameter, which was the reason for deferring them.
+
+## Since this was written
+
+What landed after 2026-09-28 that a receiver-method design has to fit:
+
+- **Instance arrays** (sioxc #290, #308). `let stage: Cell[4];` builds every
+  slot, and `stage[i] = { .. }` is connection sugar. A method call through a
+  constant index, `stage[2].write(v)`, is a call on one element: one call site
+  for that element. A runtime index, `stage[sel].write(v)`, calls whichever
+  element `sel` selects: each element's enable is the call's enable and
+  `sel == k`, its arguments are the call's, and the result is a mux over the
+  elements' results by `sel`. Every element still has exactly one caller, so
+  this fits the one-call-site rule without arbitration. It is the same label
+  chain a runtime-indexed write already lowers to.
+- **Unwired instances** (W-P021). A slot left unconnected warns. Ports that a
+  method call generates are connected by that call, so an instance used only
+  through its methods must not warn, and a declared slot no method reaches
+  still does.
+- **Const generics** (#349). Generic functions are now instantiated per call
+  with their integer parameters written in. A method on `Fifo<W>` gets its
+  port widths the same way, after the instance's parameters are substituted,
+  which settles open question 4 in principle.
+- **Testbench callers.** A testbench process that calls `dut.write(v)` would
+  drive the generated enable and argument ports at that point in the process
+  and read the result after the delta settles, exactly as writing the ports by
+  hand does today, and `await` sequences successive calls. The one-call-site
+  rule applies per process. This needs no new runtime machinery, but it is a
+  new call form for the testbench lowering and is not designed in detail here.
 
 ## Status of the current rejection
 
