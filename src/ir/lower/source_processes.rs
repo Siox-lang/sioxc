@@ -1792,12 +1792,35 @@ pub(super) fn testbench_bindings(
             let Some(storage_prefix) = storage_projection(&connection.signal, storage) else {
                 continue;
             };
-            // A slice or computed index (rendered `[<expr>]`) is no storage
+            // A computed index (rendered `[<expr>]`) is no storage
             // projection: an input reads it as a value.
             if storage_prefix.contains("<expr>") {
                 continue;
             }
             let port_path = format!("{root_path}.{}.{}", child.name, connection.port);
+            // `.inp = ai[2..]`: port position `p` is the slice's `p`-th label
+            // (#358). An open end is as far from the other as the port is
+            // long. ponytail: it reads the array as ascending.
+            let slice = slice_projection(storage_prefix).and_then(|(before, lo, hi)| {
+                let range = design.source_layouts.get(&port_path)?.index_range()?;
+                let own = crate::ir::lower_helpers::loop_range(range.left, range.right);
+                let length = i64::try_from(own.len()).ok()?;
+                let (lo, hi) = match (lo, hi) {
+                    (Some(lo), Some(hi)) => (lo, hi),
+                    (Some(lo), None) => (lo, lo + length - 1),
+                    (None, Some(hi)) => (hi - length + 1, hi),
+                    (None, None) => (0, length - 1),
+                };
+                let selected = crate::ir::lower_helpers::loop_range(lo, hi);
+                (selected.len() == own.len()).then(|| {
+                    let labels: std::collections::HashMap<i64, i64> =
+                        own.into_iter().zip(selected).collect();
+                    (before.to_string(), labels)
+                })
+            });
+            if slice_projection(storage_prefix).is_some() && slice.is_none() {
+                continue;
+            }
             for (index, signal) in design.signals.iter().enumerate() {
                 let port_projection = if signal.path == port_path {
                     ""
@@ -1826,8 +1849,25 @@ pub(super) fn testbench_bindings(
                 ) else {
                     continue;
                 };
+                let projection = match &slice {
+                    Some((before, labels)) => {
+                        let Some((label, rest)) = port_projection
+                            .strip_prefix('[')
+                            .and_then(|inner| inner.split_once(']'))
+                        else {
+                            continue;
+                        };
+                        let Some(selected) =
+                            label.parse().ok().and_then(|label: i64| labels.get(&label))
+                        else {
+                            continue;
+                        };
+                        format!("{before}[{selected}]{rest}")
+                    }
+                    None => format!("{storage_prefix}{port_projection}"),
+                };
                 bindings.push(ProcessStorageBinding {
-                    projection: format!("{storage_prefix}{port_projection}"),
+                    projection,
                     signal: SignalId(index),
                     direction,
                 });
@@ -1863,6 +1903,22 @@ pub(super) fn testbench_bindings(
     bindings
         .dedup_by(|left, right| left.projection == right.projection && left.signal == right.signal);
     bindings
+}
+
+/// A storage projection ending in a slice (`[2..]`, `.v[1..2]`): what comes
+/// before it, and its bounds, `None` where open.
+fn slice_projection(projection: &str) -> Option<(&str, Option<i64>, Option<i64>)> {
+    let inner = projection.strip_suffix(']')?;
+    let open = inner.rfind('[')?;
+    let (lo, hi) = inner[open + 1..].split_once("..")?;
+    let bound = |text: &str| -> Option<Option<i64>> {
+        if text.is_empty() {
+            Some(None)
+        } else {
+            text.parse().ok().map(Some)
+        }
+    };
+    Some((&projection[..open], bound(lo)?, bound(hi)?))
 }
 
 /// Suffix of a connected source path relative to a storage root.

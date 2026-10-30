@@ -1997,6 +1997,25 @@ fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
         // signal, with the (loop/const) index evaluated.
         Expr::Index { base, index, .. } => {
             let b = render_signal(base, env);
+            // A constant slice keeps its bounds (`ai[2..]`), so a testbench
+            // binds the port's positions to the labels it selects (#358).
+            let bound = |bound: &Option<Box<Expr>>| match bound {
+                Some(bound) => match eval(bound, env) {
+                    ParamValue::Int(i) => Some(i.to_string()),
+                    _ => None,
+                },
+                None => Some(String::new()),
+            };
+            let slice = match index.as_ref() {
+                Expr::Range { lo, hi, .. } => {
+                    bound(&Some(lo.clone())).zip(bound(&Some(hi.clone())))
+                }
+                Expr::PartialRange { lo, hi, .. } => bound(lo).zip(bound(hi)),
+                _ => None,
+            };
+            if let Some((lo, hi)) = slice {
+                return format!("{b}[{lo}..{hi}]");
+            }
             match eval(index, env) {
                 ParamValue::Int(i) => format!("{b}[{i}]"),
                 _ => format!("{b}[<expr>]"),

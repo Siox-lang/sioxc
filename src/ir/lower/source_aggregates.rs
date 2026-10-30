@@ -12,6 +12,9 @@ impl Lowering<'_> {
         env: &HashMap<String, Val>,
         layout: &SourceLayout,
     ) -> Val {
+        if let Some(slice) = self.block_local_slice(expression) {
+            return slice;
+        }
         if let LayoutKind::Array {
             range: Some(range), ..
         } = &layout.kind
@@ -430,6 +433,83 @@ impl Lowering<'_> {
             }),
             span: *span,
         })
+    }
+
+    /// A composite literal on a child's composite port (`.m = [[1, 2], [3,
+    /// 4]]`, `.b = Bundle { .arr = [1, 2] }`), read through the port's own
+    /// layout as a stored value is: its leaves by suffix (`[1][0]`, `.arr[1]`).
+    /// `leaves` are the port's `(name, signal, direction)`, named from `port`.
+    /// Only one level of struct or array literal was matched, and a nested
+    /// one drove nothing (#355).
+    pub(super) fn port_literal_leaves(
+        &self,
+        value: &ast::Expr,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<HashMap<String, Expr>> {
+        if !matches!(value, ast::Expr::Construct { .. } | ast::Expr::Array { .. }) {
+            return None;
+        }
+        let (name, signal, _) = leaves.first()?;
+        let full = &self.out.signals.get(signal.0 as usize)?.path;
+        let root = full.strip_suffix(name.strip_prefix(port)?)?;
+        let layout = self.out.source_layouts.get(root)?.clone();
+        let Val::Fields(fields) = self.lower_shaped_source(value, &HashMap::new(), &layout) else {
+            return None;
+        };
+        Some(
+            fields
+                .into_iter()
+                .map(|(leaf, expression)| {
+                    let suffix = if leaf.starts_with('[') {
+                        leaf
+                    } else {
+                        format!(".{leaf}")
+                    };
+                    (suffix, expression)
+                })
+                .collect(),
+        )
+    }
+
+    /// A port connected to a constant slice of an array signal (`.inp =
+    /// arr[1..2]`, `arr[2..]`): the array's path, and each of the port's
+    /// labels mapped to the array label it reads, by position.
+    pub(super) fn slice_connection(
+        &self,
+        value: &ast::Expr,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<(String, HashMap<i64, i64>)> {
+        let full = self.full_range_slice(value);
+        let ast::Expr::Index { base, index, .. } = full.as_ref().unwrap_or(value) else {
+            return None;
+        };
+        if !matches!(index.as_ref(), ast::Expr::Range { .. }) {
+            return None;
+        }
+        let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+        let array = self.persisted_layout(&path)?;
+        if !matches!(array.kind, LayoutKind::Array { .. }) {
+            return None;
+        }
+        let selected = self.slice_labels(array, index)?;
+        let own = self.port_labels(leaves, port)?;
+        (own.len() == selected.len()).then(|| (path, own.into_iter().zip(selected).collect()))
+    }
+
+    /// A composite port's own labels in declared order, read off one of its
+    /// leaves' signals: the port's layout is kept under its full path.
+    fn port_labels(
+        &self,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<Vec<i64>> {
+        let (name, signal, _) = leaves.first()?;
+        let full_name = &self.out.signals.get(signal.0 as usize)?.path;
+        let root = full_name.strip_suffix(name.strip_prefix(port)?)?;
+        let range = self.out.source_layouts.get(root)?.index_range()?;
+        Some(loop_range(range.left, range.right))
     }
 
     /// Whether `expression` is a call returning an unpacked array.
