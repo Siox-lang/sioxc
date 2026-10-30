@@ -7882,6 +7882,11 @@ fn lower_process_default(
     if !type_args.is_empty() || !args.is_empty() {
         return None;
     }
+    // `Counter::new()` the type declares (inherent or `impl Default`) is that
+    // function, not the structural default: it read as all zeros (#361).
+    if matches!(callee.as_ref(), ast::Expr::Path(_)) && context.functions.get(callee).is_some() {
+        return None;
+    }
     let definition = match callee.as_ref() {
         ast::Expr::Path(path)
             if matches!(path.segments.last()?.text.as_str(), "default" | "new") =>

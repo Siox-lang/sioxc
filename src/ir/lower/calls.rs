@@ -533,6 +533,10 @@ impl<'a> Lowering<'a> {
         if !args.is_empty() {
             return None;
         }
+        // A `new`/`default` the type declares is that function (#361).
+        if matches!(callee, ast::Expr::Path(_)) && self.free_fns.get(callee).is_some() {
+            return None;
+        }
         // The head type name — a bare `T` or the family of a sized `T[N]` (the
         // width is irrelevant to a zero default).
         let name = match callee {
