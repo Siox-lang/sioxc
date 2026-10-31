@@ -175,7 +175,11 @@ impl<'a> Checker<'a> {
                         .all(|arm| self.block_guarantees_return(&arm.body, names))
                     && self.match_is_exhaustive(&match_.scrutinee, &match_.arms, names)
             }
-            Stmt::Let(_) | Stmt::Assign { .. } | Stmt::For { .. } | Stmt::Expr(_) => false,
+            Stmt::Let(_)
+            | Stmt::Assign { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::Expr(_) => false,
         }
     }
 
@@ -512,6 +516,30 @@ impl<'a> Checker<'a> {
                     ranged,
                     expected_return,
                 );
+            }
+            Stmt::While { cond, body, span } => {
+                // A loop of run-time length: hardware loops unroll at
+                // elaboration, so only a testbench (or a function it calls)
+                // can run one.
+                if self.in_fn_body.get() {
+                    if let Some(current) = self.current_fn.get() {
+                        self.testbench_only_fns
+                            .borrow_mut()
+                            .insert(current, "while".to_string());
+                    }
+                } else if !self.in_testbench.get() {
+                    self.error_with_help(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        "`while` is only available in a testbench".to_string(),
+                        "hardware loops unroll at elaboration: use `for i in 0..N` with constant \
+                         bounds, or move the loop into a `#[test]` entity"
+                            .to_string(),
+                    );
+                }
+                self.check_condition(cond, sym);
+                self.check_expr(cond, sym);
+                self.check_stmt_sequence(&body.stmts, dirs, sym, ranged, expected_return);
             }
             Stmt::Expr(e) => {
                 self.check_no_effect(e);

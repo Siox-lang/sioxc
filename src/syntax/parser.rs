@@ -2240,6 +2240,17 @@ impl<'a> Parser<'a> {
             TokenKind::Process => self.process_stmt(None),
             TokenKind::Match => Stmt::Match(self.parse_match()),
             TokenKind::For => self.parse_for(),
+            TokenKind::While => {
+                let start = self.span();
+                self.bump(); // `while`
+                let cond = self.parse_expr(true);
+                let body = self.parse_block();
+                Stmt::While {
+                    cond,
+                    body,
+                    span: start.to(self.prev_span()),
+                }
+            }
             TokenKind::Return => {
                 let start = self.span();
                 self.bump();

@@ -191,6 +191,11 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
             body: subst_block_paths(body, map),
             span: *span,
         },
+        Stmt::While { cond, body, span } => Stmt::While {
+            cond: subst_expr_paths(cond, map),
+            body: subst_block_paths(body, map),
+            span: *span,
+        },
         Stmt::Let(l) => {
             let mut l = l.clone();
             l.value = l.value.as_ref().map(|v| subst_expr_paths(v, map));
@@ -363,6 +368,15 @@ pub(in crate::ir) fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt
                 .collect();
             ast::Stmt::Process(process)
         }
+        ast::Stmt::While { cond, body, span } => ast::Stmt::While {
+            cond: subst_expr(cond, var, val),
+            body: {
+                let mut b = body.clone();
+                b.stmts = b.stmts.iter().map(|st| subst_stmt(st, var, val)).collect();
+                b
+            },
+            span: *span,
+        },
         ast::Stmt::For {
             label,
             var: v,

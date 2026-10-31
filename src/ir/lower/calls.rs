@@ -2927,7 +2927,9 @@ fn statements_return(statements: &[ast::Stmt]) -> bool {
             .arms
             .iter()
             .any(|arm| statements_return(&arm.body.stmts)),
-        ast::Stmt::For { body, .. } => statements_return(&body.stmts),
+        ast::Stmt::For { body, .. } | ast::Stmt::While { body, .. } => {
+            statements_return(&body.stmts)
+        }
         _ => false,
     })
 }

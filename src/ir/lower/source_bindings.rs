@@ -1161,7 +1161,9 @@ pub(super) fn returned_shapes(function: &ast::FnDecl) -> Vec<(&str, Option<&ast:
                     }
                 }
                 ast::Stmt::Match(m) => m.arms.iter().for_each(|arm| returned(&arm.body.stmts, out)),
-                ast::Stmt::For { body, .. } => returned(&body.stmts, out),
+                ast::Stmt::For { body, .. } | ast::Stmt::While { body, .. } => {
+                    returned(&body.stmts, out)
+                }
                 _ => {}
             }
         }

@@ -452,8 +452,11 @@ impl Reads<'_> {
                     self.fold_block(&mut arm.body, scope, sink);
                 }
             }
-            Stmt::For { range, body, .. } => {
-                self.fold_expr(range, scope, sink);
+            Stmt::For {
+                range: cond, body, ..
+            }
+            | Stmt::While { cond, body, .. } => {
+                self.fold_expr(cond, scope, sink);
                 self.fold_block(body, scope, sink);
             }
             Stmt::Expr(expression) => self.fold_expr(expression, scope, sink),

@@ -396,7 +396,9 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
                     record_block(&arm.body, type_params, declared, resolved, out);
                 }
             }
-            Stmt::For { body, .. } => record_block(body, type_params, declared, resolved, out),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                record_block(body, type_params, declared, resolved, out)
+            }
             Stmt::Assign { .. } | Stmt::Expr(_) | Stmt::Return { .. } => {}
         }
     }

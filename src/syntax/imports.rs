@@ -931,6 +931,10 @@ impl Rewriter<'_> {
                 inner.names.remove(&var.text);
                 self.block(body, &inner, sink);
             }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond, env, sink);
+                self.block(body, env, sink);
+            }
             Stmt::Expr(e) => self.expr(e, env, sink),
             Stmt::Return { value, .. } => {
                 if let Some(value) = value {
