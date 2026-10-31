@@ -1301,6 +1301,20 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                     POSTFIX_PREC,
                 );
             }
+            // The timing primitive prints as written: `await x;`, `await c for t;`.
+            if let (Expr::Path(path), false) = (callee.as_ref(), *bang) {
+                if let ([segment], [awaited, rest @ ..]) =
+                    (path.segments.as_slice(), args.as_slice())
+                {
+                    if segment.text == "await" && rest.len() <= 1 {
+                        let timeout = rest
+                            .first()
+                            .map(|timeout| format!(" for {}", expr(timeout)))
+                            .unwrap_or_default();
+                        return (format!("await {}{timeout}", expr(awaited)), 0);
+                    }
+                }
+            }
             if *bang {
                 if let Some(args) = macro_call_args(*span) {
                     return (
@@ -1541,6 +1555,18 @@ mod tests {
                await 1ns;\n\
              }\n",
         );
+    }
+
+    #[test]
+    /// `await` prints as the statement it is, its timeout included; a call
+    /// form would read back as a tuple.
+    fn prints_await_with_its_timeout() {
+        let source = "module m;\n#[test]\nentity T {}\nimpl T {\n  let done: Bit;\n  p: process {\n    await 1ns;\n    await done == '1' for 8us;\n  }\n}\n";
+        let mut sink = DiagnosticSink::new();
+        let printed = print_module(&crate::syntax::parse_module(FileId(0), source, &mut sink));
+        assert!(printed.contains("await 1ns;"), "{printed}");
+        assert!(printed.contains("await done == '1' for 8us;"), "{printed}");
+        roundtrip(source);
     }
 
     #[test]

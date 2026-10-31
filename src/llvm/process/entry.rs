@@ -135,7 +135,12 @@ pub(super) fn immediate_dominators(process: &ProcessCfg) -> Vec<Option<usize>> {
             ProcessTerminator::For { body, exit, .. } => {
                 vec![body.0 as usize, exit.0 as usize]
             }
-            ProcessTerminator::Suspend { resume, .. } => vec![resume.0 as usize],
+            ProcessTerminator::Suspend {
+                resume, operation, ..
+            } => std::iter::once(*resume)
+                .chain(operation.timeout())
+                .map(|block| block.0 as usize)
+                .collect(),
             _ => Vec::new(),
         })
         .collect::<Vec<_>>();
@@ -245,9 +250,11 @@ pub(super) fn process_entry<'ctx>(
     let resumes = process
         .blocks
         .iter()
-        .filter_map(|block| match block.terminator {
-            ProcessTerminator::Suspend { resume, .. } => Some(resume),
-            _ => None,
+        .flat_map(|block| match block.terminator {
+            ProcessTerminator::Suspend {
+                resume, operation, ..
+            } => std::iter::once(resume).chain(operation.timeout()).collect(),
+            _ => Vec::new(),
         })
         .collect::<std::collections::HashSet<_>>();
     let cases = process
@@ -843,6 +850,37 @@ pub(super) fn process_entry<'ctx>(
                     .is_empty()
                     .then(|| emit_condition_suspend(context, module, &builder, process.id, *resume))
                     .flatten();
+                builder
+                    .build_return(Some(&i8.const_int(
+                        u64::from(if emitted.is_some() {
+                            PROCESS_SUSPENDED
+                        } else {
+                            PROCESS_UNSUPPORTED
+                        }),
+                        false,
+                    )))
+                    .unwrap();
+            }
+            ProcessTerminator::Suspend {
+                operation: siox::ir::ProcessSuspendOp::AwaitConditionFor { timeout },
+                arguments,
+                resume,
+                ..
+            } => {
+                let emitted = arguments.first().copied().and_then(|delay| {
+                    emit_condition_for_suspend(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        process.id,
+                        *resume,
+                        *timeout,
+                        delay,
+                        index_sites,
+                        &mut cache,
+                    )
+                });
                 builder
                     .build_return(Some(&i8.const_int(
                         u64::from(if emitted.is_some() {

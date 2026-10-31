@@ -2270,14 +2270,19 @@ impl<'a> Parser<'a> {
                     segments: vec![ident],
                     span: start,
                 });
-                let arg = self.parse_expr(false);
+                let mut args = vec![self.parse_expr(false)];
+                // `await <condition> for <time>;`: VHDL's `wait until … for …`,
+                // a second argument.
+                if self.eat(TokenKind::For) {
+                    args.push(self.parse_expr(false));
+                }
                 self.expect(TokenKind::Semi, "after a timing primitive");
                 let span = start.to(self.prev_span());
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
                     qualifier: None,
-                    args: vec![arg],
+                    args,
                     bang: false,
                     span,
                 })
