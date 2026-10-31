@@ -955,6 +955,7 @@ impl Expander<'_> {
 
     fn stmt(&mut self, statement: &mut Stmt, sequential: bool, depth: usize) {
         match statement {
+            Stmt::Process(p) => self.block(&mut p.body, true, depth),
             Stmt::Let(l) => {
                 if let Some(value) = &mut l.value {
                     self.expr(value, depth);

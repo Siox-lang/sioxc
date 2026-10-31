@@ -1678,30 +1678,7 @@ impl<'a> Parser<'a> {
                 function.inline = inline;
                 Some(ImplItem::Fn(function))
             }
-            TokenKind::Process => {
-                let start = label.as_ref().map_or(self.span(), |label| label.span);
-                self.bump();
-                let mut label = label;
-                if self.at(TokenKind::Ident) {
-                    // The removed `process update { ... }` spelling: say what
-                    // replaces it and keep the name as the label.
-                    let old = self.parse_ident();
-                    self.sink.emit(
-                        Diagnostic::error("a process name goes in front, as a label")
-                            .at(old.span)
-                            .help(format!("write `{}: process {{ ... }}`", old.text)),
-                    );
-                    label.get_or_insert(old);
-                }
-                self.sequential += 1;
-                let body = self.parse_block();
-                self.sequential -= 1;
-                Some(ImplItem::Process(ProcessDecl {
-                    label,
-                    span: start.to(body.span),
-                    body,
-                }))
-            }
+            TokenKind::Process => Some(ImplItem::Process(self.parse_process(label))),
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
                 let start = self.span();
@@ -1731,7 +1708,45 @@ impl<'a> Parser<'a> {
     /// Parse the statement after `label:`. A structural `for` or `if` and any
     /// assignment keep the label; anything else reports it and parses on
     /// without it.
+    /// A process inside a generate `for`/`if`: one per iteration or branch.
+    /// Inside a process or function there is no structure to hold one.
+    fn process_stmt(&mut self, label: Option<Ident>) -> Stmt {
+        if self.sequential > 0 {
+            self.error_here("a process cannot be declared inside a process or function");
+        }
+        Stmt::Process(self.parse_process(label))
+    }
+
+    /// `label: process { ... }`, at `process`, with the label already read.
+    fn parse_process(&mut self, label: Option<Ident>) -> ProcessDecl {
+        let start = label.as_ref().map_or(self.span(), |label| label.span);
+        self.bump();
+        let mut label = label;
+        if self.at(TokenKind::Ident) {
+            // The removed `process update { ... }` spelling: say what
+            // replaces it and keep the name as the label.
+            let old = self.parse_ident();
+            self.sink.emit(
+                Diagnostic::error("a process name goes in front, as a label")
+                    .at(old.span)
+                    .help(format!("write `{}: process {{ ... }}`", old.text)),
+            );
+            label.get_or_insert(old);
+        }
+        self.sequential += 1;
+        let body = self.parse_block();
+        self.sequential -= 1;
+        ProcessDecl {
+            label,
+            span: start.to(body.span),
+            body,
+        }
+    }
+
     fn parse_labelled_stmt(&mut self, label: Ident) -> Stmt {
+        if self.at(TokenKind::Process) {
+            return self.process_stmt(Some(label));
+        }
         if self.sequential > 0 && (self.at(TokenKind::For) || self.at(TokenKind::If)) {
             self.sink.emit(
                 Diagnostic::error("a `for` or `if` inside a process or function takes no label")
@@ -2222,6 +2237,7 @@ impl<'a> Parser<'a> {
                 Stmt::Let(self.parse_let_after_name(start, name))
             }
             TokenKind::If => Stmt::If(self.parse_if()),
+            TokenKind::Process => self.process_stmt(None),
             TokenKind::Match => Stmt::Match(self.parse_match()),
             TokenKind::For => self.parse_for(),
             TokenKind::Return => {

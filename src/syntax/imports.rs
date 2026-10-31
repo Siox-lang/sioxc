@@ -891,6 +891,7 @@ impl Rewriter<'_> {
     fn stmt(&self, statement: &mut Stmt, env: &mut Env, sink: &mut DiagnosticSink) {
         match statement {
             Stmt::Use(u) => self.block_use(u, env, sink),
+            Stmt::Process(p) => self.block(&mut p.body, env, sink),
             Stmt::Let(l) => {
                 if let Some(ty) = &mut l.ty {
                     self.ty(ty, env, sink);

@@ -447,6 +447,7 @@ fn walk_stmt(statement: &mut Stmt, f: &mut impl FnMut(&mut Expr) -> bool) {
     match statement {
         Stmt::Let(declaration) => walk_let(declaration, f),
         Stmt::Use(_) => {}
+        Stmt::Process(process) => walk_block(&mut process.body, f),
         Stmt::Assign {
             target,
             value,

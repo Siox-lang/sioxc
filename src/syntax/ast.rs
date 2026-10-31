@@ -737,6 +737,9 @@ pub enum Stmt {
     },
     /// `assert!(cond, "msg");`, `wait 10.ns;`, `tick(clk);` (Stage 8).
     Expr(Expr),
+    /// A process inside a generate `for`/`if`: elaboration builds one per
+    /// iteration or taken branch, with the loop value substituted.
+    Process(ProcessDecl),
     /// `return;` or `return expr;`.
     Return {
         /// The returned value, or `None` for a bare `return`.
@@ -1297,6 +1300,7 @@ pub fn stmt_span(s: &Stmt) -> Span {
     match s {
         Stmt::Use(u) => u.span,
         Stmt::Let(l) => l.span,
+        Stmt::Process(process) => process.span,
         Stmt::Assign { span, .. } => *span,
         Stmt::If(i) => i.span,
         Stmt::Match(m) => m.span,

@@ -2600,6 +2600,8 @@ fn lower_statement(
 ) -> Option<ProcessBlockId> {
     match statement {
         Stmt::Use(_) => Some(block),
+        // The checker rejects a generate-built process in a testbench.
+        Stmt::Process(_) => None,
         // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
         // struct's construct has no field types to give its values, but the
         // local is laid out from its declaration (#196). Declared bare and

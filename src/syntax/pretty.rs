@@ -472,16 +472,7 @@ impl Printer {
             ImplItem::ModeField { dir, name, .. } => {
                 self.line(&format!("{} {};", dir_str(*dir), name.text));
             }
-            ImplItem::Process(process) => {
-                self.line(&format!("{}process {{", label_prefix(&process.label)));
-                self.indent += 1;
-                for statement in &process.body.stmts {
-                    self.stmt(statement);
-                }
-                self.flush_lets();
-                self.indent -= 1;
-                self.line("}");
-            }
+            ImplItem::Process(process) => self.process(process),
             ImplItem::Stmt(s) => self.stmt(s),
             ImplItem::AttrBinding(b) => self.attr_binding(b),
             ImplItem::Attr(a) => self.attr_decl(a),
@@ -583,6 +574,18 @@ impl Printer {
 
     // --- statements ---------------------------------------------------------
 
+    /// Print a process, at implementation level or inside a generate block.
+    fn process(&mut self, process: &ProcessDecl) {
+        self.line(&format!("{}process {{", label_prefix(&process.label)));
+        self.indent += 1;
+        for statement in &process.body.stmts {
+            self.stmt(statement);
+        }
+        self.flush_lets();
+        self.indent -= 1;
+        self.line("}");
+    }
+
     /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
         match s {
@@ -608,6 +611,7 @@ impl Printer {
         self.flush_lets();
         self.lint_directives(stmt_span(s), false);
         match s {
+            Stmt::Process(process) => self.process(process),
             Stmt::Use(u) => self.line(&using_text(u)),
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
             Stmt::Assign {
