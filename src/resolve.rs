@@ -2127,6 +2127,12 @@ impl<'a> Resolver<'a> {
                 self.resolve_block(body);
                 self.exit();
             }
+            Stmt::While { cond, body, .. } => {
+                self.resolve_expr(cond);
+                self.enter();
+                self.resolve_block(body);
+                self.exit();
+            }
             Stmt::Expr(e) => self.resolve_expr(e),
             Stmt::Return { value, .. } => {
                 if let Some(v) = value {

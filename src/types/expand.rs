@@ -467,8 +467,11 @@ fn walk_stmt(statement: &mut Stmt, f: &mut impl FnMut(&mut Expr) -> bool) {
                 walk_block(&mut arm.body, f);
             }
         }
-        Stmt::For { range, body, .. } => {
-            walk_expr(range, f);
+        Stmt::For {
+            range: cond, body, ..
+        }
+        | Stmt::While { cond, body, .. } => {
+            walk_expr(cond, f);
             walk_block(body, f);
         }
         Stmt::Expr(e) => walk_expr(e, f),
@@ -650,6 +653,7 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
                 }
                 block(inner, ranges, resolved);
             }
+            Stmt::While { body: inner, .. } => block(inner, ranges, resolved),
             Stmt::If(nested) => if_stmt(nested, ranges, resolved),
             Stmt::Match(nested) => {
                 for arm in &mut nested.arms {
@@ -753,7 +757,7 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
                     _ => {}
                 }
             }
-            Stmt::For { body, .. } => {
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
                 for inner in &mut body.stmts {
                     stmt(inner, arrays);
                 }

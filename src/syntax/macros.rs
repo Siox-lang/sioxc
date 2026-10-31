@@ -981,8 +981,11 @@ impl Expander<'_> {
                     self.block(&mut arm.body, sequential, depth);
                 }
             }
-            Stmt::For { range, body, .. } => {
-                self.expr(range, depth);
+            Stmt::For {
+                range: cond, body, ..
+            }
+            | Stmt::While { cond, body, .. } => {
+                self.expr(cond, depth);
                 self.block(body, sequential, depth);
             }
             Stmt::Expr(e) => self.expr(e, depth),

@@ -662,8 +662,11 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            ast::Stmt::For { range, body, .. } => {
-                self.collect_bad_indices(range, out);
+            ast::Stmt::For {
+                range: cond, body, ..
+            }
+            | ast::Stmt::While { cond, body, .. } => {
+                self.collect_bad_indices(cond, out);
                 for s in &body.stmts {
                     self.collect_stmt_bad_indices(s, out);
                 }

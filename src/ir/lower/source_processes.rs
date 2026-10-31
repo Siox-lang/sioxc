@@ -2812,6 +2812,23 @@ fn lower_statement(
             Some(block)
         }
         Stmt::If(statement) => lower_if(statement, context, process, block),
+        // `while c { body }`: a header that tests `c` before every pass, a
+        // body that loops back to it, and the exit after it.
+        Stmt::While { cond, body, .. } => {
+            let header = process.push_block();
+            let body_block = process.push_block();
+            let exit = process.push_block();
+            process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(header);
+            process.blocks[header.0 as usize].terminator = ProcessTerminator::Branch {
+                condition: value_ref(cond, process, context),
+                then_block: body_block,
+                else_block: exit,
+            };
+            if let Some(tail) = lower_statements(&body.stmts, context, process, body_block) {
+                process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(header);
+            }
+            Some(exit)
+        }
         Stmt::Match(statement) => lower_match(statement, context, process, block),
         Stmt::For {
             var,

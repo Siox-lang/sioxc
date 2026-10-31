@@ -650,6 +650,11 @@ impl Printer {
                 self.block_body(body);
                 self.line("}");
             }
+            Stmt::While { cond, body, .. } => {
+                self.line(&format!("while {} {{", expr(cond)));
+                self.block_body(body);
+                self.line("}");
+            }
             Stmt::Expr(e) => self.line(&format!("{};", expr(e))),
             Stmt::Return { value, .. } => match value {
                 Some(v) => self.line(&format!("return {};", expr(v))),
@@ -1554,6 +1559,14 @@ mod tests {
                y = x\"AB\";\n\
                await 1ns;\n\
              }\n",
+        );
+    }
+
+    #[test]
+    /// A `while` loop keeps its condition and body.
+    fn roundtrips_while() {
+        roundtrip(
+            "module m;\n#[test]\nentity T {\n}\nimpl T {\n    p: process {\n        let i: integer = 0;\n        while i < 3 {\n            i = i + 1;\n        }\n    }\n}\n",
         );
     }
 

@@ -735,6 +735,16 @@ pub enum Stmt {
         /// `for` keyword through the closing brace.
         span: Span,
     },
+    /// `while cond { ... }`: repeats while the condition holds. A loop of
+    /// run-time length, so testbench-only: hardware loops unroll.
+    While {
+        /// Tested before each pass, read through the `Condition` trait.
+        cond: Expr,
+        /// The statements repeated.
+        body: Block,
+        /// `while` keyword through the closing brace.
+        span: Span,
+    },
     /// `assert!(cond, "msg");`, `wait 10.ns;`, `tick(clk);` (Stage 8).
     Expr(Expr),
     /// A process inside a generate `for`/`if`: elaboration builds one per
@@ -1304,7 +1314,7 @@ pub fn stmt_span(s: &Stmt) -> Span {
         Stmt::Assign { span, .. } => *span,
         Stmt::If(i) => i.span,
         Stmt::Match(m) => m.span,
-        Stmt::For { span, .. } => *span,
+        Stmt::For { span, .. } | Stmt::While { span, .. } => *span,
         Stmt::Expr(e) => expr_span(e),
         Stmt::Return { span, .. } => *span,
     }

@@ -230,8 +230,11 @@ impl Lower<'_> {
                     self.block(&mut arm.body);
                 }
             }
-            Stmt::For { range, body, .. } => {
-                self.expr(range);
+            Stmt::For {
+                range: cond, body, ..
+            }
+            | Stmt::While { cond, body, .. } => {
+                self.expr(cond);
                 self.block(body);
             }
             Stmt::Expr(e) => self.expr(e),
