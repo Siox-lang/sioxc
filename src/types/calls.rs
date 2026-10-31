@@ -881,7 +881,7 @@ impl<'a> Checker<'a> {
 
         let exact = match function {
             "rand" | "uniform" | "stop" | "finish" => Some(0),
-            "seed" | "exists" | "read" | "await" => Some(1),
+            "seed" | "exists" | "read" => Some(1),
             "randint" | "resize" => Some(2),
             _ => None,
         };
@@ -1003,16 +1003,36 @@ impl<'a> Checker<'a> {
                 let Some(argument) = args.first() else {
                     return;
                 };
+                // `await <condition> for <time>`: the timeout is a time and
+                // the awaited thing an edge or condition, not a time.
+                if let Some(timeout) = args.get(1) {
+                    if !self.await_operand_is_time(timeout, sym) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            expr_span(timeout),
+                            "the timeout after `for` must be a time".to_string(),
+                            "write a duration with its unit: `await done == '1' for 8us;`"
+                                .to_string(),
+                        );
+                    }
+                    if self.await_operand_is_time(argument, sym) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            expr_span(argument),
+                            "`await … for` waits for a condition or an edge, not a time"
+                                .to_string(),
+                            "a plain delay is `await 8us;`".to_string(),
+                        );
+                        return;
+                    }
+                }
                 // A suffixed literal (`5ns`) is a time; lowering checks its
                 // range.
                 if matches!(argument, Expr::SuffixLit { .. }) {
                     return;
                 }
                 let ty = self.type_of(argument, sym);
-                let time = self
-                    .type_kind_name(&ty)
-                    .is_some_and(|name| name.rsplit("::").next() == Some("time"));
-                if time {
+                if self.await_operand_is_time(argument, sym) {
                 } else if matches!(ty, Ty::Integer | Ty::Real) {
                     self.error_with_help(
                         codes::TYPE_MISMATCH,
@@ -1042,6 +1062,17 @@ impl<'a> Checker<'a> {
             }
             _ => {}
         }
+    }
+
+    /// Whether an `await` operand is a time: a suffixed literal (`5ns`) or a
+    /// value of `time`.
+    fn await_operand_is_time(&mut self, operand: &Expr, sym: &HashMap<String, Ty>) -> bool {
+        if matches!(operand, Expr::SuffixLit { .. }) {
+            return true;
+        }
+        let ty = self.type_of(operand, sym);
+        self.type_kind_name(&ty)
+            .is_some_and(|name| name.rsplit("::").next() == Some("time"))
     }
 
     /// Whether a bare call name is something the language declares somewhere:

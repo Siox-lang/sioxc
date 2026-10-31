@@ -145,7 +145,9 @@ pub(super) fn block_is_supported(
         | ProcessTerminator::Finish { .. } => true,
         ProcessTerminator::Branch { condition, .. } => value(*condition),
         ProcessTerminator::Suspend {
-            operation: siox::ir::ProcessSuspendOp::AwaitTime,
+            operation:
+                siox::ir::ProcessSuspendOp::AwaitTime
+                | siox::ir::ProcessSuspendOp::AwaitConditionFor { .. },
             arguments,
             ..
         } => {
@@ -235,6 +237,33 @@ pub(super) fn emit_timed_suspend<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<()> {
+    suspend_with_delay(
+        context,
+        module,
+        builder,
+        design,
+        process,
+        resume,
+        None,
+        delay,
+        index_sites,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn suspend_with_delay<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    resume: siox::ir::ProcessBlockId,
+    timeout: Option<siox::ir::ProcessBlockId>,
+    delay: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
     // A literal delay is an unsigned femtosecond count up to the end of the
     // timeline; one computed at run time is a signed `time`, which the
     // runtime rejects when negative.
@@ -260,32 +289,69 @@ pub(super) fn emit_timed_suspend<'ctx>(
     )?;
     let i32 = context.i32_type();
     let i64 = context.i64_type();
-    let name = if computed {
-        "sx_runtime_suspend_signed_time"
-    } else {
-        "sx_runtime_suspend_time"
+    let (name, mut arguments) = match timeout {
+        // The timeout block rides between the recheck block and the delay.
+        Some(timeout) => (
+            if computed {
+                "sx_runtime_suspend_condition_for_signed"
+            } else {
+                "sx_runtime_suspend_condition_for"
+            },
+            vec![i32.const_int(u64::from(timeout.0), false).into()],
+        ),
+        None => (
+            if computed {
+                "sx_runtime_suspend_signed_time"
+            } else {
+                "sx_runtime_suspend_time"
+            },
+            Vec::new(),
+        ),
     };
+    let mut parameters: Vec<inkwell::types::BasicMetadataTypeEnum> =
+        vec![i32.into(); 2 + arguments.len()];
+    parameters.push(i64.into());
     let function = module.get_function(name).unwrap_or_else(|| {
         module.add_function(
             name,
-            context
-                .void_type()
-                .fn_type(&[i32.into(), i32.into(), i64.into()], false),
+            context.void_type().fn_type(&parameters, false),
             Some(Linkage::External),
         )
     });
-    builder
-        .build_call(
-            function,
-            &[
-                i32.const_int(u64::from(process.0), false).into(),
-                i32.const_int(u64::from(resume.0), false).into(),
-                delay.into(),
-            ],
-            "",
-        )
-        .ok()?;
+    arguments.insert(0, i32.const_int(u64::from(resume.0), false).into());
+    arguments.insert(0, i32.const_int(u64::from(process.0), false).into());
+    arguments.push(delay.into());
+    builder.build_call(function, &arguments, "").ok()?;
     Some(())
+}
+
+/// `await <condition> for <time>`: wait for a state change, as
+/// [`emit_condition_suspend`], and arm a timer that resumes at `timeout`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_condition_for_suspend<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    recheck: siox::ir::ProcessBlockId,
+    timeout: siox::ir::ProcessBlockId,
+    delay: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    suspend_with_delay(
+        context,
+        module,
+        builder,
+        design,
+        process,
+        recheck,
+        Some(timeout),
+        delay,
+        index_sites,
+        cache,
+    )
 }
 
 pub(super) fn emit_condition_suspend<'ctx>(

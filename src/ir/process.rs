@@ -705,6 +705,16 @@ pub enum ProcessTerminator {
     },
 }
 
+impl ProcessSuspendOp {
+    /// The block a timed-out `await <condition> for <time>` resumes at.
+    pub fn timeout(self) -> Option<ProcessBlockId> {
+        match self {
+            Self::AwaitConditionFor { timeout } => Some(timeout),
+            _ => None,
+        }
+    }
+}
+
 /// Which operation suspended a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessSuspendOp {
@@ -714,6 +724,14 @@ pub enum ProcessSuspendOp {
     /// their trigger to an ordinary branch around this scheduler primitive;
     /// an edge enters the suspension before its first trigger check.
     AwaitCondition,
+    /// `await <condition> for <time>`: as [`Self::AwaitCondition`], and also
+    /// resume at `timeout` once the delay in the suspension's one argument
+    /// has passed. The runtime arms the timer at the first suspension and a
+    /// [`Self::Settle`] (the condition held) disarms it.
+    AwaitConditionFor {
+        /// Where the process resumes when the time runs out.
+        timeout: ProcessBlockId,
+    },
     /// Publish a foreground drive, settle reactive processes to a fixed
     /// point, then resume at the same simulation time.
     Settle,
@@ -1865,7 +1883,8 @@ impl ProcessIr {
                     }
                 }
                 if let ProcessTerminator::Suspend {
-                    operation: ProcessSuspendOp::AwaitTime,
+                    operation:
+                        ProcessSuspendOp::AwaitTime | ProcessSuspendOp::AwaitConditionFor { .. },
                     arguments,
                     ..
                 } = &block.terminator
@@ -2325,7 +2344,11 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
             .chain(fallback.iter().copied())
             .collect(),
         ProcessTerminator::For { body, exit, .. } => vec![*body, *exit],
-        ProcessTerminator::Suspend { resume, .. } => vec![*resume],
+        ProcessTerminator::Suspend {
+            resume, operation, ..
+        } => std::iter::once(*resume)
+            .chain(operation.timeout())
+            .collect(),
     }
 }
 

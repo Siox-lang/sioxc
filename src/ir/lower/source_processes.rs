@@ -3371,12 +3371,35 @@ fn lower_call(
             let wait = process.push_block();
             let settle = process.push_block();
             let resume = process.push_block();
-            process.blocks[block.0 as usize].terminator =
-                ProcessTerminator::Goto(if arguments.first().is_some_and(await_is_event) {
-                    wait
-                } else {
-                    check
-                });
+            // `await c for t`: the first suspension arms the timer, which
+            // resumes straight past the check; later ones wait as usual and
+            // the settle after a met condition disarms it.
+            let first = match lowered_arguments.get(1) {
+                Some(&delay) => {
+                    let first = process.push_block();
+                    let first_check = process.push_block();
+                    process.blocks[first.0 as usize].terminator = ProcessTerminator::Suspend {
+                        operation: ProcessSuspendOp::AwaitConditionFor { timeout: resume },
+                        arguments: vec![delay],
+                        resume: check,
+                        span,
+                    };
+                    process.blocks[first_check.0 as usize].terminator = ProcessTerminator::Branch {
+                        condition,
+                        then_block: settle,
+                        else_block: first,
+                    };
+                    Some((first, first_check))
+                }
+                None => None,
+            };
+            let entry = match first {
+                Some((first, _)) if arguments.first().is_some_and(await_is_event) => first,
+                Some((_, first_check)) => first_check,
+                None if arguments.first().is_some_and(await_is_event) => wait,
+                None => check,
+            };
+            process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
             process.blocks[check.0 as usize].terminator = ProcessTerminator::Branch {
                 condition,
                 then_block: settle,

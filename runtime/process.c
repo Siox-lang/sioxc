@@ -87,6 +87,7 @@ typedef struct sx_event {
     uint32_t offset;
     uint32_t width;
     uint8_t reverse;
+    uint8_t timeout; /* the timer of an `await <condition> for <time>` */
     const uint32_t *lane_offsets;
     const uint32_t *lane_widths;
     uint8_t kind;
@@ -98,6 +99,8 @@ typedef struct sx_event {
 static char *sx_error;
 static char sx_error_fallback[] = "cannot allocate runtime error message";
 static sx_event *sx_events;
+/* Armed `await <condition> for <time>` timers still in `sx_events`. */
+static uint32_t sx_armed_timeouts;
 static uint64_t sx_now;
 static uint64_t sx_sequence;
 static int sx_running;
@@ -1403,6 +1406,7 @@ void sx_runtime_print(const char *message) {
 }
 
 static void sx_clear_events(void) {
+    sx_armed_timeouts = 0;
     while (sx_events) {
         sx_event *event = sx_events;
         sx_events = event->next;
@@ -1441,6 +1445,7 @@ static sx_event *sx_allocate_event(uint64_t delay, uint32_t word_count) {
     event->target = 0;
     event->process = UINT32_MAX;
     event->resume_block = 0;
+    event->timeout = 0;
     event->word_count = word_count;
     event->lane_count = 0;
     event->waveform = 0;
@@ -1705,6 +1710,19 @@ void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
     }
     sx_settle_resume_block = resume_block;
     sx_suspension_kind = SX_SUSPENSION_SETTLE;
+    /* The condition of an `await <condition> for <time>` held: its timer, the
+     * only resume event a running process can own, must not fire. */
+    if (sx_armed_timeouts) {
+        for (sx_event **at = &sx_events; *at; at = &(*at)->next) {
+            if ((*at)->timeout && (*at)->target == process) {
+                sx_event *timer = *at;
+                *at = timer->next;
+                free(timer);
+                --sx_armed_timeouts;
+                break;
+            }
+        }
+    }
 }
 
 void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {
@@ -1723,6 +1741,39 @@ void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {
     }
     sx_condition_recheck_block = recheck_block;
     sx_suspension_kind = SX_SUSPENSION_CONDITION;
+}
+
+/* `await <condition> for <time>`, first suspension: wait for a state change
+ * as `sx_runtime_suspend_condition` does, and arm a timer that resumes at
+ * `timeout_block` after `delay`. A later settle (the condition held) disarms
+ * it. */
+void sx_runtime_suspend_condition_for(uint32_t process, uint32_t recheck_block,
+                                      uint32_t timeout_block, uint64_t delay) {
+    sx_runtime_suspend_condition(process, recheck_block);
+    if (sx_error) return;
+    sx_event *event = sx_allocate_event(delay, 0);
+    if (!event) return;
+    event->kind = SX_EVENT_RESUME;
+    event->target = process;
+    event->process = process;
+    event->resume_block = timeout_block;
+    event->timeout = 1;
+    sx_insert_event(event);
+    ++sx_armed_timeouts;
+}
+
+void sx_runtime_suspend_condition_for_signed(uint32_t process,
+                                             uint32_t recheck_block,
+                                             uint32_t timeout_block,
+                                             uint64_t delay) {
+    if (sx_error) return;
+    if ((int64_t)delay < 0) {
+        sx_set_error("`await ... for` was given a negative time (%lld fs)",
+                     (long long)(int64_t)delay);
+        return;
+    }
+    sx_runtime_suspend_condition_for(process, recheck_block, timeout_block,
+                                     delay);
 }
 
 static int sx_design_failed(void) {
@@ -1827,10 +1878,20 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
         sx_events = event->next;
         if (event->kind == SX_EVENT_RESUME) {
             uint32_t process = event->target;
+            /* A timer due while a change already woke its process (only a
+             * zero `for` can race that way): the wait ends as timed out. */
+            if (event->timeout && process < sx_process_count &&
+                !suspended[process]) {
+                --sx_armed_timeouts;
+                resume_blocks[process] = event->resume_block;
+                free(event);
+                continue;
+            }
             if (process >= sx_process_count || !suspended[process]) {
                 free(event);
                 return sx_fail_id("invalid Process IR resume event", process);
             }
+            if (event->timeout) --sx_armed_timeouts;
             resume_blocks[process] = event->resume_block;
             suspended[process] = 0;
             timed_ready[process] = 1;
