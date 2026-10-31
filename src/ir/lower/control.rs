@@ -581,6 +581,21 @@ impl<'a> Lowering<'a> {
                 self.lower_free_stmt(callee, args, cond);
             }
             ast::Stmt::Let(declaration) => self.declare_block_local(declaration),
+            // A process a generate block builds, the loop value already written
+            // in: its own driver context, as a process at implementation level.
+            ast::Stmt::Process(process) => {
+                let saved = self.cur_ctx;
+                self.next_ctx();
+                self.ctx_span.insert(self.cur_ctx, process.span);
+                if let Some(label) = &process.label {
+                    self.out.process_labels.insert(
+                        self.cur_ctx,
+                        format!("{}::{}", self.cur_instance_path, label.text),
+                    );
+                }
+                self.lower_combinational_block(&process.body, cond);
+                self.cur_ctx = saved;
+            }
             // Other statement forms (bare expr and return) are not hardware
             // statements; the frontend diagnoses them when applicable.
             _ => {}

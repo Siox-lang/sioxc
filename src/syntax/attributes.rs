@@ -427,6 +427,7 @@ impl Reads<'_> {
     fn fold_stmt(&self, statement: &mut Stmt, scope: &Scope, sink: &mut DiagnosticSink) {
         match statement {
             Stmt::Use(_) => {}
+            Stmt::Process(process) => self.fold_block(&mut process.body, scope, sink),
             Stmt::Let(declaration) => {
                 if let Some(value) = &mut declaration.value {
                     self.fold_expr(value, scope, sink);

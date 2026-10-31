@@ -209,6 +209,7 @@ impl Lower<'_> {
         match statement {
             Stmt::Let(declaration) => self.let_decl(declaration),
             Stmt::Use(_) => {}
+            Stmt::Process(process) => self.block(&mut process.body),
             Stmt::Assign {
                 target,
                 value,

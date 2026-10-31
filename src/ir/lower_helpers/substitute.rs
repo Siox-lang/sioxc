@@ -147,6 +147,10 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
     use ast::Stmt;
     match s {
         Stmt::Use(u) => Stmt::Use(u.clone()),
+        Stmt::Process(process) => Stmt::Process(ast::ProcessDecl {
+            body: subst_block_paths(&process.body, map),
+            ..process.clone()
+        }),
         Stmt::Assign {
             label,
             target,
@@ -347,6 +351,18 @@ pub(in crate::ir) fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt
             value: value.as_ref().map(|v| subst_expr(v, var, val)),
             span: *span,
         },
+        // A process in a generate loop is one per iteration, the loop value
+        // written in.
+        ast::Stmt::Process(process) => {
+            let mut process = process.clone();
+            process.body.stmts = process
+                .body
+                .stmts
+                .iter()
+                .map(|st| subst_stmt(st, var, val))
+                .collect();
+            ast::Stmt::Process(process)
+        }
         ast::Stmt::For {
             label,
             var: v,

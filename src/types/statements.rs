@@ -155,7 +155,7 @@ impl<'a> Checker<'a> {
         names: &HashMap<String, Ty>,
     ) -> bool {
         match statement {
-            Stmt::Use(_) => false,
+            Stmt::Use(_) | Stmt::Process(_) => false,
             Stmt::Return { .. } => true,
             Stmt::If(if_) => {
                 self.block_guarantees_return(&if_.then, names)
@@ -373,6 +373,19 @@ impl<'a> Checker<'a> {
         self.type_cache.borrow_mut().clear();
         match s {
             Stmt::Use(_) => {}
+            // A process a generate block builds, once per iteration.
+            Stmt::Process(process) => {
+                if self.in_testbench.get() {
+                    self.error(
+                        codes::UNSUPPORTED_EXPR,
+                        process.span,
+                        "a process inside a generate block is not supported in a testbench yet"
+                            .to_string(),
+                    );
+                }
+                let bounds = self.array_bounds.borrow().clone();
+                self.check_process_block(&process.body, dirs, ranged, sym, &bounds);
+            }
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);

@@ -2089,6 +2089,7 @@ impl<'a> Resolver<'a> {
     fn resolve_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Use(_) => {}
+            Stmt::Process(process) => self.resolve_block(&process.body),
             Stmt::Let(l) => {
                 if let Some(t) = &l.ty {
                     self.resolve_type(t);

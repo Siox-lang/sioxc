@@ -628,6 +628,11 @@ impl<'a> Lowering<'a> {
     ) {
         match s {
             ast::Stmt::Use(_) => {}
+            ast::Stmt::Process(process) => {
+                for statement in &process.body.stmts {
+                    self.collect_stmt_bad_indices(statement, out);
+                }
+            }
             ast::Stmt::Assign {
                 target,
                 value,
