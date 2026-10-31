@@ -2137,7 +2137,12 @@ int sx_runtime_run_test(uint32_t test) {
             if (status == SX_PROCESS_COMPLETED) {
                 if (sx_process_activations[process] != 1) stopped[process] = 1;
             } else if (status == SX_PROCESS_STOPPED) {
+                /* `stop()` halts the test, which passes so far: every
+                 * process of it ends, not only the caller. A process
+                 * looping forever (a monitor, a free-running counter) kept
+                 * the test alive after the stimulus had stopped. */
                 stopped[process] = 1;
+                finish = 1;
             } else if (status == SX_PROCESS_FINISHED) {
                 stopped[process] = 1;
                 printf("finish at %llu fs\n", (unsigned long long)sx_now);
