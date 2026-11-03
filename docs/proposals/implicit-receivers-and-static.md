@@ -6,8 +6,8 @@ Status: **accepted, mostly implemented** (owner, 2026-10-31; landed
 `self` parameter removed from core, std, the corpus and the tests;
 `static let` in processes and functions with variable semantics, one copy per
 function (#371), testbench storage (#372) and hardware process registers
-(#373). Remaining: bare field names (`value` for `self.value`), public entity
-methods, a hardware function's `static let`, and promoting the migration
+(#373), and bare field names (`value` for `self.value`, shadowed by
+parameters and locals). Remaining: public entity methods, a hardware function's `static let`, and promoting the migration
 warning to an error. The implemented language is
 [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md).
 

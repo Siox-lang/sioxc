@@ -571,6 +571,7 @@ impl Compiler {
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
         crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
+        crate::resolve::rewrite_implicit_fields(&mut result.modules, &resolved);
         result.stats.definitions = Some(resolved.defs().len());
         crate::types::inline_loop_ranges(&mut result.modules, &resolved);
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);

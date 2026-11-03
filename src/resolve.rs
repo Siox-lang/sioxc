@@ -224,9 +224,18 @@ pub struct Resolved {
     lang: HashMap<String, DefId>,
     /// The reverse of `lang`, including the builtin fallbacks.
     lang_of: HashMap<DefId, String>,
+    /// Bare field names inside a member with a receiver (`value` for
+    /// `self.value`), keyed by the name's span, to the field they name.
+    implicit_fields: HashMap<Span, String>,
 }
 
 impl Resolved {
+    /// The receiver field a bare name at `span` stands for, if it is one:
+    /// `value` inside a method of a struct with a `value` field.
+    pub fn implicit_field(&self, span: Span) -> Option<&str> {
+        self.implicit_fields.get(&span).map(String::as_str)
+    }
+
     /// The declaration that plays `role` for the compiler (`"operator"`,
     /// `"bool"`, `"test"`, …): a lang item, or its builtin fallback when no
     /// library declares one.
@@ -379,6 +388,20 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     }
     r.inherit_enum_variants(modules);
     for m in modules {
+        for item in &m.items {
+            if let Item::Struct(structure) = item {
+                if let Some(id) = r.out.declared(structure.name.span) {
+                    let names = structure
+                        .fields
+                        .iter()
+                        .map(|f| f.name.text.clone())
+                        .collect();
+                    r.struct_fields.insert(id, (names, structure.base.clone()));
+                }
+            }
+        }
+    }
+    for m in modules {
         r.set_current_module(m);
         // A lint directive's word (`allow`) names a built-in directive.
         for directive in &m.lints {
@@ -502,6 +525,12 @@ struct ImplOwner {
 struct Resolver<'a> {
     /// Where resolution diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Each struct's field names and derivation base, for bare field names.
+    struct_fields: HashMap<DefId, (Vec<String>, Option<Type>)>,
+    /// The field names of the struct whose implementation is being resolved.
+    impl_fields: Vec<String>,
+    /// The synthetic local bound for each bare field name, to its field.
+    field_defs: HashMap<DefId, String>,
     /// The resolution being built; returned once the walk completes.
     out: Resolved,
     /// Module-level + builtin type/value namespace.
@@ -580,6 +609,9 @@ impl<'a> Resolver<'a> {
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Resolver {
             sink,
+            struct_fields: HashMap::new(),
+            impl_fields: Vec::new(),
+            field_defs: HashMap::new(),
             out: Resolved::default(),
             globals: HashMap::new(),
             builtins: HashMap::new(),
@@ -1722,7 +1754,10 @@ impl<'a> Resolver<'a> {
                 }
                 self.exit();
             }
-            Item::Impl(im) => self.resolve_impl(im),
+            Item::Impl(im) => {
+                self.resolve_impl(im);
+                self.impl_fields.clear();
+            }
             Item::Trait(t) => {
                 self.enter();
                 self.bind_params(&t.params, true, self.out.declared(t.name.span));
@@ -1792,6 +1827,7 @@ impl<'a> Resolver<'a> {
             }
         }
         self.resolve_type(&im.target);
+        self.impl_fields = self.receiver_fields(&im.target);
         if im.trait_.is_none() {
             self.check_inherent_impl_coherence(im);
         } else {
@@ -2047,6 +2083,15 @@ impl<'a> Resolver<'a> {
         // needed here (rather than only in the module-level Item arm) for
         // generic methods and trait defaults as well.
         self.bind_params(&f.generics, true, None);
+        // A member with a receiver sees its struct's fields by name; its
+        // parameters, bound next in this scope, and its locals shadow them.
+        if f.params.iter().any(|p| p.is_self) {
+            for name in self.impl_fields.clone() {
+                let id = self.add_def(name.clone(), DefKind::Local, false, None, None);
+                self.bind(&name, id);
+                self.field_defs.insert(id, name);
+            }
+        }
         let mut has_self = false;
         for p in &f.params {
             if p.is_self {
@@ -2552,8 +2597,56 @@ impl<'a> Resolver<'a> {
             if let Some(id) = self.lookup(&name.text) {
                 self.record_qualified_use(p.span, id);
                 self.mark_impl_param_use(id);
+                self.record_implicit_field(p, id);
             }
         }
+    }
+
+    /// A bare field name is `self.<field>`: record the field, and resolve a
+    /// zero-width `self` at its start for the rewrite to use.
+    fn record_implicit_field(&mut self, p: &Path, id: DefId) {
+        let Some(field) = self.field_defs.get(&id).cloned() else {
+            return;
+        };
+        let Some(receiver) = self.lookup("self") else {
+            return;
+        };
+        let at = Span {
+            file: p.span.file,
+            start: p.span.start,
+            end: p.span.start,
+        };
+        self.out.uses.insert(at, receiver);
+        self.out.implicit_fields.insert(p.span, field);
+    }
+
+    /// The field names a member of an implementation of `target` sees
+    /// through its receiver: a struct's own and its derivation bases'.
+    fn receiver_fields(&self, target: &Type) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut current = type_head_path(target).and_then(|path| {
+            self.out
+                .uses
+                .get(&path.span)
+                .copied()
+                .or_else(|| path.segments.last().and_then(|s| self.lookup(&s.text)))
+        });
+        let mut seen = HashSet::new();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some((fields, base)) = self.struct_fields.get(&id) else {
+                break;
+            };
+            names.extend(fields.iter().cloned());
+            current = base
+                .as_ref()
+                .and_then(type_head_path)
+                .and_then(|path| path.segments.last())
+                .and_then(|segment| self.lookup(&segment.text));
+        }
+        names
     }
 
     /// A generic entity's inherent impl must bind its parameters the way Rust
@@ -4433,5 +4526,47 @@ mod tests {
             "{:#?}",
             sink.diagnostics()
         );
+    }
+}
+
+/// Rewrite each bare field name resolution found (`value` inside a method
+/// with a receiver) into the `self.value` every later stage already
+/// understands. Its `self` resolves at a zero-width span of its own, recorded
+/// during resolution, so the field access and its base never share a span.
+pub fn rewrite_implicit_fields(modules: &mut [Module], resolved: &Resolved) {
+    if resolved.implicit_fields.is_empty() {
+        return;
+    }
+    for module in modules.iter_mut() {
+        for item in &mut module.items {
+            crate::syntax::walk::walk_item(item, &mut |e| {
+                if let Expr::Path(path) = e {
+                    if let Some(field) = resolved.implicit_field(path.span) {
+                        let span = path.span;
+                        let at = Span {
+                            file: span.file,
+                            start: span.start,
+                            end: span.start,
+                        };
+                        *e = Expr::Field {
+                            base: Box::new(Expr::Path(Path {
+                                segments: vec![Ident {
+                                    text: "self".to_string(),
+                                    span: at,
+                                }],
+                                span: at,
+                            })),
+                            field: Ident {
+                                text: field.to_string(),
+                                span,
+                            },
+                            span,
+                        };
+                        return false;
+                    }
+                }
+                true
+            });
+        }
     }
 }
