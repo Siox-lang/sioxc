@@ -46,7 +46,7 @@ impl Sub<Complex, Complex> for Complex {
 
 // `Complex(10)`: an explicit conversion from the kernel integer.
 impl From<integer> for Complex {
-    fn from(v: integer) -> Complex {
+    static fn from(v: integer) -> Complex {
         return Complex { .re = v, .im = 0 };
     }
 }
@@ -54,7 +54,7 @@ impl From<integer> for Complex {
 // `5i` is a pure imaginary `Complex` (the `i` suffix, over a real magnitude);
 // the `suffix` method builds the value and is inlined at the use site.
 impl Suffix<"i", real> for Complex {
-    fn suffix(v: real) -> Complex { return Complex { .re = 0, .im = v }; }
+    static fn suffix(v: real) -> Complex { return Complex { .re = 0, .im = v }; }
 }
 
 // Math functions, generic over the numeric types: `integer`, `real`,

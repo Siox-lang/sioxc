@@ -8,7 +8,7 @@ module core::convert;
 // conversion expression. Kernel numeric conversions (`unsigned[16](x)`,
 // `integer(x)`, `resize`) stay width-driven builtins.
 pub trait From {
-    fn from(v: Self) -> Self;
+    static fn from(v: Self) -> Self;
 }
 
 attr lang for From = "from";

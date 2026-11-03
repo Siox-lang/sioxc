@@ -373,7 +373,7 @@ impl Sqrt for float {
 // `float<32, 23>(v)` for a `Logic[]` (VHDL's `to_float(slv, 8, 23)`): the
 // raw sign, exponent and fraction bits, the leftmost at `'high`.
 impl From<Logic[]> for float {
-    fn from(value: Logic[]) -> float {
+    static fn from(value: Logic[]) -> float {
         return integer(unsigned(value));
     }
 }
@@ -406,7 +406,7 @@ fn elements<T>(value: T) -> Logic[] {
 }
 
 impl From<float> for real {
-    fn from(value: float) -> real {
+    static fn from(value: float) -> real {
         let e: integer = value'high;
         let f: integer = 0 - value'low;
         let a: integer = integer(value);
@@ -426,7 +426,7 @@ impl From<float> for real {
 // exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
 // the range it is infinite, below it zero.
 impl From<real> for float {
-    fn from(value: real) -> float {
+    static fn from(value: real) -> float {
         return float_word(value, Self'high, 0 - Self'low);
     }
 }
@@ -434,19 +434,19 @@ impl From<real> for float {
 // An integer, `unsigned` or `signed` rounds to nearest even where the
 // format cannot hold it: integer arithmetic, so it lowers to hardware.
 impl From<integer> for float {
-    fn from(value: integer) -> float {
+    static fn from(value: integer) -> float {
         return fixed_to_float(value, 0, Self'high, 0 - Self'low);
     }
 }
 
 impl From<unsigned> for float {
-    fn from(value: unsigned) -> float {
+    static fn from(value: unsigned) -> float {
         return fixed_to_float(fixed_word(value, false), 0, Self'high, 0 - Self'low);
     }
 }
 
 impl From<signed> for float {
-    fn from(value: signed) -> float {
+    static fn from(value: signed) -> float {
         return fixed_to_float(fixed_word(value, true), 0, Self'high, 0 - Self'low);
     }
 }
@@ -454,7 +454,7 @@ impl From<signed> for float {
 // `float<16, 10>(x)` from another format: rounded to nearest even, infinite
 // beyond the range and zero below it.
 impl From<float> for float {
-    fn from(value: float) -> float {
+    static fn from(value: float) -> float {
         return refloat(integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low, false);
     }
 }
@@ -463,7 +463,7 @@ impl From<float> for float {
 // names, rounded as chosen. Overflow follows IEEE-754 for the rounding: to
 // nearest it is infinite, truncated it is the largest finite number.
 impl float {
-    pub fn resize(value: float, rounding: Rounding) -> float {
+    pub static fn resize(value: float, rounding: Rounding) -> float {
         return refloat(
             integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low,
             rounding == Rounding::Truncate
@@ -488,13 +488,13 @@ fn refloat(a: integer, ea: integer, fa: integer, e: integer, f: integer, truncat
 
 // `float<32, 23>(x)` from a fixed-point number: rounded to nearest even.
 impl From<ufixed> for float {
-    fn from(value: ufixed) -> float {
+    static fn from(value: ufixed) -> float {
         return fixed_to_float(fixed_word(value, false), 0 - value'low, Self'high, 0 - Self'low);
     }
 }
 
 impl From<sfixed> for float {
-    fn from(value: sfixed) -> float {
+    static fn from(value: sfixed) -> float {
         return fixed_to_float(fixed_word(value, true), 0 - value'low, Self'high, 0 - Self'low);
     }
 }
@@ -503,7 +503,7 @@ impl From<sfixed> for float {
 // zero) and saturated, as fixed point's other constructors are. A NaN is
 // zero; an infinity saturates.
 impl From<float> for ufixed {
-    fn from(value: float) -> ufixed {
+    static fn from(value: float) -> ufixed {
         return float_to_fixed(
             integer(value), value'high, 0 - value'low, Self'high, Self'low, false
         );
@@ -511,7 +511,7 @@ impl From<float> for ufixed {
 }
 
 impl From<float> for sfixed {
-    fn from(value: float) -> sfixed {
+    static fn from(value: float) -> sfixed {
         return float_to_fixed(
             integer(value), value'high, 0 - value'low, Self'high, Self'low, true
         );

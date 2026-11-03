@@ -17,11 +17,11 @@ module std::text;
 pub struct Unicode {}
 
 impl Unicode {
-    pub fn code(c: Char) -> integer {
+    pub static fn code(c: Char) -> integer {
         return integer(c);
     }
 
-    pub fn char(n: integer) -> Char {
+    pub static fn char(n: integer) -> Char {
         return Char(n);
     }
 }
@@ -29,7 +29,7 @@ impl Unicode {
 pub struct Ascii {}
 
 impl Ascii {
-    pub fn code(c: Char) -> integer {
+    pub static fn code(c: Char) -> integer {
         if integer(c) < 128 { return integer(c); }
         return -1;
     }

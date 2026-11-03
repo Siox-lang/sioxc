@@ -267,13 +267,13 @@ impl Ord<signed> for signed {
 // `real(x)`: the number a vector holds. These place `unsigned` and `signed`
 // on the numeric ladder, so `r + u` with `r: real` promotes `u` to `real`.
 impl From<unsigned> for real {
-    fn from(value: unsigned) -> real {
+    static fn from(value: unsigned) -> real {
         return real(integer(value) - ((integer(value) >> value'length) << value'length));
     }
 }
 
 impl From<signed> for real {
-    fn from(value: signed) -> real {
+    static fn from(value: signed) -> real {
         let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
         if (w >> (value'length - 1)) == 1 { return real(w - (1 << value'length)); }
         return real(w);
@@ -283,7 +283,7 @@ impl From<signed> for real {
 // `signed[16](s)` sign-extends, as VHDL's `resize`; narrowing keeps the low
 // bits. `signed[9](u)` zero-extends: every `unsigned[8]` value fits.
 impl From<signed> for signed {
-    fn from(value: signed) -> signed {
+    static fn from(value: signed) -> signed {
         let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
         if (w >> (value'length - 1)) == 1 { return w - (1 << value'length); }
         return w;
@@ -291,7 +291,7 @@ impl From<signed> for signed {
 }
 
 impl From<unsigned> for signed {
-    fn from(value: unsigned) -> signed {
+    static fn from(value: unsigned) -> signed {
         return integer(value) - ((integer(value) >> value'length) << value'length);
     }
 }
@@ -530,7 +530,7 @@ impl signed {
 // `unsigned(v)` / `signed(v)` for a `Logic[]` (VHDL's `unsigned(slv)`): the
 // elements in order, the leftmost most significant, metavalues kept.
 impl From<Logic[]> for unsigned {
-    fn from(value: Logic[]) -> unsigned {
+    static fn from(value: Logic[]) -> unsigned {
         let r: unsigned[value'length] = 0;
         // One write per element: a branch around each would select between
         // two versions of `r` at every step.
@@ -543,7 +543,7 @@ impl From<Logic[]> for unsigned {
 }
 
 impl From<Logic[]> for signed {
-    fn from(value: Logic[]) -> signed {
+    static fn from(value: Logic[]) -> signed {
         let r: signed[value'length] = 0;
         // One write per element: a branch around each would select between
         // two versions of `r` at every step.

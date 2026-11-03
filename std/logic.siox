@@ -120,7 +120,7 @@ pub enum ULogic {
 // two are now unrelated nominal types, so the conversion is written out and
 // `ULogic(b)` dispatches to it.
 impl From<Bit> for ULogic {
-    fn from(v: Bit) -> ULogic {
+    static fn from(v: Bit) -> ULogic {
         if v == '1' {
             return '1';
         }
@@ -131,7 +131,7 @@ impl From<Bit> for ULogic {
 // A `Bool` as a signal bit, as Rust's `From<bool>` for its integers:
 // `ready = Bit(count < DEPTH);`.
 impl From<Bool> for Bit {
-    fn from(v: Bool) -> Bit {
+    static fn from(v: Bool) -> Bit {
         if v {
             return '1';
         }
@@ -337,13 +337,13 @@ impl Resolve for Logic {
 // forcing-low `'0'`; a `Logic` powers on uninitialized `'U'` — the `std_ulogic`
 // default, so an undriven Logic signal reads `'U'` rather than a plausible `'0'`.
 impl Default for Bit {
-    fn default() -> Bit { return '0'; }
+    static fn default() -> Bit { return '0'; }
 }
 impl Default for ULogic {
-    fn default() -> ULogic { return 'U'; }
+    static fn default() -> ULogic { return 'U'; }
 }
 impl Default for Logic {
-    fn default() -> Logic { return 'U'; }
+    static fn default() -> Logic { return 'U'; }
 }
 
 // The ULogic <-> Logic crossing needs no explicit impl: `Logic(u)` / `ULogic(l)`
