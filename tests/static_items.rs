@@ -44,7 +44,6 @@ fn static_let_rules_are_checked() {
         "a `static let` initializer must be a constant",
         "a `static let` cannot hold an entity",
         "`static let` in a generic function is not supported yet",
-        "`static let` in a hardware process is not supported yet",
         "`counted` reaches `static let`, which only a testbench can run",
     ] {
         assert!(text.contains(message), "missing `{message}`:\n{text}");
@@ -65,6 +64,93 @@ fn a_function_static_is_shared_by_every_call_and_fresh_per_test() {
     assert_eq!(text.matches("bump call 1").count(), 2, "{text}");
     assert!(text.contains("bump call 2"), "{text}");
 }
+
+/// A hardware process's `static let` is its register: it keeps its value
+/// between edges, each instance has its own, an asynchronous reset writes it,
+/// and a write is seen at once by the statements after it.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_hardware_process_static_is_a_register() {
+    let (ok, text, dir) = sioxc("hardware", HARDWARE, &["--test", "-o", "hw.bin"]);
+    assert!(ok, "{text}");
+    assert!(!text.contains("warning"), "{text}");
+    let run = Command::new(dir.join("hw.bin")).output().unwrap();
+    let text =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{text}");
+    assert!(text.contains("hardware static done"), "{text}");
+}
+
+#[test]
+fn a_hardware_static_is_written_only_under_a_clock_edge() {
+    let (ok, text, _) = sioxc("unclocked", UNCLOCKED, &["--emit", "metadata"]);
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("is written only under a clock edge"),
+        "{text}"
+    );
+}
+
+const HARDWARE: &str = r#"module probe;
+
+entity Counter { clk: Bit in, rst: Bit in, q: unsigned[8] out, twice: unsigned[8] out }
+
+impl Counter {
+    tick: process {
+        static let count: unsigned[8] = 5;
+        if rst == '1' {
+            count = 5;
+        } else if clk.rising() {
+            count = count + 1;
+            q = count;                 // sees the new count at once
+        }
+        twice = count + count;         // read outside the edge: fine
+    }
+}
+
+#[test]
+entity Hw {}
+
+impl Hw {
+    let clk: Bit;
+    let rst: Bit = '0';
+    let q: unsigned[8];
+    let twice: unsigned[8];
+    let q2: unsigned[8];
+    let t2: unsigned[8];
+    let a: Counter = { .clk = clk, .rst = rst, .q = q, .twice = twice };
+    let b: Counter = { .clk = clk, .rst = rst, .q = q2, .twice = t2 };
+    clock: process { clk = not clk after 5ns; }
+    check: process {
+        await clk.rising();
+        await 1ns;
+        print!("q={} twice={}", q, twice);
+        assert!(q == 6, "first edge: 5 + 1, and q sees it");
+        await clk.rising();
+        await 1ns;
+        assert!(q == 7, "the register kept 6 between activations");
+        assert!(q2 == 7, "the second instance has its own register");
+        rst = '1';
+        await 2ns;
+        rst = '0';
+        await clk.rising();
+        await 1ns;
+        assert!(q == 6, "reset to 5, then +1");
+        print!("hardware static done");
+    }
+}
+"#;
+
+const UNCLOCKED: &str = r#"module probe;
+entity Bad { clk: Bit in, y: unsigned[8] out }
+impl Bad {
+    p: process {
+        static let n: unsigned[8] = 0;
+        n = n + 1;
+        y = n;
+    }
+}
+"#;
 
 const GOOD: &str = r#"module probe;
 
