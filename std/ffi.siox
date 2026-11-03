@@ -45,6 +45,6 @@ impl Eq<Handle> for Handle {
 
 impl Handle {
     // The null pointer.
-    pub fn null() -> Handle { return Handle(natural(0)); }
+    pub static fn null() -> Handle { return Handle(natural(0)); }
     pub fn is_null(self) -> Bool { return self == Handle(natural(0)); }
 }

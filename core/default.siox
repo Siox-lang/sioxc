@@ -7,7 +7,7 @@ module core::default;
 // must be a constant. Absent an impl, the compiler uses the type's first
 // variant / zero.
 pub trait Default {
-    fn default() -> Self;
+    static fn default() -> Self;
 }
 
 attr lang for Default = "default";

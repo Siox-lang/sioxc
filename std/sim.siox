@@ -26,19 +26,19 @@ impl Ord<time> for time {
 // `Suffix` trait; the `suffix` method builds the value (inlined at the use
 // site), so the fs scale per unit lives here in std source.
 impl Suffix<"fs", integer> for time {
-    fn suffix(v: integer) -> time { return time(v); }
+    static fn suffix(v: integer) -> time { return time(v); }
 }
 impl Suffix<"ps", integer> for time {
-    fn suffix(v: integer) -> time { return time(v * 1000); }
+    static fn suffix(v: integer) -> time { return time(v * 1000); }
 }
 impl Suffix<"ns", integer> for time {
-    fn suffix(v: integer) -> time { return time(v * 1000000); }
+    static fn suffix(v: integer) -> time { return time(v * 1000000); }
 }
 impl Suffix<"us", integer> for time {
-    fn suffix(v: integer) -> time { return time(v * 1000000000); }
+    static fn suffix(v: integer) -> time { return time(v * 1000000000); }
 }
 impl Suffix<"ms", integer> for time {
-    fn suffix(v: integer) -> time { return time(v * 1000000000000); }
+    static fn suffix(v: integer) -> time { return time(v * 1000000000000); }
 }
 
 pub struct frequency(real);
@@ -54,16 +54,16 @@ impl Ord<frequency> for frequency {
 
 // Frequency literal suffixes: `100MHz` is a real-backed `frequency`.
 impl Suffix<"Hz", real> for frequency {
-    fn suffix(v: real) -> frequency { return frequency(v); }
+    static fn suffix(v: real) -> frequency { return frequency(v); }
 }
 impl Suffix<"kHz", real> for frequency {
-    fn suffix(v: real) -> frequency { return frequency(v * 1000.0); }
+    static fn suffix(v: real) -> frequency { return frequency(v * 1000.0); }
 }
 impl Suffix<"MHz", real> for frequency {
-    fn suffix(v: real) -> frequency { return frequency(v * 1000000.0); }
+    static fn suffix(v: real) -> frequency { return frequency(v * 1000000.0); }
 }
 impl Suffix<"GHz", real> for frequency {
-    fn suffix(v: real) -> frequency { return frequency(v * 1000000000.0); }
+    static fn suffix(v: real) -> frequency { return frequency(v * 1000000000.0); }
 }
 
 // Raw femtosecond multipliers, for integer time arithmetic.
