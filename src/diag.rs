@@ -80,6 +80,14 @@ impl SourceMap {
         id
     }
 
+    /// Replace a file's text: a generated file whose spans were allocated
+    /// while its text was being written.
+    pub fn replace_text(&mut self, id: FileId, text: impl Into<String>) {
+        if let Some(file) = self.files.get_mut(id.0 as usize) {
+            file.text = text.into();
+        }
+    }
+
     /// The file `id` refers to, or `None` if it was never registered.
     pub fn get(&self, id: FileId) -> Option<&SourceFile> {
         self.files.get(id.0 as usize)

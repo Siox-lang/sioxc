@@ -693,7 +693,31 @@ impl<'a> Checker<'a> {
         }
         if let Some(ret) = &function.ret {
             self.check_type_layout(ret);
+            self.reject_entity_return(function, ret);
         }
+    }
+
+    /// A function cannot return an entity: an instance is hardware, built
+    /// once where it is declared, and a call is evaluated wherever it is
+    /// made, so it would have to bring an instance into being (owner rule).
+    fn reject_entity_return(&mut self, function: &FnDecl, ret: &Type) {
+        let Some(head) = self.type_key(ret) else {
+            return;
+        };
+        if !self.entities.contains_key(&head)
+            || self.type_params.borrow().contains(self.key_leaf(&head))
+        {
+            return;
+        }
+        self.error_with_help(
+            codes::INSTANCE_PLACEMENT,
+            crate::syntax::ast::type_span(ret),
+            format!("`{}` cannot return an entity", function.name.text),
+            "an instance is hardware, built once where it is declared: instantiate it at the \
+             top of an entity body and wire it through ports, or return the values it \
+             would compute"
+                .to_string(),
+        );
     }
 
     /// Check the type layouts in a generic parameter list's bounds.

@@ -553,6 +553,11 @@ impl Compiler {
             &mut result.diagnostics,
         );
         crate::syntax::macros::hardware_statics(&mut result.modules, &mut result.diagnostics);
+        crate::syntax::methods::entity_methods(
+            &mut result.modules,
+            &mut result.sources,
+            &mut result.diagnostics,
+        );
         if request.emit == Emit::Expanded {
             result.artifact = result.entry().map(pretty::print_module).map(Artifact::Text);
             return result;

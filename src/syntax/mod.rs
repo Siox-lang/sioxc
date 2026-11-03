@@ -10,6 +10,7 @@ pub mod format;
 pub mod imports;
 pub mod lexer;
 pub mod macros;
+pub mod methods;
 pub mod parser;
 pub mod pretty;
 pub mod token;

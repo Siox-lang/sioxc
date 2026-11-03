@@ -84,3 +84,18 @@ fn a_static_trait_member_stays_static() {
         "{text}"
     );
 }
+
+/// A function cannot return an entity (owner rule): an instance is built
+/// where it is declared, never by a call.
+#[test]
+fn a_function_cannot_return_an_entity() {
+    let (ok, text) = check(
+        "entity_return",
+        "module m;\nentity Cell { a: Bit in, y: Bit out }\nimpl Cell { y = a; }\n\
+         fn make() -> Cell { }\n\
+         struct H { pub v: integer }\nimpl H { pub static fn build() -> Cell[2] { } }\n",
+    );
+    assert!(!ok, "{text}");
+    assert!(text.contains("`make` cannot return an entity"), "{text}");
+    assert!(text.contains("`build` cannot return an entity"), "{text}");
+}

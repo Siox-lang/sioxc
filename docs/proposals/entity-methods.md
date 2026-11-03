@@ -1,22 +1,24 @@
 # Public methods on entities
 
-Status: **partially implemented; tiers 2 and 3 deferred**. Tier 1 associated
-functions are complete. Tiers 2 and 3 (receiver methods) are rejected
-(`E-P024`) and were put on hold by the owner on 2026-10-10: an entity's `impl`
-body *is* the entity and names its ports and state without a receiver, so a
-`self` parameter on an entity method would look unlike everything else in that
-body, while a struct method needs it to tell itself apart from an associated
-function. Updated 2026-10-30 for the work below that has landed since.
+Status: **implemented for hardware callers** (owner-approved design,
+2026-11-03). Tier 1 associated functions are `pub static fn`. A `pub fn` (with
+its implicit receiver, sioxc #375) is a method called on a direct child,
+`fifo.push(x)` / `fifo.is_full()`. Before resolution, `syntax::methods`
+turns each into ports on the child (`m#called`, one `m#p` per parameter,
+`m#ret`), a process `m#call` that runs the body while it is called, and
+hidden wiring in the parent. A method's writes are combinational strobes,
+active only while it is called (a SystemVerilog interface function): when it
+is not called each written signal falls back to its default, so
+`push(v) { wr_en = '1'; din = v; }` drives a vendor FIFO's write port. The
+state lives in the child, and the result comes back in the same cycle.
+Rules: one call site per method per instance (a call in a loop counts as
+several); a direct child only; no testbench callers yet (when the strobe drops
+is undecided); a function cannot return an entity (owner rule, E-P020).
+Not built: a clocked write inside a method body that needs per-clock merging
+of several methods, arbitration between callers, and calls through an
+instance-array element.
 
-**Syntax follow-up:** [Implicit receivers and static declarations](implicit-receivers-and-static.md)
-answers that objection. It proposes `static fn` for associated functions and an
-implicit receiver for ordinary `fn`, consistently across entities, structs,
-enums and applied views, so an entity method needs no `self` parameter at all.
-The `self` parameters in the examples below describe today's distinction, not
-the proposed spelling; under that proposal `pub fn write(self, v)` is
-`pub fn write(v)`, and tier 1's `pub fn clamp(v)` is `pub static fn clamp(v)`.
-That proposal settles declarations only; the generated ports, call-site rules
-and scheduling here remain this proposal's work.
+The text below is the design discussion this grew from.
 
 An entity's interface is its ports. Reaching a child instance therefore means
 declaring a port for every value that crosses the boundary and wiring each one
