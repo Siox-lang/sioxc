@@ -104,6 +104,12 @@ impl<'a> Lowering<'a> {
             if !seen.insert(sig.0) || driven.contains(&sig.0) {
                 continue;
             }
+            // An entity method's default holder (`m#none#x`) is never driven
+            // by design: it carries the type's default. `#` cannot be written
+            // in source, so no user signal is exempted.
+            if self.out.signals[sig.0 as usize].path.contains("#none#") {
+                continue;
+            }
             let signal = &self.out.signals[sig.0 as usize];
             let path = signal.path.clone();
             self.sink.emit(
