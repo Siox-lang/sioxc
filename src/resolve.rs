@@ -3298,6 +3298,48 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Rewrite each bare field name resolution found (`value` inside a method
+/// with a receiver) into the `self.value` every later stage already
+/// understands. Its `self` resolves at a zero-width span of its own, recorded
+/// during resolution, so the field access and its base never share a span.
+pub fn rewrite_implicit_fields(modules: &mut [Module], resolved: &Resolved) {
+    if resolved.implicit_fields.is_empty() {
+        return;
+    }
+    for module in modules.iter_mut() {
+        for item in &mut module.items {
+            crate::syntax::walk::walk_item(item, &mut |e| {
+                if let Expr::Path(path) = e {
+                    if let Some(field) = resolved.implicit_field(path.span) {
+                        let span = path.span;
+                        let at = Span {
+                            file: span.file,
+                            start: span.start,
+                            end: span.start,
+                        };
+                        *e = Expr::Field {
+                            base: Box::new(Expr::Path(Path {
+                                segments: vec![Ident {
+                                    text: "self".to_string(),
+                                    span: at,
+                                }],
+                                span: at,
+                            })),
+                            field: Ident {
+                                text: field.to_string(),
+                                span,
+                            },
+                            span,
+                        };
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4526,47 +4568,5 @@ mod tests {
             "{:#?}",
             sink.diagnostics()
         );
-    }
-}
-
-/// Rewrite each bare field name resolution found (`value` inside a method
-/// with a receiver) into the `self.value` every later stage already
-/// understands. Its `self` resolves at a zero-width span of its own, recorded
-/// during resolution, so the field access and its base never share a span.
-pub fn rewrite_implicit_fields(modules: &mut [Module], resolved: &Resolved) {
-    if resolved.implicit_fields.is_empty() {
-        return;
-    }
-    for module in modules.iter_mut() {
-        for item in &mut module.items {
-            crate::syntax::walk::walk_item(item, &mut |e| {
-                if let Expr::Path(path) = e {
-                    if let Some(field) = resolved.implicit_field(path.span) {
-                        let span = path.span;
-                        let at = Span {
-                            file: span.file,
-                            start: span.start,
-                            end: span.start,
-                        };
-                        *e = Expr::Field {
-                            base: Box::new(Expr::Path(Path {
-                                segments: vec![Ident {
-                                    text: "self".to_string(),
-                                    span: at,
-                                }],
-                                span: at,
-                            })),
-                            field: Ident {
-                                text: field.to_string(),
-                                span,
-                            },
-                            span,
-                        };
-                        return false;
-                    }
-                }
-                true
-            });
-        }
     }
 }
