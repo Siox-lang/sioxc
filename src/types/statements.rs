@@ -696,7 +696,7 @@ impl<'a> Checker<'a> {
         };
         let mut offending = None;
         let resolved = self.resolved;
-        super::expand::walk_expr(&mut value.clone(), &mut |e| {
+        crate::syntax::walk::walk_expr(&mut value.clone(), &mut |e| {
             if offending.is_some() {
                 return false;
             }

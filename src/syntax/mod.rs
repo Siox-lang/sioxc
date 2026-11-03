@@ -13,6 +13,7 @@ pub mod macros;
 pub mod parser;
 pub mod pretty;
 pub mod token;
+pub mod walk;
 
 pub use ast::Module;
 
