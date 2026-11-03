@@ -236,9 +236,36 @@ Proposed initial rules:
   initialization.
 
 These placement and initializer restrictions are proposed starting constraints,
-not claims that broader cases are impossible. `static let` in a function,
-including a `static fn`, is outside this proposal: per-function, per-receiver,
-per-call-site and per-process lifetime are different choices.
+not claims that broader cases are impossible.
+
+### `static let` in a function
+
+Decided by the owner (2026-11-03): a function's `static let` has **one copy
+per function**, as C's `static` does: not one per call site, receiver or
+process. A generic function has one copy per specialization, as a C++
+template's static does.
+
+```siox
+fn next_id() -> integer {
+    static let n: integer = 0;
+    n = n + 1;
+    return n;
+}
+```
+
+- In a testbench, calls run in order and share the copy: `next_id()` returns
+  1, then 2, then 3.
+- In hardware the copy is one register, and every call site is logic that
+  reads and writes it. Several calls in the **same** process are fine: like a
+  VHDL function reused in one process, the second call sees the first call's
+  result and the logic chains.
+- Calls from **separate** processes that update it are an error: two
+  processes would drive one register in the same cycle. It is reported as a
+  conflicting driver (E-P014), naming both calls. Two instances of an entity
+  that both call the function are separate processes too, so a function with
+  a `static let` serves one process in the whole design.
+- The initializer rules above apply: a constant initializer, run once before
+  the first call.
 
 Persistence denotes state, not a promise to create a flip-flop. Clocked use
 can infer clocked storage; combinational use must not silently evade existing
