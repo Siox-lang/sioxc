@@ -40,11 +40,11 @@ pub struct Handle(natural);
 attr lang for Handle = "c_handle";
 
 impl Eq<Handle> for Handle {
-    fn eq(self, rhs: Handle) -> Bool { return self == rhs; }
+    fn eq(rhs: Handle) -> Bool { return self == rhs; }
 }
 
 impl Handle {
     // The null pointer.
     pub static fn null() -> Handle { return Handle(natural(0)); }
-    pub fn is_null(self) -> Bool { return self == Handle(natural(0)); }
+    pub fn is_null() -> Bool { return self == Handle(natural(0)); }
 }

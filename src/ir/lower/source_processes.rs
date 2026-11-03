@@ -13470,14 +13470,14 @@ mod tests {
              enum Mode { Off, On }\n\
              enum Cell { Low, High }\n\
              impl Not<Cell> for Cell {\n\
-               fn not(self) -> Cell {\n\
+               fn not() -> Cell {\n\
                  if self == Cell::Low { return Cell::High; }\n\
                  return Cell::Low;\n\
                }\n\
              }\n\
              struct Wrap(integer);\n\
              impl Eq<Wrap> for Wrap {\n\
-               fn eq(self, rhs: Wrap) -> Bool { return true; }\n\
+               fn eq(rhs: Wrap) -> Bool { return true; }\n\
              }\n\
              entity Device { input: Bool in, output: Bool out }\n\
              impl Device { output = input; }\n\
@@ -13519,20 +13519,20 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; pub enum Ordering { Less, Equal, Greater } \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             pub trait Not<Out> { fn not(self) -> Out; } attr lang for Not = \"not\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
-             impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } } \
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             pub trait Not<Out> { fn not() -> Out; } attr lang for Not = \"not\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } } \
+             impl Not<Bool> for Bool { fn not() -> Bool { return self; } } \
              impl<T: Not<T>> Not<T> for T[] { \
-               fn not(self) -> T[] { let result: T[] = self; \
+               fn not() -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
-             pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} } \
+             pub trait Suffix<symbol: string, input> { static fn suffix(data: input) {} } \
              attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::{Boolean, Not};",
             "module std::sim; use std::ops::Suffix; pub struct time(integer); attr lang for time = \"time\"; \
              impl Suffix<\"ns\", integer> for time { \
-               fn suffix(value: integer) -> time { return time(value * 37); } \
+               static fn suffix(value: integer) -> time { return time(value * 37); } \
              }",
         ];
         let mut sink = DiagnosticSink::new();
@@ -13925,8 +13925,8 @@ mod tests {
              }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::text; pub type string = Char[];",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::Boolean; pub use std::text::string;",
@@ -14031,8 +14031,8 @@ mod tests {
              }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::Boolean;",
         ];
@@ -14091,8 +14091,8 @@ mod tests {
             "module gates; entity Gate { input: Bool in, output: Bool out } \
              impl Gate { output = input; }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::ops::Boolean;",
         ];
         let mut sink = DiagnosticSink::new();
@@ -14169,8 +14169,8 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; \
              pub use std::attrs::test; pub use std::ops::Boolean;",
         ];
@@ -14249,8 +14249,8 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -14346,7 +14346,7 @@ mod tests {
     fn process_function_index_canonicalizes_families_and_defaults() {
         let sources = [
             "module std::bits; pub struct unsigned(integer);",
-            "module tests; trait Meter { fn label(self) -> integer { return 7; } } \
+            "module tests; trait Meter { fn label() -> integer { return 7; } } \
              struct Plain(integer); impl Meter for Plain {}",
         ];
         let mut sink = DiagnosticSink::new();
@@ -14380,7 +14380,7 @@ mod tests {
     fn real_suffix_body_folds_to_process_number() {
         let source = "module units; struct frequency(real); \
             impl Suffix<\"MHz\", real> for frequency { \
-                fn suffix(value: real) -> frequency { \
+                static fn suffix(value: real) -> frequency { \
                     return frequency(value * 1000000.0); \
                 } \
             }";

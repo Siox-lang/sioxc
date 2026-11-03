@@ -43,7 +43,7 @@ fn programs_that_failed_to_lower_now_run() {
             "291_293",
             r#"module v;
 struct S { pub v: integer, }
-impl S { pub fn new(x: integer) -> S { return S { .v = x }; } }
+impl S { pub static fn new(x: integer) -> S { return S { .v = x }; } }
 struct Inner { pub a: integer, pub b: integer, }
 struct Outer { pub inner: Inner, pub c: integer, }
 const O: Outer = Outer { .inner = Inner { .a = 10, .b = 20 }, .c = 30, };
@@ -74,11 +74,11 @@ impl T {
             r#"module v;
 struct S { pub val: integer, }
 impl S {
-    pub fn make(v: integer) -> Self { return S { .val = v }; }
-    pub fn create(v: integer) -> S { return make(v + 1); }
+    pub static fn make(v: integer) -> Self { return S { .val = v }; }
+    pub static fn create(v: integer) -> S { return make(v + 1); }
 }
 struct Box<T> { pub val: T, }
-impl<T> Box<T> { pub fn make(v: T) -> Box<T> { return Box { .val = v }; } }
+impl<T> Box<T> { pub static fn make(v: T) -> Box<T> { return Box { .val = v }; } }
 entity Top {
     x: unsigned[8] in, i: integer in,
     y: unsigned[x'length] out, h: integer out,
@@ -86,7 +86,7 @@ entity Top {
     tail: unsigned[8][2] out, head: unsigned[8][2] out, rows: integer[2][2] out,
 }
 impl Top {
-    pub fn double(v: integer) -> integer { return v * 2; }
+    pub static fn double(v: integer) -> integer { return v * 2; }
     let tmp: unsigned[x'length];
     tmp = x;
     y = tmp;
@@ -105,7 +105,7 @@ impl Top {
 }
 #[test] entity T {}
 impl T {
-    pub fn triple(v: integer) -> integer { return v * 3; }
+    pub static fn triple(v: integer) -> integer { return v * 3; }
     let x: unsigned[8] = 10; let i: integer = 7;
     let y: unsigned[8]; let h: integer; let d: integer; let s1: integer; let s2: integer; let b1: integer;
     let tail: unsigned[8][2]; let head: unsigned[8][2]; let rows: integer[2][2];
@@ -130,7 +130,7 @@ impl T {
 #[test]
 entity TestTop {}
 impl TestTop {
-    pub fn double(v: integer) -> integer {
+    pub static fn double(v: integer) -> integer {
         return v * 2;
     }
     let y: integer = double(21);
@@ -161,7 +161,7 @@ entity Top {
     y: integer out,
 }
 impl Top {
-    pub fn double(v: integer) -> integer {
+    pub static fn double(v: integer) -> integer {
         return v * 2;
     }
 
@@ -178,7 +178,7 @@ struct Box<T> {
 }
 
 impl<T> Box<T> {
-    pub fn make(v: T) -> Box<T> {
+    pub static fn make(v: T) -> Box<T> {
         return Box { .val = v };
     }
 }

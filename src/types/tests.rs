@@ -18,27 +18,27 @@ const VEC: &str = "\n\
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Bool { false, true }\n\
         enum Ordering { Less, Equal, Greater }\n\
-        trait ClockLike { fn rising(self) -> Bool; }\n\
-        impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
-        impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
-        impl ClockLike for Bit { fn rising(self) -> Bool { return false; } }\n\
-        impl And<Bool, Bool> for Bool { fn and(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Or<Bool, Bool> for Bool { fn or(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } }\n\
-        impl And<Bit, Bit> for Bit { fn and(self, rhs: Bit) -> Bit { return self; } }\n\
-        impl Or<Bit, Bit> for Bit { fn or(self, rhs: Bit) -> Bit { return self; } }\n\
-        impl Not<Bit> for Bit { fn not(self) -> Bit { return self; } }\n\
-        impl And<Logic, Logic> for Logic { fn and(self, rhs: Logic) -> Logic { return self; } }\n\
-        impl Or<Logic, Logic> for Logic { fn or(self, rhs: Logic) -> Logic { return self; } }\n\
-        impl Not<Logic> for Logic { fn not(self) -> Logic { return self; } }\n\
-        impl<T: And<T, T>> And<T, T> for T[] { fn and(self, rhs: T[]) -> T[] { return self; } }\n\
-        impl<T: Or<T, T>> Or<T, T> for T[] { fn or(self, rhs: T[]) -> T[] { return self; } }\n\
-        impl<T: Not<T>> Not<T> for T[] { fn not(self) -> T[] { return self; } }\n\
+        trait ClockLike { fn rising() -> Bool; }\n\
+        impl Boolean for Bit { fn as_bool() -> Bool { return true; } }\n\
+        impl Boolean for Bool { fn as_bool() -> Bool { return self; } }\n\
+        impl ClockLike for Bit { fn rising() -> Bool { return false; } }\n\
+        impl And<Bool, Bool> for Bool { fn and(rhs: Bool) -> Bool { return self; } }\n\
+        impl Or<Bool, Bool> for Bool { fn or(rhs: Bool) -> Bool { return self; } }\n\
+        impl Not<Bool> for Bool { fn not() -> Bool { return self; } }\n\
+        impl And<Bit, Bit> for Bit { fn and(rhs: Bit) -> Bit { return self; } }\n\
+        impl Or<Bit, Bit> for Bit { fn or(rhs: Bit) -> Bit { return self; } }\n\
+        impl Not<Bit> for Bit { fn not() -> Bit { return self; } }\n\
+        impl And<Logic, Logic> for Logic { fn and(rhs: Logic) -> Logic { return self; } }\n\
+        impl Or<Logic, Logic> for Logic { fn or(rhs: Logic) -> Logic { return self; } }\n\
+        impl Not<Logic> for Logic { fn not() -> Logic { return self; } }\n\
+        impl<T: And<T, T>> And<T, T> for T[] { fn and(rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Or<T, T>> Or<T, T> for T[] { fn or(rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Not<T>> Not<T> for T[] { fn not() -> T[] { return self; } }\n\
         struct unsigned(Logic[]);\n\
-        impl Add<unsigned, unsigned> for unsigned { fn add(self, rhs: unsigned) -> unsigned { return self; } }\n\
-        impl Div<unsigned, unsigned> for unsigned { fn div(self, rhs: unsigned) -> unsigned { return self; } }\n\
-        impl Eq<unsigned> for unsigned { fn eq(self, rhs: unsigned) -> Bool { return true; } }\n\
-        impl Ord<unsigned> for unsigned { fn lt(self, rhs: unsigned) -> Bool { return false; } fn le(self, rhs: unsigned) -> Bool { return true; } }\n\
+        impl Add<unsigned, unsigned> for unsigned { fn add(rhs: unsigned) -> unsigned { return self; } }\n\
+        impl Div<unsigned, unsigned> for unsigned { fn div(rhs: unsigned) -> unsigned { return self; } }\n\
+        impl Eq<unsigned> for unsigned { fn eq(rhs: unsigned) -> Bool { return true; } }\n\
+        impl Ord<unsigned> for unsigned { fn lt(rhs: unsigned) -> Bool { return false; } fn le(rhs: unsigned) -> Bool { return true; } }\n\
         struct signed(Logic[]);\n";
 
 /// Type-check `src` with the vector prelude appended and return its error

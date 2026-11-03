@@ -20,11 +20,11 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
            pub enum Flag { Off, On }
            impl CustomOperator<"unless", Flag, Bool> for Flag {
                attr precedence = 45;
-               fn apply(self, rhs: Flag) -> Bool { return true; }
+               fn apply(rhs: Flag) -> Bool { return true; }
            }
            impl CustomOperator<"^^", Flag, Bool> for Flag {
                attr precedence = 44;
-               fn apply(self, rhs: Flag) -> Bool { return true; }
+               fn apply(rhs: Flag) -> Bool { return true; }
            }"#,
     )
     .unwrap();
@@ -42,7 +42,7 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
            enum Other { A }
            impl CustomOperator<"unless", Other, Bool> for Other {
                attr precedence = 1;
-               fn apply(self, rhs: Other) -> Bool { return true; }
+               fn apply(rhs: Other) -> Bool { return true; }
            }"#,
     )
     .unwrap();

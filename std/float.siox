@@ -125,7 +125,7 @@ fn pow2(k: integer) -> real {
 // --- arithmetic ----------------------------------------------------------------
 
 impl Mul<float, float> for float {
-    fn mul(self, rhs: float) -> float {
+    fn mul(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -149,13 +149,13 @@ impl Mul<float, float> for float {
 }
 
 impl Add<float, float> for float {
-    fn add(self, rhs: float) -> float {
+    fn add(rhs: float) -> float {
         return add_words(integer(self), integer(rhs), self'high, 0 - self'low);
     }
 }
 
 impl Sub<float, float> for float {
-    fn sub(self, rhs: float) -> float {
+    fn sub(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let b: integer = integer(rhs);
@@ -168,7 +168,7 @@ impl Sub<float, float> for float {
 // IEEE-754 division, rounded to nearest even. `x / 0` is infinite, `0 / 0`
 // and `inf / inf` are NaN, and `x / inf` is zero.
 impl Div<float, float> for float {
-    fn div(self, rhs: float) -> float {
+    fn div(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -266,7 +266,7 @@ fn is_nan_word(w: integer, e: integer, f: integer) -> Bool {
 }
 
 impl Eq<float> for float {
-    fn eq(self, rhs: float) -> Bool {
+    fn eq(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -278,7 +278,7 @@ impl Eq<float> for float {
 }
 
 impl Ord<float> for float {
-    fn lt(self, rhs: float) -> Bool {
+    fn lt(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -292,13 +292,13 @@ impl Ord<float> for float {
         if sa != sb { return sa == 1; }
         return if sa == 0 { ma < mb } else { ma > mb };
     }
-    fn le(self, rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
+    fn le(rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
 }
 
 // `-x`: the same number with its sign flipped (IEEE `negate`, exact for
 // every value including zero, infinity and NaN).
 impl Neg<float> for float {
-    fn neg(self) -> float {
+    fn neg() -> float {
         let w: integer = self'high - self'low;
         let a: integer = integer(self);
         return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
@@ -314,20 +314,20 @@ impl float {
     pub attr mantissa: integer = 0 - self'low;
     pub attr bias: integer = (1 << (self'exponent - 1)) - 1;
 
-    pub fn is_nan(self) -> Bool {
+    pub fn is_nan() -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) != 0;
     }
 
-    pub fn is_infinite(self) -> Bool {
+    pub fn is_infinite() -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) == 0;
     }
 
     // Zero, of either sign; a subnormal counts as zero.
-    pub fn is_zero(self) -> Bool {
+    pub fn is_zero() -> Bool {
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, self'high) == 0;
     }
@@ -335,7 +335,7 @@ impl float {
 
 // Prints as its value: `{:.3}` and `{:e}` reach the real it converts to.
 impl Display for float {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{}", real(self));
     }
 }
@@ -345,7 +345,7 @@ impl Sqrt for float {
     // NaN or a negative number, and zero, `-0` and infinity are their own
     // roots. The radicand needs `2f + 6` bits of the 64-bit kernel word, so
     // it holds up to 28 mantissa bits (binary16, binary32), as `*` and `/` do.
-    fn sqrt(self) -> float {
+    fn sqrt() -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -381,13 +381,13 @@ impl From<Logic[]> for float {
 // Stored where the other is expected, a `Logic[]` and a float convert
 // implicitly: the raw sign, exponent and fraction bits.
 impl Into<float> for Logic[] {
-    fn into(self) -> float {
+    fn into() -> float {
         return float(self);
     }
 }
 
 impl Into<Logic[]> for float {
-    fn into(self) -> Logic[] {
+    fn into() -> Logic[] {
         return elements(self);
     }
 }

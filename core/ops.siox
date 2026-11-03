@@ -12,26 +12,26 @@ use core::primitive::Bool;
 // traits, each with a method named after it; overloads select by the right
 // operand's type (`Rhs`), and `Out` names the result type. Their precedence
 // is the grammar's. Comparisons are `core::cmp`'s `Eq` and `Ord`.
-pub trait Add<Rhs, Out> { fn add(self, rhs: Rhs) -> Out; }   // a + b
-pub trait Sub<Rhs, Out> { fn sub(self, rhs: Rhs) -> Out; }   // a - b
-pub trait Mul<Rhs, Out> { fn mul(self, rhs: Rhs) -> Out; }   // a * b
-pub trait Div<Rhs, Out> { fn div(self, rhs: Rhs) -> Out; }   // a / b
+pub trait Add<Rhs, Out> { fn add(rhs: Rhs) -> Out; }   // a + b
+pub trait Sub<Rhs, Out> { fn sub(rhs: Rhs) -> Out; }   // a - b
+pub trait Mul<Rhs, Out> { fn mul(rhs: Rhs) -> Out; }   // a * b
+pub trait Div<Rhs, Out> { fn div(rhs: Rhs) -> Out; }   // a / b
 // The remainder, with the dividend's sign: `-7 % 2 == -1`, as Rust's and
 // Verilog's `%` and VHDL's `rem`. The divisor-signed one is `std::math::mod`.
-pub trait Rem<Rhs, Out> { fn rem(self, rhs: Rhs) -> Out; }   // a % b
-pub trait Shl<Rhs, Out> { fn shl(self, rhs: Rhs) -> Out; }   // a << b
-pub trait Shr<Rhs, Out> { fn shr(self, rhs: Rhs) -> Out; }   // a >> b
+pub trait Rem<Rhs, Out> { fn rem(rhs: Rhs) -> Out; }   // a % b
+pub trait Shl<Rhs, Out> { fn shl(rhs: Rhs) -> Out; }   // a << b
+pub trait Shr<Rhs, Out> { fn shr(rhs: Rhs) -> Out; }   // a >> b
 // `and`/`or`/`not` are one boolean-per-bit family, not rustc's bitwise and
 // logical pair, so the traits take the operators' own names.
-pub trait And<Rhs, Out> { fn and(self, rhs: Rhs) -> Out; }   // a and b
-pub trait Or<Rhs, Out> { fn or(self, rhs: Rhs) -> Out; }     // a or b
-pub trait Not<Out> { fn not(self) -> Out; }                  // not a
-pub trait Neg<Out> { fn neg(self) -> Out; }                  // -a
+pub trait And<Rhs, Out> { fn and(rhs: Rhs) -> Out; }   // a and b
+pub trait Or<Rhs, Out> { fn or(rhs: Rhs) -> Out; }     // a or b
+pub trait Not<Out> { fn not() -> Out; }                  // not a
+pub trait Neg<Out> { fn neg() -> Out; }                  // -a
 
 // A user operator: any symbol or word the grammar does not reserve, such as
 // `xor`. It binds its precedence inside its impl with `attr precedence = N;`.
 pub trait CustomOperator<op: string, Rhs, Out> {
-    fn apply(self, rhs: Rhs) -> Out;
+    fn apply(rhs: Rhs) -> Out;
 }
 
 // Literal affixes are symbol-parameterized the same way (spec 3.24): the first
@@ -60,17 +60,17 @@ pub struct Range {
 // `value[index]` falls back to Index when `value` is not an intrinsic packed
 // vector or array. `value[index] = next` similarly uses IndexAssign.
 pub trait Index<I, Output> {
-    fn index(self, index: I) -> Output;
+    fn index(index: I) -> Output;
 }
 
 pub trait IndexAssign<I, Value> {
-    fn index_assign(self, index: I, value: Value);
+    fn index_assign(index: I, value: Value);
 }
 
 // `and`/`or` have one type-directed meaning. For Bool-like operands they are
 // scalar boolean logic; for bit-derived operands they apply per bit.
 impl And<Bool, Bool> for Bool {
-    fn and(self, rhs: Bool) -> Bool {
+    fn and(rhs: Bool) -> Bool {
         if self {
             return rhs;
         }
@@ -79,14 +79,14 @@ impl And<Bool, Bool> for Bool {
 }
 
 impl Or<Bool, Bool> for Bool {
-    fn or(self, rhs: Bool) -> Bool {
+    fn or(rhs: Bool) -> Bool {
         if self { return true; }
         return rhs;
     }
 }
 
 impl Not<Bool> for Bool {
-    fn not(self) -> Bool {
+    fn not() -> Bool {
         if self { return false; }
         return true;
     }
@@ -94,7 +94,7 @@ impl Not<Bool> for Bool {
 
 impl CustomOperator<"xor", Bool, Bool> for Bool {
     attr precedence = 35;
-    fn apply(self, rhs: Bool) -> Bool {
+    fn apply(rhs: Bool) -> Bool {
         if self { return not rhs; }
         return rhs;
     }
@@ -102,17 +102,17 @@ impl CustomOperator<"xor", Bool, Bool> for Bool {
 
 impl CustomOperator<"nand", Bool, Bool> for Bool {
     attr precedence = 40;
-    fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
+    fn apply(rhs: Bool) -> Bool { return not (self and rhs); }
 }
 
 impl CustomOperator<"nor", Bool, Bool> for Bool {
     attr precedence = 30;
-    fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
+    fn apply(rhs: Bool) -> Bool { return not (self or rhs); }
 }
 
 impl CustomOperator<"xnor", Bool, Bool> for Bool {
     attr precedence = 35;
-    fn apply(self, rhs: Bool) -> Bool {
+    fn apply(rhs: Bool) -> Bool {
         if self == rhs { return true; }
         return false;
     }
@@ -125,11 +125,11 @@ impl CustomOperator<"xnor", Bool, Bool> for Bool {
 // exports it; the `Bit`/`Bool` behaviour below is also mirrored inside the
 // type checker, and these impls keep the semantics on the record in source.
 pub trait Boolean {
-    fn as_bool(self) -> Bool;
+    fn as_bool() -> Bool;
 }
 
 impl Boolean for Bool {
-    fn as_bool(self) -> Bool {
+    fn as_bool() -> Bool {
         return self;
     }
 }
@@ -139,14 +139,14 @@ impl Boolean for Bool {
 // the type's `resolve` (associative, commutative). A type WITHOUT an impl
 // is unresolved — parallel drivers on it are an elaboration error.
 pub trait Resolve {
-    fn resolve(self, rhs: Self) -> Self;
+    fn resolve(rhs: Self) -> Self;
 }
 
 // Array behavior is lifted from the element contract. Nominal newtypes over
 // arrays forward these implementations from their base without becoming
 // interchangeable with that base.
 impl<T: Resolve> Resolve for T[] {
-    fn resolve(self, rhs: T[]) -> T[] {
+    fn resolve(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i].resolve(rhs[i]); }
         return result;
@@ -154,7 +154,7 @@ impl<T: Resolve> Resolve for T[] {
 }
 
 impl<T: And<T, T>> And<T, T> for T[] {
-    fn and(self, rhs: T[]) -> T[] {
+    fn and(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] and rhs[i]; }
         return result;
@@ -162,7 +162,7 @@ impl<T: And<T, T>> And<T, T> for T[] {
 }
 
 impl<T: Or<T, T>> Or<T, T> for T[] {
-    fn or(self, rhs: T[]) -> T[] {
+    fn or(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] or rhs[i]; }
         return result;
@@ -171,7 +171,7 @@ impl<T: Or<T, T>> Or<T, T> for T[] {
 
 impl<T: CustomOperator<"xor", T, T>> CustomOperator<"xor", T, T> for T[] {
     attr precedence = 35;
-    fn apply(self, rhs: T[]) -> T[] {
+    fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] xor rhs[i]; }
         return result;
@@ -180,7 +180,7 @@ impl<T: CustomOperator<"xor", T, T>> CustomOperator<"xor", T, T> for T[] {
 
 impl<T: CustomOperator<"nand", T, T>> CustomOperator<"nand", T, T> for T[] {
     attr precedence = 40;
-    fn apply(self, rhs: T[]) -> T[] {
+    fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] nand rhs[i]; }
         return result;
@@ -189,7 +189,7 @@ impl<T: CustomOperator<"nand", T, T>> CustomOperator<"nand", T, T> for T[] {
 
 impl<T: CustomOperator<"nor", T, T>> CustomOperator<"nor", T, T> for T[] {
     attr precedence = 30;
-    fn apply(self, rhs: T[]) -> T[] {
+    fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] nor rhs[i]; }
         return result;
@@ -198,7 +198,7 @@ impl<T: CustomOperator<"nor", T, T>> CustomOperator<"nor", T, T> for T[] {
 
 impl<T: CustomOperator<"xnor", T, T>> CustomOperator<"xnor", T, T> for T[] {
     attr precedence = 35;
-    fn apply(self, rhs: T[]) -> T[] {
+    fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] xnor rhs[i]; }
         return result;
@@ -206,7 +206,7 @@ impl<T: CustomOperator<"xnor", T, T>> CustomOperator<"xnor", T, T> for T[] {
 }
 
 impl<T: Not<T>> Not<T> for T[] {
-    fn not(self) -> T[] {
+    fn not() -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = not self[i]; }
         return result;
@@ -226,10 +226,10 @@ impl<T: Not<T>> Not<T> for T[] {
 // and puts the resulting table in the Design; no backend knows ULogic's
 // symbols or discriminants.
 pub trait LogicEncoding {
-    fn to_bool(self) -> Bool;
-    fn is_binary(self) -> Bool;
-    fn is_high_impedance(self) -> Bool;
-    fn to_x01(self) -> Self;
+    fn to_bool() -> Bool;
+    fn is_binary() -> Bool;
+    fn is_high_impedance() -> Bool;
+    fn to_x01() -> Self;
 }
 
 // What each declaration is to the compiler. The compiler finds its hooks by

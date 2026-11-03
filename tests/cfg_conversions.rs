@@ -15,7 +15,7 @@ module conv;
 use std::bits::unsigned;
 struct Count { pub n: integer }
 impl From<unsigned> for Count {
-    fn from(value: unsigned) -> Count {
+    static fn from(value: unsigned) -> Count {
         let n: integer = 0;
         for i in 0..value'length - 1 {
             if value[i] == '1' { n = n + 1; }

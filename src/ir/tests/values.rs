@@ -272,10 +272,10 @@ fn resolved_metavalue_companion_is_terminal() {
     let d = lower_src(
         "module m;\n\
              impl<T: Resolve> Resolve for T[] {\n\
-                 fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+                 fn resolve(rhs: T[]) -> T[] { return self; }\n\
              }\n\
              impl Resolve for Logic {\n\
-                 fn resolve(self, rhs: Logic) -> Logic {\n\
+                 fn resolve(rhs: Logic) -> Logic {\n\
                      if self == 'Z' { return rhs; }\n\
                      return self;\n\
                  }\n\

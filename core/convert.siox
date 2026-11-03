@@ -20,7 +20,7 @@ attr lang for From = "from";
 // conversion there is written `T(x)`. Unlike Rust's, it is not implied by
 // `From`.
 pub trait Into {
-    fn into(self) -> Self;
+    fn into() -> Self;
 }
 
 attr lang for Into = "into";

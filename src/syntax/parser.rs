@@ -1706,6 +1706,7 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 let mut function = self.parse_fn_after_name(start, name, is_pub);
                 function.inline = inline;
+                self.implicit_receiver(&mut function);
                 Some(ImplItem::Fn(function))
             }
             TokenKind::Static if self.kind_at(self.pos + 1) == &TokenKind::Fn => {
@@ -2028,6 +2029,40 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// An implementation or trait member without `static` has a receiver,
+    /// implicit as C++'s `this`: it is recorded as the leading `self`
+    /// parameter later stages already understand, at a zero-width span of its
+    /// own. Writing `self` is the old spelling: it still means the receiver,
+    /// and warns with the migration, so code written before the change keeps
+    /// compiling while it moves over.
+    fn implicit_receiver(&mut self, function: &mut FnDecl) {
+        if let Some(receiver) = function.params.iter().find(|param| param.is_self) {
+            self.sink.emit(
+                Diagnostic::warning("the receiver is implicit: remove the `self` parameter")
+                    .at(receiver.span)
+                    .help(format!(
+                        "write `fn {}(...)`; a member without a receiver is `static fn {}(...)`",
+                        function.name.text, function.name.text
+                    )),
+            );
+            return;
+        }
+        let at = function.name.span.end;
+        function.params.insert(
+            0,
+            FnParam {
+                is_self: true,
+                name: None,
+                ty: None,
+                span: Span {
+                    file: function.name.span.file,
+                    start: at,
+                    end: at,
+                },
+            },
+        );
+    }
+
     /// `static fn name(...)`: a member without a receiver. A `self`
     /// parameter contradicts the marker.
     fn parse_static_fn(&mut self) -> FnDecl {
@@ -2205,7 +2240,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             let mname = self.parse_ident();
-            items.push(self.parse_fn_after_name(istart, mname, false));
+            let mut function = self.parse_fn_after_name(istart, mname, false);
+            self.implicit_receiver(&mut function);
+            items.push(function);
             if self.pos == before {
                 self.bump();
             }
@@ -4647,7 +4684,7 @@ mod tests {
     /// methods, and the printer writes them back.
     #[test]
     fn inline_directives_attach_to_functions() {
-        let src = "module m;\n\n#[inline(never)]\nfn big() -> integer {\n    return 1;\n}\n\nimpl Add<T, T> for T {\n    #[inline(always)]\n    fn add(self, rhs: T) -> T {\n        return self;\n    }\n    #[inline]\n    pub fn hint(self) -> T {\n        return self;\n    }\n}\n";
+        let src = "module m;\n\n#[inline(never)]\nfn big() -> integer {\n    return 1;\n}\n\nimpl Add<T, T> for T {\n    #[inline(always)]\n    fn add(rhs: T) -> T {\n        return self;\n    }\n    #[inline]\n    pub fn hint() -> T {\n        return self;\n    }\n}\n";
         let m = parse_ok(src);
         let Item::Fn(big) = &m.items[0] else {
             panic!("expected fn")
@@ -5120,7 +5157,7 @@ mod tests {
     /// Visibility is retained on functions, fields and methods alike.
     fn visibility_is_retained_on_functions_fields_and_methods() {
         let m = parse_ok(
-            "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get(self) -> integer { return self.open; } fn secret(self) -> integer { return self.closed; } }\n",
+            "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get() -> integer { return self.open; } fn secret() -> integer { return self.closed; } }\n",
         );
         assert!(matches!(&m.items[0], Item::Fn(function) if function.is_pub));
         assert!(matches!(&m.items[1], Item::Fn(function) if !function.is_pub));
@@ -5143,7 +5180,7 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         crate::syntax::parse_module(
             FileId(0),
-            "module m;\nentity E { pub value: integer out }\ntrait T { pub fn value(self) -> integer; }\n",
+            "module m;\nentity E { pub value: integer out }\ntrait T { pub fn value() -> integer; }\n",
             &mut sink,
         );
         let messages: Vec<&str> = sink
@@ -5166,7 +5203,7 @@ mod tests {
         let m = parse_ok(
             "module m;\n\
              impl<T: Resolve> Resolve for T[] {\n\
-               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+               fn resolve(rhs: T[]) -> T[] { return self; }\n\
              }\n",
         );
         let Item::Impl(im) = &m.items[0] else {
@@ -5258,7 +5295,7 @@ mod tests {
     /// A trait and an impl of it parse together.
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self'event;\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  fn rising();\n  fn edge();\n}\nimpl ClockLike for Logic {\n  fn rising() {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge() {\n    return self'event;\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else {
             panic!("expected trait")
@@ -5294,7 +5331,7 @@ mod tests {
     /// Bus modes and construction expressions parse.
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready() -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
         );
         let Item::View(v) = &m.items[1] else {
             panic!("expected view")
@@ -5356,7 +5393,7 @@ mod tests {
         // `>>` token is split so one `>` closes `Bar<Bit>` and the other the
         // param list. A plain shift expression still parses as a shift.
         parse_ok("module m;\nfn f<T: Bar<Bit>>(x: T) -> Bit { return x.b(); }\n");
-        parse_ok("module m;\ntrait Foo<U> { fn g(self) -> Bar<U>; }\n");
+        parse_ok("module m;\ntrait Foo<U> { fn g() -> Bar<U>; }\n");
         let m = parse_ok("module m;\nimpl M {\n  y = a >> b;\n}\n");
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else {
@@ -5659,7 +5696,7 @@ mod tests {
     /// precedence bound inside the impl body, not only `#[precedence = N]`.
     #[test]
     fn precedence_is_discovered_from_a_body_binding() {
-        let src = "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(self, rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl CustomOperator<\"~~\", Bit, Bit> for Bit {}\n";
+        let src = "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl CustomOperator<\"~~\", Bit, Bit> for Bit {}\n";
         let mut sink = DiagnosticSink::new();
         let tokens = crate::syntax::lexer::Lexer::new(FileId(0), src).tokenize(&mut sink);
         let operators = discover_custom_operators(src, &tokens);

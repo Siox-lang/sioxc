@@ -2022,7 +2022,7 @@ struct Source { pub count: integer, pub gain: real }
 struct Target { pub count: integer, pub gain: real }
 impl From<Source> for Target {
     #[inline(HINT)]
-    fn from(value: Source) -> Self {
+    static fn from(value: Source) -> Self {
         return Target { .count = value.count + 1, .gain = value.gain };
     }
 }
@@ -2035,7 +2035,7 @@ impl Probe { result = convert(value); }
 struct Number(integer);
 impl Resolve for Number {
     #[inline(HINT)]
-    fn resolve(self, rhs: Self) -> Self {
+    fn resolve(rhs: Self) -> Self {
         let first: integer = integer(self);
         let second: integer = integer(rhs);
         return if first > second { self } else { rhs };
@@ -4150,21 +4150,21 @@ fn sample(value: integer) -> integer {
 fn twice(value: integer) -> integer { return value + value; }
 struct Count { pub value: integer }
 impl From<integer> for Count {
-    fn from(value: integer) -> Self {
+    static fn from(value: integer) -> Self {
         let incremented: integer = value + 1;
         return Count { .value = incremented }; // conversion formal stop
     }
 }
 struct Ticks(integer);
 impl Suffix<"ticks", integer> for Ticks {
-    fn suffix(value: integer) -> Ticks {
+    static fn suffix(value: integer) -> Ticks {
         let scaled: integer = value * 3;
         return Ticks(scaled); // integer suffix formal stop
     }
 }
 struct Scale(real);
 impl Suffix<"scale", real> for Scale {
-    fn suffix(value: real) -> Scale {
+    static fn suffix(value: real) -> Scale {
         let scaled: real = value * 2.0;
         return Scale(scaled); // real suffix formal stop
     }
@@ -4183,7 +4183,7 @@ fn formal_result(value: integer<-8..7>) -> integer {
 }
 struct Word(Logic[]);
 impl Add<Word, Word> for Word {
-    fn add(self, rhs: Self) -> Self {
+    fn add(rhs: Self) -> Self {
         let sum: integer = self + rhs;
         return sum; // packed Self formal stop
     }
@@ -4196,7 +4196,7 @@ impl Formals {
 }
 enum Level { Low, High }
 impl Resolve for Level {
-    fn resolve(self, rhs: Self) -> Self {
+    fn resolve(rhs: Self) -> Self {
         let first: Level = self;
         let second: Level = rhs;
         return if first == Level::High or second == Level::High { Level::High } else { Level::Low }; // resolve formal stop
@@ -4830,7 +4830,7 @@ use std::bits::unsigned;
 use std::primitive::string;
 struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81], pub data: unsigned[9] }
 impl Payload {
-    pub fn inspect(self) {
+    pub fn inspect() {
         self.tag = self.tag + 1;
         await 1ns;
         assert!(self.tag == 10, "receiver parameter stop");

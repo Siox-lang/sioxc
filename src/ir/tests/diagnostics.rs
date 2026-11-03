@@ -362,7 +362,7 @@ fn resolved_parallel_drivers_are_legal_without_a_warning() {
         "module m;\n\
              enum Wire { '0', '1' }\n\
              impl Resolve for Wire {\n\
-                 fn resolve(self, rhs: Wire) -> Wire { return self; }\n\
+                 fn resolve(rhs: Wire) -> Wire { return self; }\n\
              }\n\
              entity Net { a: Wire in, b: Wire in, y: Wire out }\n\
              impl Net { y = a; }\n\
@@ -416,7 +416,7 @@ fn applied_view_flattens_its_backing_struct_fields() {
         "module m;\n\
              struct HandshakeBus { valid: Bit, ready: Bit }\n\
              view Handshake for HandshakeBus { valid out, ready in }\n\
-             impl HandshakeBus Handshake { fn assert_valid(self) { self.valid = '1'; } }\n\
+             impl HandshakeBus Handshake { fn assert_valid() { self.valid = '1'; } }\n\
              entity Producer { bus: HandshakeBus Handshake, observed: Bit out, }\n\
              impl Producer { bus.assert_valid(); observed = bus.ready; }",
     );
@@ -440,17 +440,17 @@ fn applied_view_flattens_its_backing_struct_fields() {
 fn generic_trait_functions_access_applied_view_backing_fields() {
     let d = lower_src(
         "module m;\n\
-             trait Readable<T> { fn read(self) -> T; }\n\
-             trait Writable<T> { fn write(self, value: T); }\n\
+             trait Readable<T> { fn read() -> T; }\n\
+             trait Writable<T> { fn write(value: T); }\n\
              fn read<Bus: Readable, Value>(bus: Bus) -> Value { return bus.read(); }\n\
              fn write<Bus: Writable, Value>(bus: Bus, value: Value) { bus.write(value); }\n\
              struct Spi { tx: unsigned[8], rx: unsigned[8] }\n\
              view Controller for Spi { tx out, rx in }\n\
              impl Readable<unsigned[8]> for Spi Controller {\n\
-               fn read(self) -> unsigned[8] { return self.rx; }\n\
+               fn read() -> unsigned[8] { return self.rx; }\n\
              }\n\
              impl Writable<unsigned[8]> for Spi Controller {\n\
-               fn write(self, value: unsigned[8]) { self.tx = value; }\n\
+               fn write(value: unsigned[8]) { self.tx = value; }\n\
              }\n\
              entity Device {\n\
                bus: Spi Controller, source: unsigned[8] in, sampled: unsigned[8] out,\n\

@@ -426,8 +426,11 @@ impl<'a> Checker<'a> {
             self.error_with_help(
                 codes::INVALID_METHOD_CALL,
                 expr_span(callee),
-                format!("method `{owner}.{name}` needs a `self` receiver"),
-                format!("call it on a `{owner}` value, e.g. `value.{name}(...)`"),
+                format!("method `{owner}.{name}` has a receiver"),
+                format!(
+                    "call it on a `{owner}` value, e.g. `value.{name}(...)`, or declare it \
+                     `static fn {name}` if it needs none"
+                ),
             );
             return;
         }

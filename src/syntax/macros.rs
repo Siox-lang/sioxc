@@ -1498,12 +1498,12 @@ fn derive_text(
                     .collect::<Vec<_>>()
                     .join(" and ")
             };
-            format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(self, rhs: {applied}) -> Bool {{ return {body}; }} }}")
+            format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(rhs: {applied}) -> Bool {{ return {body}; }} }}")
         }
         _ => format!(
             "impl{binder} Ord<{applied}> for {applied} {{ \
-             fn lt(self, rhs: {applied}) -> Bool {{ return {}; }} \
-             fn le(self, rhs: {applied}) -> Bool {{ return {}; }} }}",
+             fn lt(rhs: {applied}) -> Bool {{ return {}; }} \
+             fn le(rhs: {applied}) -> Bool {{ return {}; }} }}",
             lexicographic(&operands, "<"),
             lexicographic(&operands, "<="),
         ),

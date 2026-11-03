@@ -85,7 +85,7 @@ fn a_bound_closing_on_a_shift_token_still_parses() {
     // it as a shift operator here rejected every generic bound in the corpus.
     let src = "module m;\n\
                use std::bits::unsigned;\n\
-               trait Meter<W: integer> { fn raw(self) -> unsigned[8]; }\n\
+               trait Meter<W: integer> { fn raw() -> unsigned[8]; }\n\
                struct Wrap<T: Meter<8>> { inner: T }\n";
     let errors = parse_errors(src);
     assert!(

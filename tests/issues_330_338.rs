@@ -131,7 +131,7 @@ impl T {
             "generic_method_and_tuple",
             r#"module p333b;
 struct Box<T> { pub val: T }
-impl<T> Box<T> { pub fn clone_box(self) -> Box<T> { return Box { .val = self.val }; } }
+impl<T> Box<T> { pub fn clone_box() -> Box<T> { return Box { .val = self.val }; } }
 fn swap_mono(pair: (integer, Bool)) -> (Bool, integer) { return (pair.1, pair.0); }
 entity Top { v_in: integer in, v_out: integer out, r_a: Bool out, r_b: integer out }
 impl Top {
@@ -154,16 +154,16 @@ impl T {
             r#"module v334;
 use std::bits::unsigned;
 struct Value { pub v: unsigned[8] }
-impl From<unsigned[8]> for Value { fn from(v: unsigned[8]) -> Value { return Value { .v = v + 1 }; } }
+impl From<unsigned[8]> for Value { static fn from(v: unsigned[8]) -> Value { return Value { .v = v + 1 }; } }
 impl Ord<unsigned[8]> for Value {
-    fn lt(self, rhs: unsigned[8]) -> Bool { return self.v < rhs; }
-    fn le(self, rhs: unsigned[8]) -> Bool { return self.v <= rhs; }
-    fn gt(self, rhs: unsigned[8]) -> Bool { return self.v > rhs; }
-    fn ge(self, rhs: unsigned[8]) -> Bool { return self.v >= rhs; }
+    fn lt(rhs: unsigned[8]) -> Bool { return self.v < rhs; }
+    fn le(rhs: unsigned[8]) -> Bool { return self.v <= rhs; }
+    fn gt(rhs: unsigned[8]) -> Bool { return self.v > rhs; }
+    fn ge(rhs: unsigned[8]) -> Bool { return self.v >= rhs; }
 }
-impl Eq<unsigned[8]> for Value { fn eq(self, rhs: unsigned[8]) -> Bool { return self.v == rhs; } }
+impl Eq<unsigned[8]> for Value { fn eq(rhs: unsigned[8]) -> Bool { return self.v == rhs; } }
 struct Meter { pub count: unsigned[8] }
-impl From<Meter> for integer { fn from(m: Meter) -> integer { return integer(m.count) * 10; } }
+impl From<Meter> for integer { static fn from(m: Meter) -> integer { return integer(m.count) * 10; } }
 entity Top { a_v: unsigned[8] in, limit: unsigned[8] in, lt: Bool out, gt: Bool out, eq: Bool out, m_in: Meter in, n: integer out }
 impl Top {
     let a: Value; a = Value(a_v);
@@ -197,7 +197,7 @@ enum Opcode {
 }
 
 impl From<Opcode> for integer {
-    fn from(op: Opcode) -> integer {
+    static fn from(op: Opcode) -> integer {
         match op {
             Opcode::Add => return 100,
             Opcode::Sub => return 200,
@@ -241,10 +241,10 @@ impl TestBench {
             r#"module p338;
 struct Complex { pub re: integer, pub im: integer }
 impl Add<Complex, Complex> for Complex {
-    fn add(self, rhs: Complex) -> Complex { return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im }; }
+    fn add(rhs: Complex) -> Complex { return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im }; }
 }
 impl Neg<Complex> for Complex {
-    fn neg(self) -> Complex { return Complex { .re = 0 - self.re, .im = 0 - self.im }; }
+    fn neg() -> Complex { return Complex { .re = 0 - self.re, .im = 0 - self.im }; }
 }
 entity Top { cond: Bool in, c1: Complex in, c2: Complex in, out_if: integer out, out_add: integer out, out_neg: integer out, out_match: integer out }
 impl Top {
@@ -383,10 +383,10 @@ struct Value {
 }
 
 impl Ord<unsigned> for Value {
-    fn lt(self, rhs: unsigned[8]) -> Bool {
+    fn lt(rhs: unsigned[8]) -> Bool {
         return self.v < rhs;
     }
-    fn le(self, rhs: unsigned[8]) -> Bool {
+    fn le(rhs: unsigned[8]) -> Bool {
         return self.v <= rhs;
     }
 }

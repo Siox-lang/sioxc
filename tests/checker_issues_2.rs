@@ -37,7 +37,7 @@ fn issue_171_a_struct_neg_impl_is_found() {
         "struct_neg",
         &format!(
             "module m;\nstruct P {{ pub x: integer, }}\n\
-             impl Neg<P> for P {{ fn neg(self) -> P {{ return P {{ .x = -self.x }}; }} }}\n\
+             impl Neg<P> for P {{ fn neg() -> P {{ return P {{ .x = -self.x }}; }} }}\n\
              {TB}let p: P = P {{ .x = 10 }}; let q: P = -p; print!(\"q={{}}\\n\", q.x); }} }}\n"
         ),
         true,

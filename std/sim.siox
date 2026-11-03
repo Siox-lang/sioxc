@@ -14,12 +14,12 @@ pub struct time(integer);
 attr lang for time = "time";
 
 impl Eq<time> for time {
-    fn eq(self, rhs: time) -> Bool { return self == rhs; }
+    fn eq(rhs: time) -> Bool { return self == rhs; }
 }
 
 impl Ord<time> for time {
-    fn lt(self, rhs: time) -> Bool { return self < rhs; }
-    fn le(self, rhs: time) -> Bool { return self <= rhs; }
+    fn lt(rhs: time) -> Bool { return self < rhs; }
+    fn le(rhs: time) -> Bool { return self <= rhs; }
 }
 
 // Time-unit literal suffixes: `10ns` is a `time`. The symbol parameterizes the
@@ -44,12 +44,12 @@ impl Suffix<"ms", integer> for time {
 pub struct frequency(real);
 
 impl Eq<frequency> for frequency {
-    fn eq(self, rhs: frequency) -> Bool { return self == rhs; }
+    fn eq(rhs: frequency) -> Bool { return self == rhs; }
 }
 
 impl Ord<frequency> for frequency {
-    fn lt(self, rhs: frequency) -> Bool { return self < rhs; }
-    fn le(self, rhs: frequency) -> Bool { return self <= rhs; }
+    fn lt(rhs: frequency) -> Bool { return self < rhs; }
+    fn le(rhs: frequency) -> Bool { return self <= rhs; }
 }
 
 // Frequency literal suffixes: `100MHz` is a real-backed `frequency`.

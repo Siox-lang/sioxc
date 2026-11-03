@@ -159,7 +159,7 @@ fn attributes_with_no_effect_are_flagged() {
 fn type_attributes_are_shape_facts() {
     let base = "module m;\nstruct Q(Logic[7..0]);\n\
                 impl Q {\n  pub attr ints: integer = self'high + 1;\n  ATTR\n  \
-                pub fn get(v: Q) -> integer { return Self'ints + v'ints; }\n}\n\
+                pub static fn get(v: Q) -> integer { return Self'ints + v'ints; }\n}\n\
                 entity E { q: Q in, y: integer out, }\nimpl E {\n  y = READ;\n}\n";
     let codes =
         |attr: &str, read: &str| diag_codes(&base.replace("ATTR", attr).replace("READ", read));

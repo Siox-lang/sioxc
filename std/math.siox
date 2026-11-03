@@ -13,33 +13,33 @@ pub struct Complex {
 
 // `1 + 2i`; a precision applies to both parts.
 impl Display for Complex {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{} + {}i", self.re, self.im);
     }
 }
 
 impl Add<Complex, Complex> for Complex {
-    fn add(self, rhs: Complex) -> Complex {
+    fn add(rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
 
 // `z + 3`: the trait's type argument names the rhs operand type (Rust style).
 impl Add<integer, Complex> for Complex {
-    fn add(self, rhs: integer) -> Complex {
+    fn add(rhs: integer) -> Complex {
         return Complex { .re = self.re + rhs, .im = self.im };
     }
 }
 
 // `10 + 5i`: a numeric left operand promotes into the Complex plane.
 impl Add<Complex, Complex> for integer {
-    fn add(self, rhs: Complex) -> Complex {
+    fn add(rhs: Complex) -> Complex {
         return Complex { .re = self + rhs.re, .im = rhs.im };
     }
 }
 
 impl Sub<Complex, Complex> for Complex {
-    fn sub(self, rhs: Complex) -> Complex {
+    fn sub(rhs: Complex) -> Complex {
         return Complex { .re = self.re - rhs.re, .im = self.im - rhs.im };
     }
 }
@@ -109,7 +109,7 @@ pub fn mod<T: Ord<T>>(a: T, m: T) -> T {
 // built in, `float` (IEEE `squareRoot`) and `ufixed`/`sfixed`
 // (to the nearest step) beside their types. `x.sqrt()` is the same call.
 pub trait Sqrt {
-    fn sqrt(self) -> Self;
+    fn sqrt() -> Self;
 }
 
 pub fn sqrt<T: Sqrt>(x: T) -> T {
@@ -117,7 +117,7 @@ pub fn sqrt<T: Sqrt>(x: T) -> T {
 }
 
 impl Sqrt for real {
-    fn sqrt(self) -> real { return intrinsics::sqrt(self); }
+    fn sqrt() -> real { return intrinsics::sqrt(self); }
 }
 
 // Real math the compiler builds in (`core::intrinsics`, LLVM's own `sqrt`,

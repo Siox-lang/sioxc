@@ -1271,9 +1271,10 @@ impl<'a> Resolver<'a> {
                     };
                     let problem = if receiver(declared) != receiver(f) {
                         Some(if receiver(declared) {
-                            "takes `self`, and this impl's does not".to_string()
+                            "has a receiver, and this impl's is `static`".to_string()
                         } else {
-                            "takes no `self`, and this impl's does".to_string()
+                            "is `static`, and this impl's has a receiver: write `static fn`"
+                                .to_string()
                         })
                     } else if arity(declared) != arity(f) {
                         Some(format!(
@@ -3297,7 +3298,7 @@ mod tests {
                 FileId(0),
             ),
             (
-                "module user;\nuse owner::{Device};\nimpl Device { pub fn read(self) -> integer { return self.value; } }\n",
+                "module user;\nuse owner::{Device};\nimpl Device { pub fn read() -> integer { return self.value; } }\n",
                 FileId(1),
             ),
         ]);
@@ -3321,7 +3322,7 @@ mod tests {
         let sink = module_diagnostics(&[
             ("module owner;\npub struct Device(integer);\n", FileId(0)),
             (
-                "module owner;\nimpl Device { pub fn read(self) -> integer { return 0; } }\n",
+                "module owner;\nimpl Device { pub fn read() -> integer { return 0; } }\n",
                 FileId(1),
             ),
         ]);
@@ -3337,8 +3338,8 @@ mod tests {
     fn compiler_types_and_aliases_do_not_gain_inherent_impls() {
         let sink = diagnostics(
             "module m;\ntype Count = integer;\n\
-             impl integer { fn raw(self) -> integer { return self; } }\n\
-             impl Count { fn alias(self) -> integer { return self; } }\n",
+             impl integer { fn raw() -> integer { return self; } }\n\
+             impl Count { fn alias() -> integer { return self; } }\n",
         );
         assert_eq!(
             sink.diagnostics()
@@ -3355,8 +3356,8 @@ mod tests {
     fn split_inherent_impls_share_one_member_namespace() {
         let sink = diagnostics(
             "module m;\nstruct Register(integer);\n\
-             impl Register { fn read(self) -> integer { return 0; } }\n\
-             impl Register { fn read(self) -> integer { return 1; } }\n",
+             impl Register { fn read() -> integer { return 0; } }\n\
+             impl Register { fn read() -> integer { return 1; } }\n",
         );
         let duplicates: Vec<_> = sink
             .diagnostics()
@@ -3528,8 +3529,8 @@ mod tests {
              struct Queue { value: integer }\n\
              view Source for Stream { value out }\n\
              view Source for Queue { value out }\n\
-             impl Stream Source { fn get(self) -> integer { return self.value; } }\n\
-             impl Queue Source { fn get(self) -> integer { return self.value; } }\n",
+             impl Stream Source { fn get() -> integer { return self.value; } }\n\
+             impl Queue Source { fn get() -> integer { return self.value; } }\n",
         );
         let errors: Vec<_> = sink
             .diagnostics()
@@ -3719,7 +3720,7 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
             FileId(0),
-            "module a;\nstruct Secret(integer);\nstruct Owner(integer);\nimpl Owner { pub fn keep(self, value: Secret) -> Secret { return value; } }\n",
+            "module a;\nstruct Secret(integer);\nstruct Owner(integer);\nimpl Owner { pub fn keep(value: Secret) -> Secret { return value; } }\n",
             &mut sink,
         );
         resolve(&[module], &mut sink);
@@ -4088,7 +4089,7 @@ mod tests {
              entity E<T, U> { value: T out }\n\
              impl E<T, U> { let cached: T; }\n\
              struct Pair<A, B> { first: A }\n\
-             trait Convert<X, Y> { fn apply(self, value: X) -> X; }\n",
+             trait Convert<X, Y> { fn apply(value: X) -> X; }\n",
         );
         let unused: Vec<&str> = sink
             .diagnostics()
@@ -4112,12 +4113,12 @@ mod tests {
     fn operator_traits_resolve_and_reject_unknown_operators() {
         // The operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
-            "module m;\nstruct V { a: Bit }\nimpl Add<V, V> for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+            "module m;\nstruct V { a: Bit }\nimpl Add<V, V> for V {\n  fn add(rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
         assert_eq!(errs, 0);
 
         // Quoted operator traits were removed with the Rust-style pivot.
-        let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply(self) -> Self;\n}\n");
+        let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply() -> Self;\n}\n");
         assert!(
             sink.diagnostics()
                 .iter()

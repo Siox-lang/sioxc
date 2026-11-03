@@ -38,7 +38,7 @@ fn struct_literals_type_their_hardware_operands() {
             r#"module test_method_on_lit_hw;
 
 trait Area {
-    fn width(self) -> integer;
+    fn width() -> integer;
 }
 
 struct Rect {
@@ -46,7 +46,7 @@ struct Rect {
 }
 
 impl Area for Rect {
-    fn width(self) -> integer {
+    fn width() -> integer {
         return self.w;
     }
 }
@@ -74,7 +74,7 @@ struct Complex {
 }
 
 impl Add<Complex, Complex> for Complex {
-    fn add(self, rhs: Complex) -> Complex {
+    fn add(rhs: Complex) -> Complex {
         return Complex {
             .re = self.re + rhs.re,
             .im = self.im + rhs.im,
@@ -101,7 +101,7 @@ impl TB { let a: integer = 3; let b: integer = 4; let r: integer; let dut: Top =
             r#"module test_generic_struct_hw;
 
 trait Area {
-    fn width(self) -> integer;
+    fn width() -> integer;
 }
 
 struct Rect {
@@ -109,7 +109,7 @@ struct Rect {
 }
 
 impl Area for Rect {
-    fn width(self) -> integer {
+    fn width() -> integer {
         return self.w;
     }
 }

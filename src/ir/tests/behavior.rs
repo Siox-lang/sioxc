@@ -58,7 +58,7 @@ fn source_process_keeps_multiple_targets_in_one_canonical_cfg() {
 #[test]
 fn independent_resolved_targets_keep_separate_root_contexts() {
     let design = lower_src(
-        "module roots; impl Resolve for Logic { fn resolve(self, rhs: Logic) -> Logic { return self; } }\n\
+        "module roots; impl Resolve for Logic { fn resolve(rhs: Logic) -> Logic { return self; } }\n\
          entity A { q: Logic out } impl A { one: process { q = '1'; } two: process { q = '0'; } }\n\
          entity B { q: Logic out } impl B { one: process { q = '0'; } two: process { q = '1'; } }",
     );
@@ -1092,10 +1092,10 @@ fn resolved_process_keeps_every_contributing_label() {
     let d = lower_src(
         "module m;\n\
              impl<T: Resolve> Resolve for T[] {\n\
-               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+               fn resolve(rhs: T[]) -> T[] { return self; }\n\
              }\n\
              impl Resolve for Logic {\n\
-               fn resolve(self, rhs: Logic) -> Logic {\n\
+               fn resolve(rhs: Logic) -> Logic {\n\
                  if self == 'Z' { return rhs; }\n\
                  return self;\n\
                }\n\
@@ -1181,10 +1181,10 @@ fn concurrent_resolved_slices_lower_without_expression_explosion() {
     let d = lower_src(
         "module m;\n\
              impl<T: Resolve> Resolve for T[] {\n\
-               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+               fn resolve(rhs: T[]) -> T[] { return self; }\n\
              }\n\
              impl Resolve for Logic {\n\
-               fn resolve(self, rhs: Logic) -> Logic {\n\
+               fn resolve(rhs: Logic) -> Logic {\n\
                  if self == 'Z' { return rhs; }\n\
                  if rhs == 'Z' { return self; }\n\
                  if self == rhs { return self; }\n\
