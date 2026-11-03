@@ -1268,6 +1268,9 @@ pub fn lower(
             }
         }
 
+        // Storages pushed from here on are function `static let`s, created
+        // as their functions are lowered into this test's processes.
+        let statics_from = process_ir.storages.len();
         // Initializers are ordinary canonical CFGs with an earlier activation
         // boundary. Their locals, returned calls and suspension are real state,
         // never an expression evaluated against a fake process id.
@@ -1559,6 +1562,7 @@ pub fn lower(
             test_processes.push(id);
         }
 
+        initialize_function_statics(&mut process_ir, statics_from, &test_processes);
         process_ir.tests.push(ProcessTest {
             entity: test.entity,
             root: test.root,
@@ -2602,6 +2606,15 @@ fn lower_statement(
         Stmt::Use(_) => Some(block),
         // The checker rejects a generate-built process in a testbench.
         Stmt::Process(_) => None,
+        // A function's `static let` is one copy per function: storage on the
+        // test root that every call shares. A process's is an ordinary local,
+        // since a testbench process runs its body once.
+        Stmt::Let(declaration)
+            if declaration.is_static && !context.inline_return_blocks.is_empty() =>
+        {
+            lower_function_static(declaration, process, context);
+            Some(block)
+        }
         // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
         // struct's construct has no field types to give its values, but the
         // local is laid out from its declaration (#196). Declared bare and
@@ -6527,6 +6540,98 @@ fn push_local(
         layout,
     });
     id
+}
+
+/// A root's initialization CFG owns every initializer write, so a function
+/// static's retained initializer is written first in it, before any other
+/// initializer can call the function. Without one, the backend applies the
+/// retained initializer itself.
+fn initialize_function_statics(
+    process_ir: &mut ProcessIr,
+    statics_from: usize,
+    test_processes: &[ProcessId],
+) {
+    let Some(&init) = test_processes.iter().find(|id| {
+        matches!(
+            process_ir.processes[id.0 as usize].activation,
+            ProcessActivation::Initialization
+        )
+    }) else {
+        return;
+    };
+    for index in (statics_from..process_ir.storages.len()).rev() {
+        let storage = &process_ir.storages[index];
+        let (id, span) = (storage.id, storage.span);
+        let Some(value) = storage.initializer else {
+            continue;
+        };
+        // Any value naming the storage is a place for it; an unread,
+        // unwritten static has none and needs no write.
+        let Some(target) = process_ir
+            .values
+            .iter()
+            .position(|value| matches!(value.kind, ProcessValueKind::Storage(at) if at == id))
+        else {
+            continue;
+        };
+        let process = &mut process_ir.processes[init.0 as usize];
+        let entry = process.entry.0 as usize;
+        process.blocks[entry].instructions.insert(
+            0,
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateStorage,
+                driver_context: None,
+                target: crate::ir::ProcessValueId(target as u32),
+                value,
+                span,
+            },
+        );
+    }
+}
+
+/// Create the storage of a function's `static let` on first reach: one per
+/// test root and declaration, found again by every later call. Its constant
+/// initializer is retained on the storage; the per-test tail moves it into
+/// the root's initialization CFG when there is one, so it is written once
+/// before any process runs.
+fn lower_function_static(
+    declaration: &ast::LetDecl,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let Some(definition) = context.resolved.declared(declaration.name.span) else {
+        return;
+    };
+    let owner = process.owner;
+    if context
+        .process_ir
+        .storages
+        .iter()
+        .any(|storage| storage.owner == owner && storage.source == Some(definition))
+    {
+        return;
+    }
+    // The type and layout a local of this declaration would have.
+    push_local(process, declaration, context);
+    let Some(local) = process.locals.pop() else {
+        return;
+    };
+    let initializer = declaration
+        .value
+        .as_ref()
+        .map(|value| value_ref_with_type(value, process, context, local.ty.as_ref()));
+    let id = ProcessStorageId(context.process_ir.storages.len() as u32);
+    context.process_ir.storages.push(ProcessStorage {
+        id,
+        owner,
+        name: format!("<static>{}", declaration.name.text),
+        source: Some(definition),
+        span: declaration.span,
+        ty: local.ty,
+        layout: local.layout,
+        initializer,
+        bindings: Vec::new(),
+    });
 }
 
 /// Resolve an enum-variant declaration to its elaborated discriminant while
@@ -10469,6 +10574,8 @@ fn inline_value_statements(
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
     let (statement, rest) = statements.split_first()?;
     match *statement {
+        // A `static let` is shared state, not a value: the CFG form keeps it.
+        Stmt::Let(declaration) if declaration.is_static => None,
         Stmt::Return {
             value: Some(value), ..
         } => {

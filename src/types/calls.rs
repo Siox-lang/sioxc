@@ -1197,6 +1197,17 @@ impl<'a> Checker<'a> {
         {
             return;
         }
+        if l.is_static {
+            self.error_with_help(
+                codes::INSTANCE_PLACEMENT,
+                l.span,
+                "a `static let` cannot hold an entity".to_string(),
+                "an instance is hardware, built once where it is declared: instantiate it at \
+                 the top of an entity body and wire it through ports"
+                    .to_string(),
+            );
+            return;
+        }
         let context = if self.in_fn_body.get() {
             "a function"
         } else if self.in_match_arm.get() {

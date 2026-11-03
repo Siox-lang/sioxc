@@ -148,6 +148,13 @@ impl<'a> Checker<'a> {
                         self.check_function_block(f, b, None, true);
                     }
                 } else if let Some(body) = &f.body {
+                    for statement in &body.stmts {
+                        if let Stmt::Let(declaration) = statement {
+                            if declaration.is_static {
+                                self.reject_generic_static(declaration);
+                            }
+                        }
+                    }
                     // Operator/type checks wait for monomorphization, but
                     // reaching the end without a value is independent of the
                     // concrete type arguments and is already invalid here.

@@ -632,6 +632,8 @@ pub struct FnDecl {
     /// What `#[inline]` asked for. It shapes only the simulation the
     /// compiler builds; a function's hardware meaning never depends on it.
     pub inline: Inline,
+    /// `static fn`: an implementation or trait member with no receiver.
+    pub is_static: bool,
 }
 
 /// Whether a call to a function is expanded at the call site or calls one
@@ -680,6 +682,9 @@ pub struct LetDecl {
     pub value: Option<Expr>,
     /// `let` keyword through the terminating `;`.
     pub span: Span,
+    /// `static let`: a process or function local that keeps its value
+    /// between activations and calls, initialized once.
+    pub is_static: bool,
 }
 
 /// A brace-delimited statement sequence.

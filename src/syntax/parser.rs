@@ -43,6 +43,7 @@ fn declare_let_pattern(pattern: LetPattern, whole: Option<&Type>, lets: &mut Vec
                     ty: ty.or_else(|| whole.cloned()),
                     value: None,
                     span: name.span,
+                    is_static: false,
                 });
             }
             Expr::Path(Path {
@@ -239,6 +240,11 @@ pub struct Parser<'a> {
     /// Inside a process or function body, where `for` and `if` are control
     /// flow rather than structure and so take no label.
     sequential: u32,
+    /// Nesting depth of the statements directly in the innermost process or
+    /// function body, where a `static let` may stand.
+    body_depth: u32,
+    /// Set by `static` for the `let` it introduces.
+    static_let: bool,
     /// Each token's text, for a parser over macro tokens: they come from
     /// several files, and hygiene may have renamed an identifier.
     texts: Option<Vec<String>>,
@@ -283,6 +289,8 @@ impl<'a> Parser<'a> {
             depth: 0,
             depth_reported: false,
             sequential: 0,
+            body_depth: 0,
+            static_let: false,
             texts: None,
             last: 0,
             macro_args: HashMap::new(),
@@ -666,6 +674,19 @@ impl<'a> Parser<'a> {
             self.error_here("attributes are only allowed on entities and implementations");
         }
 
+        if self.at(TokenKind::Static) {
+            let marker = self.bump().span;
+            let help = if self.at(TokenKind::Fn) {
+                "a module function never has a receiver; remove `static`"
+            } else {
+                "module-level state is not available; declare it in a process or function"
+            };
+            self.sink.emit(
+                Diagnostic::error("`static` belongs to implementation members and locals")
+                    .at(marker)
+                    .help(help),
+            );
+        }
         let item = match self.kind() {
             TokenKind::Use => Item::Using(self.parse_use(is_pub)),
             TokenKind::Type => Item::Using(self.parse_type_alias(is_pub)),
@@ -1605,7 +1626,12 @@ impl<'a> Parser<'a> {
         // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
         let at_fn = self.at(TokenKind::Fn)
-            || self.at(TokenKind::Pub) && matches!(self.kind_at(self.pos + 1), TokenKind::Fn);
+            || self.at(TokenKind::Static) && matches!(self.kind_at(self.pos + 1), TokenKind::Fn)
+            || self.at(TokenKind::Pub)
+                && matches!(
+                    self.kind_at(self.pos + 1),
+                    TokenKind::Fn | TokenKind::Static
+                );
         let (inline, attrs) = if at_fn {
             self.take_inline(attrs)
         } else {
@@ -1620,7 +1646,11 @@ impl<'a> Parser<'a> {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
         let is_pub = self.eat(TokenKind::Pub);
-        if is_pub && !self.at(TokenKind::Fn) && !self.at(TokenKind::Attr) {
+        if is_pub
+            && !self.at(TokenKind::Fn)
+            && !self.at(TokenKind::Static)
+            && !self.at(TokenKind::Attr)
+        {
             self.error_at(
                 self.prev_span(),
                 "only functions and attributes may be `pub` inside an implementation",
@@ -1678,6 +1708,24 @@ impl<'a> Parser<'a> {
                 function.inline = inline;
                 Some(ImplItem::Fn(function))
             }
+            TokenKind::Static if self.kind_at(self.pos + 1) == &TokenKind::Fn => {
+                let mut function = self.parse_static_fn();
+                function.is_pub = is_pub;
+                function.inline = inline;
+                Some(ImplItem::Fn(function))
+            }
+            TokenKind::Static if self.kind_at(self.pos + 1) == &TokenKind::Let => {
+                self.sink.emit(
+                    Diagnostic::error("`static let` is only available in processes and functions")
+                        .at(self.span())
+                        .help(
+                            "every `let` in an entity body is already declared once; remove \
+                             `static`",
+                        ),
+                );
+                self.bump();
+                self.parse_impl_item()
+            }
             TokenKind::Process => Some(ImplItem::Process(self.parse_process(label))),
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
@@ -1734,13 +1782,58 @@ impl<'a> Parser<'a> {
             label.get_or_insert(old);
         }
         self.sequential += 1;
+        let saved = std::mem::replace(&mut self.body_depth, self.depth + 1);
         let body = self.parse_block();
+        self.body_depth = saved;
         self.sequential -= 1;
         ProcessDecl {
             label,
             span: start.to(body.span),
             body,
         }
+    }
+
+    /// `static let x: T = v;` in a process or function body: a local that
+    /// keeps its value between activations and calls. Anywhere else, and
+    /// `static` before anything but `let`, is an error.
+    fn parse_static_stmt(&mut self) -> Stmt {
+        let marker = self.bump().span;
+        if self.at(TokenKind::Fn) {
+            self.error_at(
+                marker,
+                "`static fn` declares an implementation or trait member without a receiver",
+            );
+        } else if !self.at(TokenKind::Let) {
+            self.error_at(marker, "expected `let` after `static`");
+            return self.parse_stmt();
+        } else if self.sequential == 0 {
+            self.sink.emit(
+                Diagnostic::error("`static let` is only available in processes and functions")
+                    .at(marker)
+                    .help(
+                        "every `let` in an entity body is already declared once; remove `static`",
+                    ),
+            );
+        } else if self.depth != self.body_depth {
+            self.sink.emit(
+                Diagnostic::error("`static let` stands directly in a process or function body")
+                    .at(marker)
+                    .help(
+                        "declare it before the `if`, loop or `match`, so it is initialized once \
+                     whatever path runs first",
+                    ),
+            );
+        } else if self.kind_at(self.pos + 1) == &TokenKind::LParen {
+            self.error_at(
+                marker,
+                "a tuple `let` cannot be `static`; declare each name",
+            );
+        } else {
+            self.static_let = true;
+        }
+        let stmt = self.parse_stmt();
+        self.static_let = false;
+        stmt
     }
 
     fn parse_labelled_stmt(&mut self, label: Ident) -> Stmt {
@@ -1817,6 +1910,7 @@ impl<'a> Parser<'a> {
             ty,
             value,
             span: start.to(self.prev_span()),
+            is_static: std::mem::take(&mut self.static_let),
         };
         // Each further name's diagnostics point at it, not at the `let`.
         self.grouped_lets.extend(others.into_iter().map(|name| {
@@ -1912,7 +2006,9 @@ impl<'a> Parser<'a> {
         self.parse_where_into(&mut generics);
         let body = if self.at(TokenKind::LBrace) {
             self.sequential += 1;
+            let saved = std::mem::replace(&mut self.body_depth, self.depth + 1);
             let body = self.parse_block();
+            self.body_depth = saved;
             self.sequential -= 1;
             Some(body)
         } else {
@@ -1928,7 +2024,27 @@ impl<'a> Parser<'a> {
             body,
             span: start.to(self.prev_span()),
             inline: Inline::Auto,
+            is_static: false,
         }
+    }
+
+    /// `static fn name(...)`: a member without a receiver. A `self`
+    /// parameter contradicts the marker.
+    fn parse_static_fn(&mut self) -> FnDecl {
+        let start = self.span();
+        self.bump(); // `static`
+        self.bump(); // `fn`
+        let name = self.parse_ident();
+        let mut function = self.parse_fn_after_name(start, name, false);
+        function.is_static = true;
+        if let Some(receiver) = function.params.iter().find(|param| param.is_self) {
+            self.sink.emit(
+                Diagnostic::error("a `static fn` has no receiver")
+                    .at(receiver.span)
+                    .help("remove `self`, or remove `static` to make it a method"),
+            );
+        }
+        function
     }
 
     /// Split `#[inline]`, `#[inline(always)]` and `#[inline(never)]` off a
@@ -2076,6 +2192,13 @@ impl<'a> Parser<'a> {
                     self.prev_span(),
                     "trait methods inherit the trait's visibility; remove `pub`",
                 );
+            }
+            if self.at(TokenKind::Static) && self.kind_at(self.pos + 1) == &TokenKind::Fn {
+                items.push(self.parse_static_fn());
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
             }
             if !self.eat(TokenKind::Fn) {
                 self.error_here("expected a `fn` method signature in trait body");
@@ -2236,6 +2359,7 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 Stmt::Let(self.parse_let_after_name(start, name))
             }
+            TokenKind::Static => self.parse_static_stmt(),
             TokenKind::If => Stmt::If(self.parse_if()),
             TokenKind::Process => self.process_stmt(None),
             TokenKind::Match => Stmt::Match(self.parse_match()),
