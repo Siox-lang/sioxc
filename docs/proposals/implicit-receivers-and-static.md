@@ -1,13 +1,14 @@
 # Implicit receivers, static functions and process-local state
 
-Status: **accepted, not implemented** (owner, 2026-10-31). Every `self`
-parameter goes, in trait declarations as well as implementations: `fn` has an
-implicit receiver and `static fn` has none. `static let` is allowed only in
-processes and functions, never in an entity body, where every `let` is
-already a signal declared once; its exact semantics (proposed: a signal scoped
-to its process, and one copy per call site in a function) are still being
-decided. Written 2026-10-22 from the language design discussion. Examples below use proposed syntax; they are not claims
-about what today's compiler accepts. The implemented language remains
+Status: **accepted, mostly implemented** (owner, 2026-10-31; landed
+2026-11-03). Landed: `fn` has an implicit receiver and `static fn` has none
+(a written `self` parameter still compiles with a migration warning); every
+`self` parameter removed from core, std, the corpus and the tests;
+`static let` in processes and functions with variable semantics, one copy per
+function (#371), testbench storage (#372) and hardware process registers
+(#373). Remaining: bare field names (`value` for `self.value`), public entity
+methods, a hardware function's `static let`, and promoting the migration
+warning to an error. The implemented language is
 [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md).
 
 ## Decision
