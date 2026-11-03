@@ -666,8 +666,10 @@ impl<'a> Checker<'a> {
 
     /// A `static let` keeps its value between activations and calls, so its
     /// initializer runs once and must be a constant. One copy per function
-    /// is not yet split per generic specialization, and hardware storage is
-    /// not lowered yet: both are reported rather than miscompiled.
+    /// is not yet split per generic specialization, and a hardware function's
+    /// register (one for the whole design) is not built yet: both are
+    /// reported rather than miscompiled. A hardware process's becomes its
+    /// register before resolution (`syntax::macros::hardware_statics`).
     pub(super) fn check_static_let(&mut self, l: &LetDecl) {
         if self.in_fn_body.get() {
             if !self.type_params.borrow().is_empty() {
@@ -684,7 +686,8 @@ impl<'a> Checker<'a> {
             self.error_with_help(
                 codes::UNSUPPORTED_EXPR,
                 l.span,
-                "`static let` in a hardware process is not supported yet".to_string(),
+                "`static let` in a process inside a generate block is not supported yet"
+                    .to_string(),
                 "keep the state in an entity-body `let` written from a clocked process".to_string(),
             );
         }
