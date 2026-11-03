@@ -543,7 +543,11 @@ impl Printer {
             Inline::Always => self.line("#[inline(always)]"),
             Inline::Never => self.line("#[inline(never)]"),
         }
-        let kw = pub_kw(f.is_pub);
+        let kw = format!(
+            "{}{}",
+            pub_kw(f.is_pub),
+            if f.is_static { "static " } else { "" }
+        );
         let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
         let ret = match &f.ret {
             Some(t) => format!(" -> {}", type_str(t)),
@@ -1025,6 +1029,9 @@ fn let_decl(l: &LetDecl) -> String {
     for a in &l.attrs {
         s.push_str(&attr(a));
         s.push(' ');
+    }
+    if l.is_static {
+        s.push_str("static ");
     }
     s.push_str(&format!("let {}", l.name.text));
     if let Some(t) = &l.ty {
@@ -1559,6 +1566,14 @@ mod tests {
                y = x\"AB\";\n\
                await 1ns;\n\
              }\n",
+        );
+    }
+
+    #[test]
+    /// `static fn` and `static let` keep their marker.
+    fn roundtrips_static() {
+        roundtrip(
+            "module m;\nfn next() -> integer {\n    static let n: integer = 0;\n    n = n + 1;\n    return n;\n}\nstruct C {\n    pub v: integer,\n}\nimpl C {\n    pub static fn at(v: integer) -> C {\n        return C { .v = v };\n    }\n}\n",
         );
     }
 

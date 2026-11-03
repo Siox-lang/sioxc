@@ -393,6 +393,9 @@ impl<'a> Checker<'a> {
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
+                if l.is_static {
+                    self.check_static_let(l);
+                }
                 // A local's type has the same layout rules as a port's: a
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
@@ -646,6 +649,90 @@ impl<'a> Checker<'a> {
             "this statement has no effect".to_string(),
             help.to_string(),
         );
+    }
+
+    /// One copy per specialization is not built yet; a shared copy would mix
+    /// specializations of different widths.
+    pub(super) fn reject_generic_static(&mut self, l: &LetDecl) {
+        self.error_with_help(
+            codes::UNSUPPORTED_EXPR,
+            l.span,
+            "`static let` in a generic function is not supported yet".to_string(),
+            "each specialization needs its own copy; move the state into a non-generic \
+             function or a process"
+                .to_string(),
+        );
+    }
+
+    /// A `static let` keeps its value between activations and calls, so its
+    /// initializer runs once and must be a constant. One copy per function
+    /// is not yet split per generic specialization, and hardware storage is
+    /// not lowered yet: both are reported rather than miscompiled.
+    pub(super) fn check_static_let(&mut self, l: &LetDecl) {
+        if self.in_fn_body.get() {
+            if !self.type_params.borrow().is_empty() {
+                self.reject_generic_static(l);
+            }
+            // Until hardware lowering builds its register, a hardware call
+            // reports `f reaches static let`.
+            if let Some(current) = self.current_fn.get() {
+                self.testbench_only_fns
+                    .borrow_mut()
+                    .insert(current, "static let".to_string());
+            }
+        } else if !self.in_testbench.get() {
+            self.error_with_help(
+                codes::UNSUPPORTED_EXPR,
+                l.span,
+                "`static let` in a hardware process is not supported yet".to_string(),
+                "keep the state in an entity-body `let` written from a clocked process".to_string(),
+            );
+        }
+        let Some(value) = &l.value else {
+            return;
+        };
+        let mut offending = None;
+        let resolved = self.resolved;
+        super::expand::walk_expr(&mut value.clone(), &mut |e| {
+            if offending.is_some() {
+                return false;
+            }
+            match e {
+                Expr::Path(path) => {
+                    if resolved
+                        .resolved(path.span)
+                        .and_then(|id| resolved.kind_of(id))
+                        == Some(DefKind::Local)
+                    {
+                        offending = Some(path.span);
+                    }
+                }
+                Expr::Call { callee, span, .. } => {
+                    if let Expr::Path(path) = callee.as_ref() {
+                        if let [segment] = path.segments.as_slice() {
+                            if matches!(
+                                segment.text.as_str(),
+                                "rand" | "randint" | "uniform" | "read" | "exists" | "seed"
+                            ) {
+                                offending = Some(*span);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            true
+        });
+        if let Some(span) = offending {
+            self.error_with_help(
+                codes::NON_CONSTANT_INITIALIZER,
+                span,
+                "a `static let` initializer must be a constant".to_string(),
+                "it runs once, before the first activation or call: use a literal or a \
+                 `const`, and assign the run-time value in the body"
+                    .to_string(),
+            );
+        }
     }
 
     /// `await`, `assert!`, `print!` and `warn!` drive and observe a simulation;

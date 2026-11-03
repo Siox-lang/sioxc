@@ -515,7 +515,7 @@ fn walk_generic_arg(argument: &mut GenericArg, f: &mut impl FnMut(&mut Expr) -> 
 }
 
 /// Visit `e` and, while `f` says so, its subexpressions, before-order.
-fn walk_expr(e: &mut Expr, f: &mut impl FnMut(&mut Expr) -> bool) {
+pub(super) fn walk_expr(e: &mut Expr, f: &mut impl FnMut(&mut Expr) -> bool) {
     if !f(e) {
         return;
     }
