@@ -167,12 +167,12 @@ fn entity_associated_functions_keep_resolved_owner_identity() {
     let sources = [
         (
             "module a; pub entity Device {} \
-                 impl Device { pub fn tag() -> integer { return 11; } }",
+                 impl Device { pub static fn tag() -> integer { return 11; } }",
             FileId(0),
         ),
         (
             "module b; pub entity Device {} \
-                 impl Device { pub fn tag() -> integer { return 22; } }",
+                 impl Device { pub static fn tag() -> integer { return 22; } }",
             FileId(1),
         ),
         (
@@ -432,8 +432,8 @@ fn applied_view_methods_dispatch_on_view_and_backing_identity() {
     let source = "module m; \
             struct Stream { value: integer } struct Queue { value: integer } \
             view Port for Stream { value out } view Port for Queue { value out } \
-            impl Stream Port { fn drive(self) { self.value = 11; } } \
-            impl Queue Port { fn drive(self) { self.value = 22; } } \
+            impl Stream Port { fn drive() { self.value = 11; } } \
+            impl Queue Port { fn drive() { self.value = 22; } } \
             entity Top { stream: Stream Port, queue: Queue Port } \
             impl Top { stream.drive(); queue.drive(); }";
     let mut sink = DiagnosticSink::new();
@@ -476,14 +476,14 @@ fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
         ),
         (
             "module a; \
-                 pub trait Measure { fn tag() -> integer { return 11; } } \
+                 pub trait Measure { static fn tag() -> integer { return 11; } } \
                  pub struct Device(integer); impl Measure for Device {} \
                  pub view Endpoint for common::Bus { data out, ready in }",
             FileId(1),
         ),
         (
             "module b; \
-                 pub trait Measure { fn tag() -> integer { return 22; } } \
+                 pub trait Measure { static fn tag() -> integer { return 22; } } \
                  pub struct Device(integer); impl Measure for Device {} \
                  pub view Endpoint for common::Bus { data in, ready out }",
             FileId(2),
@@ -569,16 +569,16 @@ fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
 fn custom_traits_named_like_hooks_keep_their_module_identity() {
     let sources = [
         (
-            "module std::ops; pub trait From { fn from(value: Self) -> Self; }",
+            "module std::ops; pub trait From { static fn from(value: Self) -> Self; }",
             FileId(0),
         ),
         (
-            "module a; pub trait From { fn tag() -> integer { return 11; } } \
+            "module a; pub trait From { static fn tag() -> integer { return 11; } } \
                  pub struct Item(integer); impl From for Item {}",
             FileId(1),
         ),
         (
-            "module b; pub trait From { fn tag() -> integer { return 22; } } \
+            "module b; pub trait From { static fn tag() -> integer { return 22; } } \
                  pub struct Item(integer); impl From for Item {}",
             FileId(2),
         ),
@@ -628,17 +628,17 @@ fn custom_logic_encoding_trait_cannot_create_backend_metadata() {
         ("module std::logic; pub trait LogicEncoding {}", FileId(0)),
         (
             "module custom; pub trait LogicEncoding { \
-                    fn to_bool(self) -> integer; \
-                    fn is_binary(self) -> integer; \
-                    fn is_high_impedance(self) -> integer; \
-                    fn to_x01(self) -> Self; \
+                    fn to_bool() -> integer; \
+                    fn is_binary() -> integer; \
+                    fn is_high_impedance() -> integer; \
+                    fn to_x01() -> Self; \
                  } \
                  pub enum State { A, B } \
                  impl LogicEncoding for State { \
-                    fn to_bool(self) -> integer { return 0; } \
-                    fn is_binary(self) -> integer { return 1; } \
-                    fn is_high_impedance(self) -> integer { return 0; } \
-                    fn to_x01(self) -> State { return self; } \
+                    fn to_bool() -> integer { return 0; } \
+                    fn is_binary() -> integer { return 1; } \
+                    fn is_high_impedance() -> integer { return 0; } \
+                    fn to_x01() -> State { return self; } \
                  }",
             FileId(1),
         ),
@@ -704,10 +704,10 @@ fn equal_operator_operand_leaves_select_the_resolved_overload() {
         (
             "module ops; \
                  impl Add<a::Token, integer> for common::Acc { \
-                   fn add(self, rhs: a::Token) -> integer { return 11; } \
+                   fn add(rhs: a::Token) -> integer { return 11; } \
                  } \
                  impl Add<b::Token, integer> for common::Acc { \
-                   fn add(self, rhs: b::Token) -> integer { return 22; } \
+                   fn add(rhs: b::Token) -> integer { return 22; } \
                  }",
             FileId(3),
         ),

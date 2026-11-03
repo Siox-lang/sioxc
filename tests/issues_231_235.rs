@@ -47,7 +47,7 @@ struct Pair {
 }
 
 impl Dummy {
-    pub fn transform<T>(self, val: T) -> T {
+    pub fn transform<T>(val: T) -> T {
         return val;
     }
 }
@@ -91,9 +91,9 @@ impl TestHw {
             r#"module m;
 struct D { pub dummy: integer, }
 struct Pair { pub a: integer, pub b: integer, }
-impl D { pub fn t<T>(self, val: T) -> T { return val; } }
+impl D { pub fn t<T>(val: T) -> T { return val; } }
 struct Container<T> { pub item: T, }
-impl<T> Container<T> { pub fn get(self) -> T { return self.item; } }
+impl<T> Container<T> { pub fn get() -> T { return self.item; } }
 entity Hw { p_out: Pair out, q_out: Pair out, }
 impl Hw {
     let d: D = D { .dummy = 0 };
@@ -120,7 +120,7 @@ struct Container<T> {
 }
 
 impl<T> Container<T> {
-    pub fn get(self) -> T {
+    pub fn get() -> T {
         return self.item;
     }
 }
@@ -172,13 +172,13 @@ fn checks_that_passed_are_diagnosed() {
             r#"module test_trait_bound_bypass;
 
 trait Doubler {
-    fn double(self) -> integer;
+    fn double() -> integer;
 }
 
 struct Num { pub v: integer }
 
 impl Doubler for Num {
-    fn double(self) -> integer {
+    fn double() -> integer {
         return self.v * 2;
     }
 }

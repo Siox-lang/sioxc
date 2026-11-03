@@ -26,7 +26,7 @@ fn a_bus_port_accepts_real_fields_and_struct_methods() {
         "module m;\n\
              struct S { a: Bit, b: Bit }\n\
              view V for S { a out, b in }\n\
-             impl S { pub fn helper(self) -> Bit { return self.a; } }\n\
+             impl S { pub fn helper() -> Bit { return self.a; } }\n\
              entity E { bus: S V, q: Bit out, r: Bit out }\n\
              impl E { q = bus.a; r = bus.helper(); }\n",
     );
@@ -64,16 +64,16 @@ fn typed_records_expression_types() {
 fn views_overload_by_backing_struct_in_trait_impls() {
     let errors = check_src(
         "module m;\n\
-             trait Send<T> { fn send(self, value: T); }\n\
+             trait Send<T> { fn send(value: T); }\n\
              struct Stream { data: Bit, ready: Bit }\n\
              struct Queue { data: Bit, full: Bit }\n\
              view Source for Stream { data out, ready in }\n\
              view Source for Queue { data out, full in }\n\
              impl Send<Bit> for Stream Source {\n\
-               fn send(self, value: Bit) { self.data = value; }\n\
+               fn send(value: Bit) { self.data = value; }\n\
              }\n\
              impl Send<Bit> for Queue Source {\n\
-               fn send(self, value: Bit) { self.data = value; }\n\
+               fn send(value: Bit) { self.data = value; }\n\
              }\n\
              entity StreamProducer { bus: Stream Source }\n\
              entity QueueProducer { bus: Queue Source }\n",
@@ -240,8 +240,8 @@ fn nominal_array_newtype_preserves_its_declared_element_type() {
 /// `self` in a method signature is the impl target.
 fn self_in_method_signatures_is_the_impl_target() {
     let methods = "impl Left {\n\
-                         pub fn choose(self, rhs: Self) -> Self { return rhs; }\n\
-                         pub fn identity(value: Self) -> Self { return value; }\n\
+                         pub fn choose(rhs: Self) -> Self { return rhs; }\n\
+                         pub static fn identity(value: Self) -> Self { return value; }\n\
                        }\n";
     let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
     assert_eq!(
@@ -268,10 +268,10 @@ fn self_in_index_contracts_is_the_impl_target() {
     let contracts = "module m;\n\
              struct Box { pub value: integer }\n\
              impl Index<Self, Self> for Box {\n\
-               fn index(self, index: Self) -> Self { return index; }\n\
+               fn index(index: Self) -> Self { return index; }\n\
              }\n\
              impl IndexAssign<Self, Self> for Box {\n\
-               fn index_assign(self, index: Self, value: Self) {}\n\
+               fn index_assign(index: Self, value: Self) {}\n\
              }\n";
     let errors = check_src(&format!(
         "{}{}",
@@ -472,7 +472,7 @@ fn struct_literal_values_use_their_field_types() {
 #[test]
 fn unknown_field_and_method_are_reported() {
     let st =
-            "module m;\nstruct P { pub a: Bit }\nimpl P { pub fn get(self) -> Bit { return self.a; } }\n\
+        "module m;\nstruct P { pub a: Bit }\nimpl P { pub fn get() -> Bit { return self.a; } }\n\
                   entity E { y: Bit out }\nimpl E { let p: P; y = ";
     assert_eq!(
         check_src(&format!("{st}p.nosuch; }}\n")),
@@ -504,25 +504,24 @@ fn unknown_field_and_method_are_reported() {
 /// `Suffix`) allow an empty impl.
 #[test]
 fn trait_impl_must_provide_the_required_methods() {
-    let base =
-        "module m;\ntrait Tr { fn f(self) -> Bit; fn g(self) -> Bit; }\nstruct S { x: Bit }\n";
+    let base = "module m;\ntrait Tr { fn f() -> Bit; fn g() -> Bit; }\nstruct S { x: Bit }\n";
     assert_eq!(
         check_src(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} }}\n"
+            "{base}impl Tr for S {{ fn f() -> Bit {{ return self.x; }} }}\n"
         )),
         1,
         "`g` is missing"
     );
     assert_eq!(
         check_src(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} \
-                 fn g(self) -> Bit {{ return self.x; }} }}\n"
+            "{base}impl Tr for S {{ fn f() -> Bit {{ return self.x; }} \
+                 fn g() -> Bit {{ return self.x; }} }}\n"
         )),
         0,
         "complete"
     );
     // A defaulted method is optional.
-    let defaulted = "module m;\ntrait D { fn f(self) -> Bit { return '0'; } }\n\
+    let defaulted = "module m;\ntrait D { fn f() -> Bit { return '0'; } }\n\
                          struct S { x: Bit }\nimpl D for S {}\n";
     assert_eq!(check_src(defaulted), 0);
 }
@@ -605,7 +604,7 @@ fn process_is_only_valid_on_an_inherent_entity_impl() {
         "a data type cannot own a process"
     );
     assert_eq!(
-            check_src("module m;\ntrait T { fn f(self); }\nentity E {}\nimpl T for E { fn f(self) {} drive: process {} }\n"),
+            check_src("module m;\ntrait T { fn f(); }\nentity E {}\nimpl T for E { fn f() {} drive: process {} }\n"),
             1,
             "a trait impl cannot add a process"
         );

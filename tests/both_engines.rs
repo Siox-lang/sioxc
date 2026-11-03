@@ -229,8 +229,8 @@ fn custom_index_contracts_agree() {
 use std::bits::unsigned;
 use std::ops::{Index, Range};
 struct Regs { pub r: unsigned[8][4] }
-impl Index<integer, unsigned[8]> for Regs { fn index(self, i: integer) -> unsigned[8] { return self.r[i]; } }
-impl Index<Range, unsigned[8]> for Regs { fn index(self, r: Range) -> unsigned[8] { return self.r[r.left] + self.r[r.right]; } }
+impl Index<integer, unsigned[8]> for Regs { fn index(i: integer) -> unsigned[8] { return self.r[i]; } }
+impl Index<Range, unsigned[8]> for Regs { fn index(r: Range) -> unsigned[8] { return self.r[r.left] + self.r[r.right]; } }
 entity E { g: Regs in, a: unsigned[8] out, b: unsigned[8] out, c: unsigned[8] out }
 impl E { a = g[2]; b = g[1..3]; c = g.index(3); }
 #[test] entity T {}
@@ -261,8 +261,8 @@ fn index_assign_contracts_agree() {
 use std::bits::unsigned;
 use std::ops::{Index, IndexAssign};
 struct Regs { pub r: unsigned[8][4] }
-impl Index<integer, unsigned[8]> for Regs { fn index(self, i: integer) -> unsigned[8] { return self.r[i]; } }
-impl IndexAssign<integer, unsigned[8]> for Regs { fn index_assign(self, i: integer, v: unsigned[8]) { self.r[i] = v; } }
+impl Index<integer, unsigned[8]> for Regs { fn index(i: integer) -> unsigned[8] { return self.r[i]; } }
+impl IndexAssign<integer, unsigned[8]> for Regs { fn index_assign(i: integer, v: unsigned[8]) { self.r[i] = v; } }
 entity E { a: unsigned[8] in, o: Regs out }
 impl E { p: process { o = { .r = [1, 2, 3, 4] }; o[2] = a; } }
 #[test] entity T {}

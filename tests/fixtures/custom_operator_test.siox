@@ -14,7 +14,7 @@ pub enum Other {
 
 impl CustomOperator<"unless", Flag, Bool> for Flag {
     attr precedence = 45;
-    fn apply(self, rhs: Flag) -> Bool {
+    fn apply(rhs: Flag) -> Bool {
         if self == Flag::On and rhs == Flag::Off {
             return true;
         }
@@ -24,14 +24,14 @@ impl CustomOperator<"unless", Flag, Bool> for Flag {
 
 impl CustomOperator<"unless", Other, Bool> for Flag {
     attr precedence = 45;
-    fn apply(self, rhs: Other) -> Bool {
+    fn apply(rhs: Other) -> Bool {
         return rhs == Other::Yes;
     }
 }
 
 impl CustomOperator<"^^", Flag, Bool> for Flag {
     attr precedence = 44;
-    fn apply(self, rhs: Flag) -> Bool {
+    fn apply(rhs: Flag) -> Bool {
         return self == rhs;
     }
 }

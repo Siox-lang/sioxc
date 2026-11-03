@@ -8,7 +8,7 @@ use std::bits::unsigned;
 
 struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }
 impl Pkt {
-    pub fn sum(self) -> unsigned[8] { return self.a + self.b; }
+    pub fn sum() -> unsigned[8] { return self.a + self.b; }
 }
 
 entity D { x: unsigned[8] in, y: unsigned[8] out }

@@ -15,20 +15,20 @@ module core::cmp;
 
 // `==` and `!=`.
 pub trait Eq<Rhs> {
-    fn eq(self, rhs: Rhs) -> Bool;
-    fn ne(self, rhs: Rhs) -> Bool { return not (self == rhs); }
+    fn eq(rhs: Rhs) -> Bool;
+    fn ne(rhs: Rhs) -> Bool { return not (self == rhs); }
 }
 
 // `<`, `<=`, `>` and `>=`.
 pub trait Ord<Rhs> {
-    fn lt(self, rhs: Rhs) -> Bool;
-    fn le(self, rhs: Rhs) -> Bool;
+    fn lt(rhs: Rhs) -> Bool;
+    fn le(rhs: Rhs) -> Bool;
     // Operators, not `rhs.lt(self)`: `Rhs` need not have an order of its
     // own (`x > N` for a vector `x` and an `integer` parameter `N`), and
     // the operator falls back to the built-in comparison where the method
     // call has nothing to call.
-    fn gt(self, rhs: Rhs) -> Bool { return rhs < self; }
-    fn ge(self, rhs: Rhs) -> Bool { return rhs <= self; }
+    fn gt(rhs: Rhs) -> Bool { return rhs < self; }
+    fn ge(rhs: Rhs) -> Bool { return rhs <= self; }
 }
 
 // How a bit-string pattern's character matches an element: `"01--" =>` in
@@ -39,10 +39,10 @@ pub trait Ord<Rhs> {
 // Ranges match through `Ord` instead, and enum variants, `_` and character
 // literals match structurally.
 pub trait Match<Pattern> {
-    fn matches(self, pattern: Pattern) -> Bool;
+    fn matches(pattern: Pattern) -> Bool;
     // Whether `self` holds a value no pattern can match (a metavalue). A
     // testbench `match` on one warns, as `std_match` reports it.
-    fn unknown(self) -> Bool;
+    fn unknown() -> Bool;
 }
 
 // A three-way answer, for code that wants one. The compiler gives it no

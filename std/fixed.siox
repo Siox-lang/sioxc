@@ -27,43 +27,43 @@ pub struct sfixed<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
 // --- ufixed ------------------------------------------------------------------
 
 impl Add<ufixed, ufixed> for ufixed {
-    fn add(self, rhs: ufixed) -> ufixed { return self + rhs; }
+    fn add(rhs: ufixed) -> ufixed { return self + rhs; }
 }
 
 impl Sub<ufixed, ufixed> for ufixed {
-    fn sub(self, rhs: ufixed) -> ufixed { return self - rhs; }
+    fn sub(rhs: ufixed) -> ufixed { return self - rhs; }
 }
 
 impl Mul<ufixed, ufixed> for ufixed {
-    fn mul(self, rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
+    fn mul(rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
 }
 
 // The dividend is scaled by the fraction width first, so the quotient of the
 // words is in the format.
 impl Div<ufixed, ufixed> for ufixed {
-    fn div(self, rhs: ufixed) -> ufixed {
+    fn div(rhs: ufixed) -> ufixed {
         return floor_div(word(self) << (0 - self'low), word(rhs));
     }
 }
 
 impl Eq<ufixed> for ufixed {
-    fn eq(self, rhs: ufixed) -> Bool { return self == rhs; }
+    fn eq(rhs: ufixed) -> Bool { return self == rhs; }
 }
 
 impl Ord<ufixed> for ufixed {
-    fn lt(self, rhs: ufixed) -> Bool { return self < rhs; }
-    fn le(self, rhs: ufixed) -> Bool { return self <= rhs; }
+    fn lt(rhs: ufixed) -> Bool { return self < rhs; }
+    fn le(rhs: ufixed) -> Bool { return self <= rhs; }
 }
 
 // Each format prints as its value, with the caller's precision.
 impl Display for ufixed {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{}", real(self));
     }
 }
 
 impl Display for sfixed {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{}", real(self));
     }
 }
@@ -86,7 +86,7 @@ impl From<ufixed> for real {
 // zero) and saturated, as the constructors round. The radicand needs
 // `W + F + 2` bits of the 64-bit kernel word.
 impl Sqrt for ufixed {
-    fn sqrt(self) -> ufixed {
+    fn sqrt() -> ufixed {
         return clamp(
             (isqrt(word(self) << (2 - self'low), self) + 1) >> 1,
             0,
@@ -98,11 +98,11 @@ impl Sqrt for ufixed {
 // --- sfixed ------------------------------------------------------------------
 
 impl Add<sfixed, sfixed> for sfixed {
-    fn add(self, rhs: sfixed) -> sfixed { return self + rhs; }
+    fn add(rhs: sfixed) -> sfixed { return self + rhs; }
 }
 
 impl Sub<sfixed, sfixed> for sfixed {
-    fn sub(self, rhs: sfixed) -> sfixed { return self - rhs; }
+    fn sub(rhs: sfixed) -> sfixed { return self - rhs; }
 }
 
 // The words multiply as unsigned; a negative operand read unsigned is its
@@ -110,7 +110,7 @@ impl Sub<sfixed, sfixed> for sfixed {
 // other operand for each negative operand. Its low 2L bits are then exact,
 // and the shift by the fraction width selects the result's bits.
 impl Mul<sfixed, sfixed> for sfixed {
-    fn mul(self, rhs: sfixed) -> sfixed {
+    fn mul(rhs: sfixed) -> sfixed {
         return ((self * rhs)
             - (((self >> (self'length - 1)) * rhs) << self'length)
             - (((rhs >> (rhs'length - 1)) * self) << rhs'length))
@@ -119,7 +119,7 @@ impl Mul<sfixed, sfixed> for sfixed {
 }
 
 impl Div<sfixed, sfixed> for sfixed {
-    fn div(self, rhs: sfixed) -> sfixed {
+    fn div(rhs: sfixed) -> sfixed {
         return floor_div(
             sext_word(word(self), self'length) << (0 - self'low),
             sext_word(word(rhs), rhs'length)
@@ -128,20 +128,20 @@ impl Div<sfixed, sfixed> for sfixed {
 }
 
 impl Eq<sfixed> for sfixed {
-    fn eq(self, rhs: sfixed) -> Bool { return self == rhs; }
+    fn eq(rhs: sfixed) -> Bool { return self == rhs; }
 }
 
 // Sign-aware order, as `signed`'s: a set sign bit orders below a clear one,
 // and same-sign two's-complement values order like their unsigned words.
 impl Ord<sfixed> for sfixed {
-    fn lt(self, rhs: sfixed) -> Bool {
+    fn lt(rhs: sfixed) -> Bool {
         if ((integer(resize(self, self'length)) >> (self'length - 1)) != 0)
             != ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) != 0) {
             return (integer(resize(self, self'length)) >> (self'length - 1)) != 0;
         }
         return self < rhs;
     }
-    fn le(self, rhs: sfixed) -> Bool { return not rhs.lt(self); }
+    fn le(rhs: sfixed) -> Bool { return not rhs.lt(self); }
 }
 
 impl sfixed {
@@ -159,7 +159,7 @@ impl From<sfixed> for real {
 
 // A negative number has no root; fixed point has no NaN, so it is zero.
 impl Sqrt for sfixed {
-    fn sqrt(self) -> sfixed {
+    fn sqrt() -> sfixed {
         let n: integer = sext_word(word(self), self'length);
         if n <= 0 { return 0; }
         return clamp(
@@ -243,25 +243,25 @@ impl From<Logic[]> for sfixed {
 // Stored where the other is expected, a `Logic[]` and a fixed-point format
 // convert implicitly, element for element; the format places the point.
 impl Into<ufixed> for Logic[] {
-    fn into(self) -> ufixed {
+    fn into() -> ufixed {
         return ufixed(self);
     }
 }
 
 impl Into<sfixed> for Logic[] {
-    fn into(self) -> sfixed {
+    fn into() -> sfixed {
         return sfixed(self);
     }
 }
 
 impl Into<Logic[]> for ufixed {
-    fn into(self) -> Logic[] {
+    fn into() -> Logic[] {
         return elements(self);
     }
 }
 
 impl Into<Logic[]> for sfixed {
-    fn into(self) -> Logic[] {
+    fn into() -> Logic[] {
         return elements(self);
     }
 }

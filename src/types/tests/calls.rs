@@ -79,10 +79,10 @@ fn method_calls_check_argument_count_and_types() {
     let errors = check_src(
         "module m;\n\
              struct Device { pub value: unsigned[8] }\n\
-             impl Device { pub fn take(self, value: unsigned[8]) {} }\n\
+             impl Device { pub fn take(value: unsigned[8]) {} }\n\
              struct DefaultDevice { pub value: unsigned[8] }\n\
              trait Takes {\n\
-               fn take(self, value: unsigned[8]) {\n\
+               fn take(value: unsigned[8]) {\n\
                  let copy: unsigned[8] = value;\n\
                }\n\
              }\n\
@@ -114,13 +114,13 @@ fn associated_and_instance_method_call_forms_are_distinct() {
              struct Thing { pub value: Bit }\n\
              struct Other { pub value: Bit }\n\
              trait Factory {\n\
-               fn make(value: integer) -> integer { return value; }\n\
+               static fn make(value: integer) -> integer { return value; }\n\
              }\n\
              impl Factory for Other {}\n\
              impl Thing {\n\
-               pub fn static_value(value: integer) -> integer { return value; }\n\
-               pub fn logic_value() -> Logic { return 'X'; }\n\
-               pub fn instance_value(self) -> integer { return 1; }\n\
+               pub static fn static_value(value: integer) -> integer { return value; }\n\
+               pub static fn logic_value() -> Logic { return 'X'; }\n\
+               pub fn instance_value() -> integer { return 1; }\n\
              }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
@@ -191,9 +191,9 @@ fn value_returning_methods_cannot_fall_through() {
     let errors = check_src(
         "module m;\n\
              struct S { value: unsigned[8] }\n\
-             impl S { fn bad(self) -> unsigned[8] {} }\n\
+             impl S { fn bad() -> unsigned[8] {} }\n\
              trait Defaulted {\n\
-               fn partial(self, flag: Bool) -> unsigned[8] {\n\
+               fn partial(flag: Bool) -> unsigned[8] {\n\
                  if flag { return 1; }\n\
                }\n\
              }\n",
@@ -211,7 +211,7 @@ fn method_return_type_propagates() {
     // (Logic isn't Boolean), proving the return type flows into checks.
     let bad = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { pub fn ready(self) -> Logic { return self.v; } }\n\
+            impl S { pub fn ready() -> Logic { return self.v; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
     assert_eq!(
@@ -223,7 +223,7 @@ fn method_return_type_propagates() {
     // A `Bool`-returning method is a valid condition — no error.
     let good = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { pub fn ready(self) -> Bool { return true; } }\n\
+            impl S { pub fn ready() -> Bool { return true; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
     assert_eq!(
@@ -395,7 +395,7 @@ fn procedures_cannot_be_used_as_values() {
                    fn procedure() {}\n\
                    fn consume(value: integer) {}\n\
                    struct Device { pub value: Bit }\n\
-                   impl Device { pub fn procedure(self) {} }\n\
+                   impl Device { pub fn procedure() {} }\n\
                    entity E { y: Bit out }\n\
                    impl E {\n\
                      let device: Device = { .value = '0' };\n\
@@ -562,7 +562,7 @@ fn return_outside_a_function_is_reported() {
     assert_eq!(free_fn, 0, "a free function may return");
     let method = check_src(
         "module m;\nstruct S { pub v: unsigned[8] }\n\
-             impl S { pub fn get(self) -> unsigned[8] { return self.v; } }\n\
+             impl S { pub fn get() -> unsigned[8] { return self.v; } }\n\
              entity E { y: unsigned[8] out }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
     );
     assert_eq!(method, 0, "a method may return");

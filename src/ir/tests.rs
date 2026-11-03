@@ -10,15 +10,15 @@ const CLK_PRELUDE: &str = "\n\
         enum Bit { '0', '1' }\n\
         enum ULogic { 'U' = 4, 'X' = 3, '0' = 0, '1' = 1, 'Z' = 2, 'W' = 5, 'L' = 6, 'H' = 7, '-' = 8 }\n\
         enum Logic(ULogic);\n\
-        impl LogicEncoding for Bit { fn to_bool(self) -> Bool { return self == '1'; } fn is_binary(self) -> Bool { return true; } fn is_high_impedance(self) -> Bool { return false; } fn to_x01(self) -> Bit { return self; } }\n\
-        impl LogicEncoding for Logic { fn to_bool(self) -> Bool { return self == '1' or self == 'H'; } fn is_binary(self) -> Bool { return self == '0' or self == '1'; } fn is_high_impedance(self) -> Bool { return self == 'Z'; } fn to_x01(self) -> Logic { if self == '0' or self == 'L' { return '0'; } if self == '1' or self == 'H' { return '1'; } return 'X'; } }\n\
-        impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
-        impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
-        impl And<Bool, Bool> for Bool { fn and(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Or<Bool, Bool> for Bool { fn or(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } }\n\
-        trait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\n\
-        impl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
+        impl LogicEncoding for Bit { fn to_bool() -> Bool { return self == '1'; } fn is_binary() -> Bool { return true; } fn is_high_impedance() -> Bool { return false; } fn to_x01() -> Bit { return self; } }\n\
+        impl LogicEncoding for Logic { fn to_bool() -> Bool { return self == '1' or self == 'H'; } fn is_binary() -> Bool { return self == '0' or self == '1'; } fn is_high_impedance() -> Bool { return self == 'Z'; } fn to_x01() -> Logic { if self == '0' or self == 'L' { return '0'; } if self == '1' or self == 'H' { return '1'; } return 'X'; } }\n\
+        impl Boolean for Bit { fn as_bool() -> Bool { return true; } }\n\
+        impl Boolean for Bool { fn as_bool() -> Bool { return self; } }\n\
+        impl And<Bool, Bool> for Bool { fn and(rhs: Bool) -> Bool { return self; } }\n\
+        impl Or<Bool, Bool> for Bool { fn or(rhs: Bool) -> Bool { return self; } }\n\
+        impl Not<Bool> for Bool { fn not() -> Bool { return self; } }\n\
+        trait ClockLike { fn rising() -> Bool; fn falling() -> Bool; fn edge() -> Bool; }\n\
+        impl ClockLike for Bit { fn rising() -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling() -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge() -> Bool { return self'event; } }\n";
 
 /// A match naming every variant of its scrutinee is as complete as one
 /// ending in `_`, so a signal every arm assigns is not a latch. Only the

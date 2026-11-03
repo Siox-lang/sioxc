@@ -5,7 +5,7 @@ module core::fmt;
 // prints in its built-in form (numbers, enum variants, `Name { field: .. }`).
 //
 //   impl Display for Complex {
-//       fn fmt(self, f: Formatter) {
+//       fn fmt(f: Formatter) {
 //           write!(f, "{} + {}i", self.re, self.im);
 //       }
 //   }
@@ -20,5 +20,5 @@ pub struct Formatter {}
 
 // How a type prints.
 pub trait Display {
-    fn fmt(self, f: Formatter);
+    fn fmt(f: Formatter);
 }

@@ -8,7 +8,7 @@ use super::*;
 fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {
     let provider = "module model;\n\
             pub struct Packet { hidden: integer, pub visible: integer }\n\
-            impl Packet { fn secret(self) -> integer { return self.hidden; } pub fn get(self) -> integer { return self.hidden; } }\n";
+            impl Packet { fn secret() -> integer { return self.hidden; } pub fn get() -> integer { return self.hidden; } }\n";
     let consumer = "module user;\n\
             use model::Packet;\n\
             fn inspect(p: Packet) -> integer { return p.hidden + p.visible + p.secret() + p.get(); }\n";
@@ -30,10 +30,10 @@ fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {
 fn equal_struct_leaves_keep_independent_visibility_domains() {
     let a = "module a::record;\n\
             pub struct Pair { hidden: integer, pub shown: integer }\n\
-            impl Pair { fn secret(self) -> integer { return self.hidden; } pub fn open(self) -> integer { return self.shown; } }\n";
+            impl Pair { fn secret() -> integer { return self.hidden; } pub fn open() -> integer { return self.shown; } }\n";
     let b = "module b::record;\n\
             pub struct Pair { pub hidden: integer, shown: integer }\n\
-            impl Pair { pub fn secret(self) -> integer { return self.hidden; } fn open(self) -> integer { return self.shown; } }\n";
+            impl Pair { pub fn secret() -> integer { return self.hidden; } fn open() -> integer { return self.shown; } }\n";
     let user = "module user;\n\
             fn a_hidden(value: a::record::Pair) -> integer { return value.hidden; }\n\
             fn a_shown(value: a::record::Pair) -> integer { return value.shown; }\n\
@@ -117,11 +117,11 @@ fn compiler_hook_traits_are_selected_by_declaration_not_leaf() {
 fn custom_operator_trait_does_not_define_language_operators() {
     let custom = "module custom; \
             pub trait Add<Rhs, Out> { \
-                fn add(self, rhs: Rhs) -> Out; \
+                fn add(rhs: Rhs) -> Out; \
             } \
             pub struct Token(integer); \
             impl Add<Token, Token> for Token { \
-                fn add(self, rhs: Token) -> Token { return self; } \
+                fn add(rhs: Token) -> Token { return self; } \
             }";
     let user = "module user; \
             entity E { a: custom::Token in, b: custom::Token in, y: custom::Token out } \
@@ -145,11 +145,11 @@ fn unrelated_code_in_the_defining_module_cannot_use_private_members() {
             "module model;\n\
              struct Packet { hidden: integer, pub visible: integer }\n\
              impl Packet {\n\
-                 fn secret(self) -> integer { return self.hidden; }\n\
-                 fn own_access(self) -> integer { return self.hidden + self.secret(); }\n\
+                 fn secret() -> integer { return self.hidden; }\n\
+                 fn own_access() -> integer { return self.hidden + self.secret(); }\n\
              }\n\
              struct Inspector(integer);\n\
-             impl Inspector { fn inspect(self, p: Packet) -> integer { return p.hidden + p.secret(); } }\n\
+             impl Inspector { fn inspect(p: Packet) -> integer { return p.hidden + p.secret(); } }\n\
              fn inspect(p: Packet) -> integer { return p.hidden + p.secret() + p.visible; }\n",
             FileId(0),
         )]);
@@ -176,7 +176,7 @@ fn private_struct_literals_require_the_owning_implementation() {
     let sink = check_modules(&[(
         "module model;\n\
              struct Packet { hidden: integer, pub visible: integer }\n\
-             impl Packet { fn make() -> Packet { return { .hidden = 1, .visible = 2 }; } }\n\
+             impl Packet { static fn make() -> Packet { return { .hidden = 1, .visible = 2 }; } }\n\
              fn make() -> Packet { return { .hidden = 1, .visible = 2 }; }\n",
         FileId(0),
     )]);
@@ -198,7 +198,7 @@ fn nested_explicit_struct_literals_cannot_bypass_private_construction() {
         "module model;\n\
              struct Packet { hidden: integer, pub visible: integer }\n\
              impl Packet {\n\
-                 fn own() -> integer { return Packet { .hidden = 1, .visible = 2 }.hidden; }\n\
+                 static fn own() -> integer { return Packet { .hidden = 1, .visible = 2 }.hidden; }\n\
              }\n\
              fn inspect() -> integer { return Packet { .hidden = 1, .visible = 2 }.visible; }\n",
         FileId(0),
@@ -226,7 +226,7 @@ fn nested_explicit_struct_literals_cannot_bypass_private_construction() {
 fn a_split_impl_in_the_types_module_keeps_private_access() {
     let declaration = "module model;\nstruct Packet { hidden: integer }\n";
     let implementation =
-        "module model;\nimpl Packet { fn get(self) -> integer { return self.hidden; } }\n";
+        "module model;\nimpl Packet { fn get() -> integer { return self.hidden; } }\n";
     let sink = check_modules(&[(declaration, FileId(0)), (implementation, FileId(1))]);
     assert!(sink
         .diagnostics()
@@ -265,9 +265,9 @@ fn entity_helpers_are_local_to_self_until_instance_calls_have_semantics() {
         "module model;\n\
              entity Device {}\n\
              impl Device {\n\
-                 fn helper(self) -> integer { return 1; }\n\
-                 fn local(self) -> integer { return self.helper(); }\n\
-                 fn cross(self, other: Device) -> integer { return other.helper(); }\n\
+                 fn helper() -> integer { return 1; }\n\
+                 fn local() -> integer { return self.helper(); }\n\
+                 fn cross(other: Device) -> integer { return other.helper(); }\n\
              }\n",
         FileId(0),
     )]);
@@ -305,7 +305,7 @@ fn an_applied_view_is_an_explicit_structural_interface() {
 /// call semantics.
 fn public_entity_instance_methods_wait_for_cross_hierarchy_call_semantics() {
     let sink = check_modules(&[(
-            "module m;\npub entity Device { value: integer out }\nimpl Device { pub fn read(self) -> integer { return value; } }\n",
+            "module m;\npub entity Device { value: integer out }\nimpl Device { pub fn read() -> integer { return value; } }\n",
             FileId(0),
         )]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
@@ -321,8 +321,8 @@ fn public_entity_associated_functions_are_namespaced_functions() {
     let provider = "module model;\n\
             pub entity Device {}\n\
             impl Device {\n\
-                pub fn visible(value: integer) -> integer { return value + 1; }\n\
-                fn hidden(value: integer) -> integer { return value + 2; }\n\
+                pub static fn visible(value: integer) -> integer { return value + 1; }\n\
+                static fn hidden(value: integer) -> integer { return value + 2; }\n\
             }\n";
     let consumer = "module user;\n\
             use model::Device;\n\
@@ -351,7 +351,7 @@ fn entity_associated_functions_have_no_instance_scope() {
     let sink = check_modules(&[(
         "module m;\n\
              entity Device { input: integer in }\n\
-             impl Device { pub fn read() -> integer { return input; } }\n",
+             impl Device { pub static fn read() -> integer { return input; } }\n",
         FileId(0),
     )]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
@@ -364,8 +364,8 @@ fn entity_associated_functions_have_no_instance_scope() {
 fn a_private_trait_keeps_its_implementation_methods_private() {
     let provider = "module model;\n\
             pub struct Value(integer);\n\
-            trait Hidden { fn reveal(self) -> integer; }\n\
-            impl Hidden for Value { fn reveal(self) -> integer { return 1; } }\n";
+            trait Hidden { fn reveal() -> integer; }\n\
+            impl Hidden for Value { fn reveal() -> integer { return 1; } }\n";
     let consumer = "module user;\nuse model::{Value};\nfn inspect(value: Value) -> integer { return value.reveal(); }\n";
     let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
@@ -379,7 +379,7 @@ fn a_view_does_not_publish_backing_struct_methods() {
     let provider = "module bus;\n\
             pub struct Stream { data: integer }\n\
             pub view Source for Stream { data out }\n\
-            impl Stream { fn secret(self) -> integer { return self.data; } }\n\
+            impl Stream { fn secret() -> integer { return self.data; } }\n\
             pub entity Producer { bus: Stream Source }\n";
     let consumer =
         "module user;\nuse bus::{Producer};\nimpl Producer { let seen: integer = bus.secret(); }\n";

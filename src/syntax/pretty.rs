@@ -548,7 +548,14 @@ impl Printer {
             pub_kw(f.is_pub),
             if f.is_static { "static " } else { "" }
         );
-        let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
+        // A receiver is implicit; `static fn` says when there is none.
+        let ps = f
+            .params
+            .iter()
+            .filter(|param| !param.is_self)
+            .map(fn_param)
+            .collect::<Vec<_>>()
+            .join(", ");
         let ret = match &f.ret {
             Some(t) => format!(" -> {}", type_str(t)),
             None => String::new(),
@@ -1495,7 +1502,7 @@ mod tests {
     /// Member visibility is preserved on both fields and functions.
     fn roundtrips_member_visibility() {
         roundtrip(
-            "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value(self) -> integer { return self.value; } }\n",
+            "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value() -> integer { return self.value; } }\n",
         );
     }
 
@@ -1503,7 +1510,7 @@ mod tests {
     /// A trait's type arguments survive (`impl Add<integer> for C`).
     fn roundtrips_trait_type_args() {
         roundtrip(
-            "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
+            "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(rhs: integer) -> C {\n        return self;\n    }\n}\n",
         );
     }
 
@@ -1542,11 +1549,11 @@ mod tests {
         roundtrip(
             "module m;\n\
              pub trait Add2 {\n\
-               fn apply(self, rhs: Self) -> Self;\n\
+               fn apply(rhs: Self) -> Self;\n\
              }\n\
              struct V { x: Bit }\n\
              impl Add2 for V {\n\
-               fn apply(self, rhs: V) -> V {\n\
+               fn apply(rhs: V) -> V {\n\
                  return self;\n\
                }\n\
              }\n",
@@ -1657,9 +1664,9 @@ mod tests {
     fn roundtrips_trait_match_and_construct() {
         roundtrip(
             "module m;\n\
-             trait ClockLike { fn rising(self); }\n\
+             trait ClockLike { fn rising(); }\n\
              impl ClockLike for Logic {\n\
-               fn rising(self) {\n\
+               fn rising() {\n\
                  return self'event and self'old == '0' and self == '1';\n\
                }\n\
              }\n\
@@ -1687,10 +1694,10 @@ mod tests {
         // Custom precedence composes with core and/or; `not` is prefix.
         roundtrip(
             "module m;\n\
-             trait CustomOperator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
-             impl CustomOperator<\"xor\", M, M> for M { attr precedence = 35; fn apply(self, rhs: M) -> M { return self; } }\n\
-             impl CustomOperator<\"nand\", M, M> for M { attr precedence = 40; fn apply(self, rhs: M) -> M { return self; } }\n\
-             impl CustomOperator<\"nor\", M, M> for M { attr precedence = 30; fn apply(self, rhs: M) -> M { return self; } }\n\
+             trait CustomOperator<op, I, O> { fn apply(rhs: I) -> O; }\n\
+             impl CustomOperator<\"xor\", M, M> for M { attr precedence = 35; fn apply(rhs: M) -> M { return self; } }\n\
+             impl CustomOperator<\"nand\", M, M> for M { attr precedence = 40; fn apply(rhs: M) -> M { return self; } }\n\
+             impl CustomOperator<\"nor\", M, M> for M { attr precedence = 30; fn apply(rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }

@@ -46,9 +46,9 @@ fn default_replaces_new() {
 enum Phase { Idle, Run, }
 struct Pair { pub a: integer, pub b: integer, }
 struct S { pub v: integer, }
-impl S { pub fn new(x: integer) -> S { return S { .v = x }; } }
+impl S { pub static fn new(x: integer) -> S { return S { .v = x }; } }
 struct K { pub k: integer, }
-impl Default for K { fn default() -> K { return K { .k = 7 }; } }
+impl Default for K { static fn default() -> K { return K { .k = 7 }; } }
 #[test] entity T {}
 impl T {
     let l: Logic;

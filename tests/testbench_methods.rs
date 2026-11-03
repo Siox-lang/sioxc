@@ -146,7 +146,7 @@ fn value_calls_return_lexical_aggregates_through_cfgs() {
     let source = r#"module value_cfg;
         use std::bits::unsigned;
         struct Packet { pub n: integer, pub data: unsigned[128], pub mark: Logic }
-        impl Packet { pub fn advance(self, steps: integer) -> Packet {
+        impl Packet { pub fn advance(steps: integer) -> Packet {
             for i in 0..steps { self.n = self.n + i; }
             await 1ns; return self;
         } }
@@ -384,7 +384,7 @@ fn procedural_calls_share_cfg_and_preserve_call_evaluation() {
         use std::bits::unsigned;
         struct Counter { pub n: integer, pub bits: unsigned[128] }
         impl Counter {
-            pub fn update(self, delta: integer) {
+            pub fn update(delta: integer) {
                 if delta <= 0 { return; }
                 let next: integer = self.n + delta;
                 self.n = next;

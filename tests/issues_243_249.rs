@@ -77,7 +77,7 @@ impl Top {
             r#"module m;
 use std::sim::time;
 pub struct Bytes(integer);
-impl Suffix<"kB", integer> for Bytes { fn suffix(v: integer) -> Bytes { return Bytes(v * 1024); } }
+impl Suffix<"kB", integer> for Bytes { static fn suffix(v: integer) -> Bytes { return Bytes(v * 1024); } }
 const MEM: Bytes = 4kB;
 const HALF: time = 1.5ns;
 entity Top { b: integer out, t: time out, }

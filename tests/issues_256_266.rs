@@ -204,7 +204,7 @@ struct Point {
 }
 
 impl Point {
-    pub fn new(x: integer) -> Point {
+    pub static fn new(x: integer) -> Point {
         return Point { .x = x };
     }
 }
@@ -231,10 +231,10 @@ enum State {
 }
 
 impl State {
-    pub fn is_idle(self) -> Bool {
+    pub fn is_idle() -> Bool {
         return self == State::Idle;
     }
-    pub fn default_state() -> Self {
+    pub static fn default_state() -> Self {
         return State::Idle;
     }
 }
@@ -262,7 +262,7 @@ struct Point {
 }
 
 impl Point {
-    pub fn create(val: integer) -> Self {
+    pub static fn create(val: integer) -> Self {
         return Self { .x = val };
     }
 }

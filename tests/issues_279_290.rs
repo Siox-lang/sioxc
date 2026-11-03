@@ -45,12 +45,12 @@ fn programs_that_failed_to_lower_now_run() {
 struct Point { pub x: integer, }
 impl Point {
     const OFFSET: integer = 5;
-    pub fn with_offset(self) -> Point { return Point { .x = self.x + OFFSET }; }
+    pub fn with_offset() -> Point { return Point { .x = self.x + OFFSET }; }
 }
 enum Mode { Slow, Fast, }
 impl Mode {
     const STEP: integer = 3;
-    pub fn step(self) -> integer { if self == Mode::Fast { return STEP * 2; } return STEP; }
+    pub fn step() -> integer { if self == Mode::Fast { return STEP * 2; } return STEP; }
 }
 entity Top { val: integer in, outp: integer out, s: integer out, }
 impl Top {
@@ -75,7 +75,7 @@ const R: range = 1..2;
 const RV: range = 3..0;
 struct Point { pub x: integer, pub y: integer, }
 struct S { pub v: integer, }
-impl S { pub fn make_array(self) -> integer[3] { return [self.v, self.v * 2, self.v * 3]; } }
+impl S { pub fn make_array() -> integer[3] { return [self.v, self.v * 2, self.v * 3]; } }
 fn get_arr() -> integer[4] { return [1, 2, 3, 4]; }
 fn sum2(a: integer[2]) -> integer { return a[0] + a[1]; }
 entity Child { p_in: Point in, p_out: Point out, }
@@ -224,11 +224,11 @@ impl T {
             "288",
             r#"module test;
 impl CustomOperator<"++", integer, integer> for integer {
-    fn apply(self, rhs: integer) -> integer { return self + rhs + 1; }
+    fn apply(rhs: integer) -> integer { return self + rhs + 1; }
     attr precedence = 40;
 }
 impl CustomOperator<"**", integer, integer> for integer {
-    fn apply(self, rhs: integer) -> integer { return self * rhs * 10; }
+    fn apply(rhs: integer) -> integer { return self * rhs * 10; }
     attr precedence = 95;
 }
 #[test] entity T {}

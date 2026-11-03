@@ -107,7 +107,7 @@ fn an_entity_cannot_be_instantiated_outside_a_generate() {
     let shadowed_method = count(
         "module m;\nentity T { i: unsigned[8] in, o: unsigned[8] out }\nimpl T { o = i; }\n\
              struct Box<T> { v: T }\n\
-             impl<T> Box<T> { fn get(self) -> T { let held: T = self.v; return held; } }\n",
+             impl<T> Box<T> { fn get() -> T { let held: T = self.v; return held; } }\n",
     );
     assert_eq!(shadowed_method, 0, "`T` here is the impl's parameter");
 
@@ -170,7 +170,7 @@ fn a_statement_with_no_effect_is_reported() {
     assert_eq!(body(""), 0, "the same body without the dead statement");
     let call = no_effect(
         "module m;\nstruct S { v: unsigned[8] }\n\
-             impl S { fn bump(self) { self.v = self.v + 1; } }\n\
+             impl S { fn bump() { self.v = self.v + 1; } }\n\
              entity E { y: unsigned[8] out }\n\
              impl E { let s: S = { .v = 3 }; s.bump(); y = s.v; }\n",
     );

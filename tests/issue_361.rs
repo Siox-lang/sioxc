@@ -37,7 +37,7 @@ struct Counter {
 }
 
 impl Counter {
-    pub fn new() -> Counter {
+    pub static fn new() -> Counter {
         return Counter { .count = 100, .step = 5 };
     }
 }
@@ -63,9 +63,9 @@ impl TestBench {
         r#"module v361;
 use std::bits::unsigned;
 struct Counter { pub count: integer, pub step: integer }
-impl Counter { pub fn new() -> Counter { return Counter { .count = 100, .step = 5 }; } }
+impl Counter { pub static fn new() -> Counter { return Counter { .count = 100, .step = 5 }; } }
 struct Pt { pub x: unsigned[8], pub y: unsigned[8] }
-impl Default for Pt { fn default() -> Pt { return Pt { .x = 7, .y = 9 }; } }
+impl Default for Pt { static fn default() -> Pt { return Pt { .x = 7, .y = 9 }; } }
 struct Plain { pub a: unsigned[8] }
 entity Top { cx: integer out, py: unsigned[8] out, pa: unsigned[8] out }
 impl Top {

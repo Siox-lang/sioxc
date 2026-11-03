@@ -984,7 +984,7 @@ impl<'a> Checker<'a> {
                         codes::TYPE_MISMATCH,
                         expr_span(&args[0]),
                         "`write!` writes to a `Formatter`".to_string(),
-                        "use it in `impl Display for T { fn fmt(self, f: Formatter) { write!(f, ..); } }`, \
+                        "use it in `impl Display for T { fn fmt(f: Formatter) { write!(f, ..); } }`, \
                          or print with `print!`"
                             .to_string(),
                     );

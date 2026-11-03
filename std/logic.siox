@@ -33,7 +33,7 @@ pub enum Bit {
 
 // `Bit`'s logical operators and its use as a condition.
 impl And<Bit, Bit> for Bit {
-    fn and(self, rhs: Bit) -> Bit {
+    fn and(rhs: Bit) -> Bit {
         if self == '1' {
             return rhs;
         }
@@ -42,14 +42,14 @@ impl And<Bit, Bit> for Bit {
 }
 
 impl Or<Bit, Bit> for Bit {
-    fn or(self, rhs: Bit) -> Bit {
+    fn or(rhs: Bit) -> Bit {
         if self == '1' { return '1'; }
         return rhs;
     }
 }
 
 impl Not<Bit> for Bit {
-    fn not(self) -> Bit {
+    fn not() -> Bit {
         if self == '1' { return '0'; }
         return '1';
     }
@@ -57,7 +57,7 @@ impl Not<Bit> for Bit {
 
 impl CustomOperator<"xor", Bit, Bit> for Bit {
     attr precedence = 35;
-    fn apply(self, rhs: Bit) -> Bit {
+    fn apply(rhs: Bit) -> Bit {
         if self == rhs { return '0'; }
         return '1';
     }
@@ -65,24 +65,24 @@ impl CustomOperator<"xor", Bit, Bit> for Bit {
 
 impl CustomOperator<"nand", Bit, Bit> for Bit {
     attr precedence = 40;
-    fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
+    fn apply(rhs: Bit) -> Bit { return not (self and rhs); }
 }
 
 impl CustomOperator<"nor", Bit, Bit> for Bit {
     attr precedence = 30;
-    fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
+    fn apply(rhs: Bit) -> Bit { return not (self or rhs); }
 }
 
 impl CustomOperator<"xnor", Bit, Bit> for Bit {
     attr precedence = 35;
-    fn apply(self, rhs: Bit) -> Bit {
+    fn apply(rhs: Bit) -> Bit {
         if self == rhs { return '1'; }
         return '0';
     }
 }
 
 impl Boolean for Bit {
-    fn as_bool(self) -> Bool {
+    fn as_bool() -> Bool {
         if self == '1' {
             return true;
         } else {
@@ -145,31 +145,31 @@ impl From<Bool> for Bit {
 pub enum Logic(ULogic);
 
 impl LogicEncoding for Bit {
-    fn to_bool(self) -> Bool {
+    fn to_bool() -> Bool {
         return self == '1';
     }
-    fn is_binary(self) -> Bool {
+    fn is_binary() -> Bool {
         return true;
     }
-    fn is_high_impedance(self) -> Bool {
+    fn is_high_impedance() -> Bool {
         return false;
     }
-    fn to_x01(self) -> Bit {
+    fn to_x01() -> Bit {
         return self;
     }
 }
 
 impl LogicEncoding for Logic {
-    fn to_bool(self) -> Bool {
+    fn to_bool() -> Bool {
         return self == '1' or self == 'H';
     }
-    fn is_binary(self) -> Bool {
+    fn is_binary() -> Bool {
         return self == '0' or self == '1';
     }
-    fn is_high_impedance(self) -> Bool {
+    fn is_high_impedance() -> Bool {
         return self == 'Z';
     }
-    fn to_x01(self) -> Logic {
+    fn to_x01() -> Logic {
         if self == '0' or self == 'L' { return '0'; }
         if self == '1' or self == 'H' { return '1'; }
         return 'X';
@@ -180,11 +180,11 @@ impl LogicEncoding for Logic {
 // anything; otherwise both must be known and the same as `0`/`1`, with
 // `'L'`/`'H'` reading as `'0'`/`'1'`. A metavalue matches nothing.
 impl Match<Logic> for Logic {
-    fn matches(self, pattern: Logic) -> Bool {
+    fn matches(pattern: Logic) -> Bool {
         if self == '-' or pattern == '-' { return true; }
         return self.to_x01() != 'X' and self.to_x01() == pattern.to_x01();
     }
-    fn unknown(self) -> Bool {
+    fn unknown() -> Bool {
         return self != '-' and self.to_x01() == 'X';
     }
 }
@@ -196,35 +196,35 @@ impl Match<Logic> for Logic {
 // attribute (`'event`), they are library behaviour — a user type can be a
 // clock by implementing `ClockLike`.
 pub trait ClockLike {
-    fn rising(self) -> Bool;
-    fn falling(self) -> Bool;
-    fn edge(self) -> Bool;
+    fn rising() -> Bool;
+    fn falling() -> Bool;
+    fn edge() -> Bool;
 }
 
 // IEEE 1164's `rising_edge`/`falling_edge` read both values through
 // `To_X01`, so a weak `'L'` -> `'H'` is an edge too, and `'X'` -> `'1'` is not.
 impl ClockLike for Logic {
-    fn rising(self) -> Bool {
+    fn rising() -> Bool {
         return self'event and (self'old == '0' or self'old == 'L')
             and (self == '1' or self == 'H');
     }
-    fn falling(self) -> Bool {
+    fn falling() -> Bool {
         return self'event and (self'old == '1' or self'old == 'H')
             and (self == '0' or self == 'L');
     }
-    fn edge(self) -> Bool {
+    fn edge() -> Bool {
         return self'event;
     }
 }
 
 impl ClockLike for Bit {
-    fn rising(self) -> Bool {
+    fn rising() -> Bool {
         return self'event and self'old == '0' and self == '1';
     }
-    fn falling(self) -> Bool {
+    fn falling() -> Bool {
         return self'event and self'old == '1' and self == '0';
     }
-    fn edge(self) -> Bool {
+    fn edge() -> Bool {
         return self'event;
     }
 }
@@ -242,7 +242,7 @@ pub const HIGH: Bit = '1';
 // two-value operators.
 
 impl And<Logic, Logic> for Logic {
-    fn and(self, rhs: Logic) -> Logic {
+    fn and(rhs: Logic) -> Logic {
         // A low input (0/L) forces low, even against 'U'.
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -252,7 +252,7 @@ impl And<Logic, Logic> for Logic {
 }
 
 impl Or<Logic, Logic> for Logic {
-    fn or(self, rhs: Logic) -> Logic {
+    fn or(rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
@@ -262,7 +262,7 @@ impl Or<Logic, Logic> for Logic {
 
 impl CustomOperator<"xor", Logic, Logic> for Logic {
     attr precedence = 35;
-    fn apply(self, rhs: Logic) -> Logic {
+    fn apply(rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
         if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
@@ -273,7 +273,7 @@ impl CustomOperator<"xor", Logic, Logic> for Logic {
 }
 
 impl Not<Logic> for Logic {
-    fn not(self) -> Logic {
+    fn not() -> Logic {
         if self == '0' or self == 'L' { return '1'; }
         if self == '1' or self == 'H' { return '0'; }
         if self == 'U' { return 'U'; }
@@ -283,7 +283,7 @@ impl Not<Logic> for Logic {
 
 impl CustomOperator<"nand", Logic, Logic> for Logic {
     attr precedence = 40;
-    fn apply(self, rhs: Logic) -> Logic {
+    fn apply(rhs: Logic) -> Logic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
@@ -293,7 +293,7 @@ impl CustomOperator<"nand", Logic, Logic> for Logic {
 
 impl CustomOperator<"nor", Logic, Logic> for Logic {
     attr precedence = 30;
-    fn apply(self, rhs: Logic) -> Logic {
+    fn apply(rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
@@ -303,7 +303,7 @@ impl CustomOperator<"nor", Logic, Logic> for Logic {
 
 impl CustomOperator<"xnor", Logic, Logic> for Logic {
     attr precedence = 35;
-    fn apply(self, rhs: Logic) -> Logic {
+    fn apply(rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
         if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '1'; }
@@ -318,7 +318,7 @@ impl CustomOperator<"xnor", Logic, Logic> for Logic {
 // weak (L/H/W) and conflicting forcing is 'X', while conflicting weak folds to
 // 'W'.
 impl Resolve for Logic {
-    fn resolve(self, rhs: Logic) -> Logic {
+    fn resolve(rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if self == 'X' or rhs == 'X' or self == '-' or rhs == '-' { return 'X'; }
         if self == 'Z' { return rhs; }
