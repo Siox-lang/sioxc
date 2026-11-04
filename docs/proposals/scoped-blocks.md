@@ -1,6 +1,12 @@
 # Scoped blocks in implementations
 
-Status: **proposal**. Nothing here is implemented.
+Status: **implemented outside generate loops** (2026-11-04). Blocks at an
+implementation's root and nested in other blocks work as below, flattened by
+`syntax::blocks` right after macro expansion, with the open questions taken
+as proposed (no shadowing, one-level `pub`, `E-P002` for unlabelled
+collisions, no scoped helpers). A block inside a generate `for`/`if` waits
+for generate-scope signals: a `let` there is still a per-activation
+temporary.
 
 Related: [implicit receivers and static declarations](implicit-receivers-and-static.md)
 proposes explicit process-local `static let` state. The temporary-local rules
