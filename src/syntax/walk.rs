@@ -20,18 +20,7 @@ pub fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
         }
         Item::Impl(implementation) => {
             for member in &mut implementation.items {
-                match member {
-                    ImplItem::Const(constant) => {
-                        walk_type(&mut constant.ty, f);
-                        walk_expr(&mut constant.value, f);
-                    }
-                    ImplItem::Let(declaration) => walk_let(declaration, f),
-                    ImplItem::Fn(function) => walk_fn(function, f),
-                    ImplItem::Process(process) => walk_block(&mut process.body, f),
-                    ImplItem::Stmt(statement) => walk_stmt(statement, f),
-                    ImplItem::AttrBinding(binding) => walk_expr(&mut binding.value, f),
-                    ImplItem::ModeField { .. } | ImplItem::Attr(_) => {}
-                }
+                walk_impl_item(member, f);
             }
         }
         Item::Trait(declaration) => {
@@ -40,6 +29,28 @@ pub fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
             }
         }
         _ => {}
+    }
+}
+
+/// Visit an implementation member's expressions, a scoped block's members
+/// included.
+pub fn walk_impl_item(member: &mut ImplItem, f: &mut impl FnMut(&mut Expr) -> bool) {
+    match member {
+        ImplItem::Const(constant) => {
+            walk_type(&mut constant.ty, f);
+            walk_expr(&mut constant.value, f);
+        }
+        ImplItem::Let(declaration) => walk_let(declaration, f),
+        ImplItem::Fn(function) => walk_fn(function, f),
+        ImplItem::Process(process) => walk_block(&mut process.body, f),
+        ImplItem::Stmt(statement) => walk_stmt(statement, f),
+        ImplItem::AttrBinding(binding) => walk_expr(&mut binding.value, f),
+        ImplItem::Block(block) => {
+            for item in &mut block.items {
+                walk_impl_item(item, f);
+            }
+        }
+        ImplItem::ModeField { .. } | ImplItem::Attr(_) => {}
     }
 }
 

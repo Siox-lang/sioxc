@@ -432,7 +432,8 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
                     | ImplItem::ModeField { .. }
                     | ImplItem::Process(_)
                     | ImplItem::AttrBinding(_)
-                    | ImplItem::Attr(_) => {}
+                    | ImplItem::Attr(_)
+                    | ImplItem::Block(_) => {}
                 }
             }
         }

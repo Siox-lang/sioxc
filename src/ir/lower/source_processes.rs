@@ -1500,7 +1500,8 @@ pub fn lower(
                 | ImplItem::ModeField { .. }
                 | ImplItem::Let(_)
                 | ImplItem::AttrBinding(_)
-                | ImplItem::Attr(_) => {}
+                | ImplItem::Attr(_)
+                | ImplItem::Block(_) => {}
             }
         }
 

@@ -44,6 +44,7 @@ fn declare_let_pattern(pattern: LetPattern, whole: Option<&Type>, lets: &mut Vec
                     value: None,
                     span: name.span,
                     is_static: false,
+                    is_pub: false,
                 });
             }
             Expr::Path(Path {
@@ -245,6 +246,8 @@ pub struct Parser<'a> {
     body_depth: u32,
     /// Set by `static` for the `let` it introduces.
     static_let: bool,
+    /// How many scoped blocks enclose the implementation member being parsed.
+    impl_block_depth: u32,
     /// Each token's text, for a parser over macro tokens: they come from
     /// several files, and hygiene may have renamed an identifier.
     texts: Option<Vec<String>>,
@@ -291,6 +294,7 @@ impl<'a> Parser<'a> {
             sequential: 0,
             body_depth: 0,
             static_let: false,
+            impl_block_depth: 0,
             texts: None,
             last: 0,
             macro_args: HashMap::new(),
@@ -1646,10 +1650,23 @@ impl<'a> Parser<'a> {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
         let is_pub = self.eat(TokenKind::Pub);
+        // `pub let` exports a scoped block's member; at the root, state is
+        // already visible to the whole implementation.
+        if is_pub && self.at(TokenKind::Let) && self.impl_block_depth == 0 {
+            self.sink.emit(
+                Diagnostic::error("`pub let` belongs in a scoped block")
+                    .at(self.prev_span())
+                    .help(
+                        "a `let` at the implementation root is already visible to the whole \
+                         implementation; remove `pub`",
+                    ),
+            );
+        }
         if is_pub
             && !self.at(TokenKind::Fn)
             && !self.at(TokenKind::Static)
             && !self.at(TokenKind::Attr)
+            && !self.at(TokenKind::Let)
         {
             self.error_at(
                 self.prev_span(),
@@ -1660,6 +1677,11 @@ impl<'a> Parser<'a> {
         // VHDL-style label. Nothing else at impl-item level starts with an
         // identifier and a single `:`.
         let label = self.parse_label();
+        // `{ … }` opens a scoped block; `{hi, lo} = word;` is a concatenation
+        // target, told apart by the `=` after its closing brace.
+        if self.at(TokenKind::LBrace) && !self.brace_is_assignment_target() {
+            return Some(ImplItem::Block(self.parse_impl_block(label)));
+        }
         if let Some(label) = label.clone() {
             if !self.at(TokenKind::Process) {
                 return Some(ImplItem::Stmt(self.parse_labelled_stmt(label)));
@@ -1693,7 +1715,8 @@ impl<'a> Parser<'a> {
                     return Some(impl_item_of(self.parse_let_tuple(start)));
                 }
                 let name = self.parse_ident();
-                let declaration = self.parse_let_rest(attrs, start, name);
+                let mut declaration = self.parse_let_rest(attrs, start, name);
+                declaration.is_pub = is_pub && self.impl_block_depth > 0;
                 let name = declaration.name.text.clone();
                 self.reject_metadata(&declaration.attrs, |binding| {
                     format!("write `{}`", binding(Some(&name)))
@@ -1741,6 +1764,31 @@ impl<'a> Parser<'a> {
                 })
             }
             _ => Some(ImplItem::Stmt(self.parse_stmt())),
+        }
+    }
+
+    /// `label: { members }` or `{ members }` at implementation level: a
+    /// scoped block, parsed with the members an implementation's root accepts.
+    fn parse_impl_block(&mut self, label: Option<Ident>) -> ImplBlock {
+        let start = label.as_ref().map_or(self.span(), |label| label.span);
+        self.expect(TokenKind::LBrace, "to open a scoped block");
+        self.impl_block_depth += 1;
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            if let Some(item) = self.parse_impl_item() {
+                items.push(item);
+            }
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.impl_block_depth -= 1;
+        self.expect(TokenKind::RBrace, "to close a scoped block");
+        ImplBlock {
+            label,
+            items,
+            span: start.to(self.prev_span()),
         }
     }
 
@@ -1912,6 +1960,7 @@ impl<'a> Parser<'a> {
             value,
             span: start.to(self.prev_span()),
             is_static: std::mem::take(&mut self.static_let),
+            is_pub: false,
         };
         // Each further name's diagnostics point at it, not at the `let`.
         self.grouped_lets.extend(others.into_iter().map(|name| {
@@ -4115,6 +4164,27 @@ impl<'a> Parser<'a> {
     /// Parse an identifier, accepting `self` since it may head a path.
     /// Whether the parenthesis at the cursor holds a comma at its own depth,
     /// which makes it a tuple rather than a grouping.
+    /// Whether the `{ … }` starting here is followed by `=`: an assignment to
+    /// a concatenation, not a scoped block.
+    fn brace_is_assignment_target(&self) -> bool {
+        let mut depth = 0usize;
+        let mut pos = self.pos;
+        loop {
+            match self.kind_at(pos) {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.kind_at(pos + 1) == &TokenKind::Eq;
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            pos += 1;
+        }
+    }
+
     fn paren_holds_comma(&self) -> bool {
         let mut depth = 0usize;
         let mut pos = self.pos;

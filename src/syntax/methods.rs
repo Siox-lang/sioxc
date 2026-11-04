@@ -96,6 +96,7 @@ impl Spans {
             ty: Some(ty.clone()),
             value: None,
             is_static: false,
+            is_pub: false,
         }
     }
 }

@@ -882,7 +882,8 @@ impl<'a> Checker<'a> {
                         | ImplItem::Process(_)
                         | ImplItem::Stmt(_)
                         | ImplItem::AttrBinding(_)
-                        | ImplItem::Attr(_) => {}
+                        | ImplItem::Attr(_)
+                        | ImplItem::Block(_) => {}
                     }
                 }
             }
