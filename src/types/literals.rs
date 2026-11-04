@@ -26,7 +26,7 @@ impl<'a> Checker<'a> {
         if !matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
             return;
         }
-        let Some(ty) = self.resolve_alias_type(declared) else {
+        let Some(ty) = self.declarations.normalize_type(declared) else {
             return;
         };
         let Some(head) = self.type_key(&ty) else {
@@ -255,7 +255,8 @@ impl<'a> Checker<'a> {
         // every nested leaf is contextualized, instead of accepting it merely
         // because an unknown expression type suppresses compatibility checks.
         let nested_struct = self
-            .resolve_alias_type(&declared)
+            .declarations
+            .normalize_type(&declared)
             .and_then(|ty| self.type_key(&ty))
             .is_some_and(|head| self.structs.contains_key(&head));
         if nested_struct && matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
@@ -286,10 +287,10 @@ impl<'a> Checker<'a> {
     /// `unsigned[8][4]` are `(0, 7)` and `(0, 3)`. Instance arrays and
     /// parametric bounds return `None`.
     pub(super) fn declared_index_bounds(&self, decl_ty: &Type) -> Option<(i64, i64)> {
-        let resolved = self.resolve_alias_type(decl_ty)?;
+        let resolved = self.declarations.normalize_type(decl_ty)?;
         let Type::Indexed {
             index: Some(ix), ..
-        } = &resolved
+        } = resolved.as_ref()
         else {
             return None;
         };
@@ -344,10 +345,10 @@ impl<'a> Checker<'a> {
     /// Check a value against a ranged numeric's declared domain, so an
     /// out-of-range constant is rejected at compile time.
     pub(super) fn check_value_range(&mut self, decl_ty: &Type, value: &Expr) {
-        let Some(resolved) = self.resolve_alias_type(decl_ty) else {
+        let Some(resolved) = self.declarations.normalize_type(decl_ty) else {
             return;
         };
-        let t = &resolved;
+        let t = resolved.as_ref();
         let Type::Generic { base, args, .. } = t else {
             return;
         };

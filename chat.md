@@ -22059,3 +22059,64 @@ associated/generic availability and hooks stay open; all five sections still
 required before another proposal. Commit only owned27 compiler paths and three
 corpus files (enum_owner_alias_test.siox and enum_owner_alias/{left,right}.siox).
 Preserve all20 peer probes/artifacts and shared-root edits. Local only; no push/wiki.
+
+### 2026-10-30 — Codex — enum slice committed; checker alias registry migration
+
+Accepted enum identity work is committed locally: compiler580d5f7 and corpus29f136c.
+Project card's bounded current paragraph is updated and read back; title/fields
+and all other body text remain unchanged. No push or wiki operation.
+
+Continue all five compiler-foundations sections. Own the next isolated-checkout
+slice in types/{ast_types,collect,mod,literals,keys}.rs and targeted declaration
+tests: remove the copied String-to-Type alias table and duplicate expansion
+walkers by using the existing borrowed DeclarationIndex normalization service.
+Preserve lexical IDs, generic application shapes, array directions/lengths,
+private literal checks and cycle suppression. No new registry/dependency, no
+surface syntax or LLVM change. Add regression coverage before accepting the
+migration; the prior green gate does not validate new source edits. Other agents'
+shared-root changes and all twenty corpus probes/artifacts remain untouched.
+
+### 2026-10-30 — Codex — checker alias migration focused green; full gate freeze
+
+Focused2275922 passes all711 frontend tests and strict frontend Clippy. After
+avoiding repeated normalization of each checked-type child and expanding range
+regressions to function parameters/entity ports, focused2278918 again finishes
+exited/success/0 with711 tests and strict Clippy (peak828080128bytes). These are
+focused checks only, not full acceptance. Removed checker alias map/collector,
+its expansion guard and the duplicate alias-chain walker; all consumers use
+the existing borrowed DeclarationIndex normalizer, with no replacement registry.
+
+Freeze owned source/docs/chat and actual corpus for normal2h/2GiB guarded
+checker-alias-registry-full-20261030.sh. It reruns frontend and Clippy, AST-only
+graph update, five native API cases per mode,56 direct ordinary/debug native/VCD
+checks over14 alias/range/view/identity fixtures, then complete local CI with
+both Rust suites, both actual273-program corpora, UI/JSON matrices and Clippy.
+Require matching source/corpus before/after fingerprints and terminal service
+success. No edits or commits before reviewing that evidence; further monitoring
+belongs in shared root chat outside the frozen checkout. Accepted checkpoint
+remains580d5f7/29f136c at about85percent. No push/wiki; all five sections stay open.
+
+### 2026-11-04 — Codex — alias gate accepted after retained-evidence review
+
+Gate2281715 completed the full matrix:711 frontend,768default/747bitpack library
+cases and both complete Rust suites,23DWARF per mode, strict Clippy,64 runners,
+12 artifacts,56 direct native/debug/VCD runs,5 native API cases per mode, both
+ACTUAL273-program corpora (0failures),66UI/66JSON per mode,54/54 codes and2
+apply/recompile migrations each. Retained logs in checker-alias-registry-full-
+20261030/ and the unit stdout show all stages green and identical before/after
+hashes. Current source/corpus hashes STILL match2f146f454cc0004c4b31d692bd5f34bec030295a2a90be2b760cbe83a6b242eb
+and213c65af4cd03cd87c5006caa1e307a2f8cf028a14889e656c3bc6ae8b807ce4.
+
+Transient unit is now not-found after the host restart; its default success/0
+fields are NOT acceptance evidence. Complete retained stage results, matching
+hashes and the success-only watcher actually launching follow-up2384844 provide
+completion evidence. Thaw only after this review. Only acceptance Markdown/logs
+change afterward, not compiled source/fixtures. Commit just the9 owned compiler
+paths. Keep estimate about85percent of foundations; all five sections remain.
+
+Separate const-match job2384844 compiled and ran713 frontend cases:712pass/1fail
+on IMPORTED scoped alias, UnknownConstant atSelected::Busy. No Clippy/native run
+was reached. This is not an accepted slice. The watcher is gone; no job remains
+live and no restart is assumed. Next fix the borrowed scoped-owner query and
+rerun focused/native validation. Preserve root peer changes and all20 corpus
+probes/artifacts; no push/wiki.

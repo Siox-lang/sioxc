@@ -549,6 +549,89 @@ fn generated_enum_members_keep_their_resolved_declaration_owner() {
 }
 
 #[test]
+fn checker_alias_types_share_applied_shapes_and_definition_site_identity() {
+    let (modules, resolved) = parse(&[
+        "module provider;
+         const BASE: integer = 6;
+         pub enum State { Idle, Ready }
+         pub type Select<T> = T;
+         pub type Window<T, N: integer> = T[N..(N - 2)];
+         pub type DefaultWindow = Window<State, BASE>;
+         pub type Text = Char[];",
+        "module caller;
+         use provider::{Select, Window, DefaultWindow, Text};
+         const BASE: integer = 99;
+         enum State { Other }
+         const scalar: Select<Select<real>> = 0;
+         const down: Window<N = 6, T = integer> = 0;
+         const nominal: DefaultWindow = 0;
+         const text: Text[5] = 0;",
+    ]);
+    let mut sink = DiagnosticSink::default();
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    let checked = |name| checker.ast_ty(&constant(&modules[1], name).ty);
+    assert_eq!(checked("scalar"), Ty::Real);
+    assert_eq!(
+        checked("down"),
+        Ty::Array {
+            elem: Box::new(Ty::Integer),
+            len: 3,
+            family: None,
+            low: 0,
+        }
+    );
+    let Item::Enum(state) = &modules[0].items[1] else {
+        panic!("provider State")
+    };
+    assert_eq!(
+        checked("nominal"),
+        Ty::Array {
+            elem: Box::new(Ty::Named(resolved.declared(state.name.span).unwrap())),
+            len: 3,
+            family: None,
+            low: 0,
+        }
+    );
+    assert_eq!(
+        checker.declared_index_bounds(&constant(&modules[1], "down").ty),
+        Some((6, 4))
+    );
+    assert_eq!(
+        checker.declared_index_bounds(&constant(&modules[1], "nominal").ty),
+        Some((6, 4)),
+        "BASE belongs to the provider, not the caller"
+    );
+    assert_eq!(
+        checked("text"),
+        Ty::Array {
+            elem: Box::new(Ty::Char),
+            len: 5,
+            family: None,
+            low: 0,
+        }
+    );
+}
+
+#[test]
+fn checker_alias_cycles_use_shared_normalization_without_follow_on_types() {
+    for source in [
+        "module m; type A = B; type B = A; const value: A = 0;",
+        "module m; type A<T> = (T, A<(T, T)>); const value: A<integer> = 0;",
+    ] {
+        let mut sink = DiagnosticSink::default();
+        let modules = [crate::syntax::parse_module(FileId(0), source, &mut sink)];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(sink.has_errors(), "the resolver diagnoses the cycle");
+        let checker = Checker::new(&mut sink, &resolved, &modules);
+        assert_eq!(
+            checker.ast_ty(&constant(&modules[0], "value").ty),
+            Ty::Error
+        );
+    }
+}
+
+#[test]
 fn generic_aliases_substitute_resolved_type_and_value_parameters() {
     let (modules, resolved) = parse(&[
         "module provider; const BASE: integer = 6; const N: integer = 40;

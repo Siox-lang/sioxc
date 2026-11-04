@@ -353,8 +353,8 @@ impl<'a> Checker<'a> {
     /// resolving any alias chain (`type Byte = integer<0..255>; type Octet =
     /// Byte`). `None` for every other type.
     pub(super) fn declared_range(&self, decl_ty: &Type) -> Option<(i64, i64)> {
-        let resolved = self.resolve_alias_type(decl_ty)?;
-        let t = &resolved;
+        let resolved = self.declarations.normalize_type(decl_ty)?;
+        let t = resolved.as_ref();
         let Type::Generic { base, args, .. } = t else {
             return None;
         };

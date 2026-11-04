@@ -190,6 +190,41 @@ fn struct_literal_fields_are_checked_in_every_value_context() {
 }
 
 #[test]
+fn applied_aliases_preserve_literal_privacy_and_numeric_range_checks() {
+    let provider = "module provider;
+        pub struct Hidden { value: integer }
+        pub type Select<T> = T;
+        pub type Bounded<L: integer, R: integer> = integer<L..R>;";
+    for (body, code) in [
+        (
+            "fn inspect() { let hidden: Select<Hidden> = { .value = 1 }; }",
+            codes::PRIVATE_MEMBER,
+        ),
+        (
+            "fn inspect() { let count: Bounded<2, 5> = 7; }",
+            codes::TYPE_MISMATCH,
+        ),
+        (
+            "fn inspect(count: Bounded<2, 5>) { count = 7; }",
+            codes::TYPE_MISMATCH,
+        ),
+        (
+            "entity E { count: Bounded<2, 5> out } impl E { count = 7; }",
+            codes::TYPE_MISMATCH,
+        ),
+    ] {
+        let caller = format!("module caller; use provider::{{Select, Hidden, Bounded}}; {body}");
+        let sink = check_modules(&[(provider, FileId(0)), (&caller, FileId(1))]);
+        assert_eq!(sink.error_count(), 1, "{body}: {:?}", sink.diagnostics());
+        assert!(
+            sink.diagnostics().iter().any(|d| d.code == Some(code)),
+            "{body}: {:?}",
+            sink.diagnostics()
+        );
+    }
+}
+
+#[test]
 /// An array alias preserves the declared index bounds rather than
 /// renormalizing them.
 fn array_aliases_preserve_declared_index_bounds() {

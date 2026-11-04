@@ -5,6 +5,14 @@ use super::*;
 impl<'a> Checker<'a> {
     /// Convert an AST type into a checked type.
     pub(super) fn ast_ty(&self, t: &Type) -> Ty {
+        let Some(normalized) = self.declarations.normalize_type(t) else {
+            return Ty::Error;
+        };
+        self.normalized_ast_ty(normalized.as_ref())
+    }
+
+    /// Children share the completed alias expansion, rather than walking it again.
+    fn normalized_ast_ty(&self, t: &Type) -> Ty {
         match t {
             Type::Path(p) => self.path_ty(p),
             Type::Indexed { base, index, .. } => {
@@ -17,7 +25,7 @@ impl<'a> Checker<'a> {
                 // its size is a parameter not yet known (`unsigned[W][4]` is
                 // four `unsigned[W]`, not `unsigned[4]`).
                 let indexed_base = matches!(base.as_ref(), Type::Indexed { index: Some(_), .. });
-                match self.ast_ty(base) {
+                match self.normalized_ast_ty(base) {
                     // The *first* index on a nominal array family sets its width
                     // (`unsigned[8]`). A *second* index makes an array of those
                     // vectors (`unsigned[8][4]` = 4 elements, each 8 wide).
@@ -64,11 +72,14 @@ impl<'a> Checker<'a> {
                     },
                 }
             }
-            Type::Generic { base, .. } => self.ast_ty(base),
+            Type::Generic { base, .. } => self.normalized_ast_ty(base),
             Type::View { view, .. } => self.path_ty(view),
-            Type::Tuple { elems, .. } => {
-                Ty::Tuple(elems.iter().map(|elem| self.ast_ty(elem)).collect())
-            }
+            Type::Tuple { elems, .. } => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|elem| self.normalized_ast_ty(elem))
+                    .collect(),
+            ),
         }
     }
 
@@ -148,25 +159,24 @@ impl<'a> Checker<'a> {
 
     /// Convert a path naming a nominal type into a checked type.
     pub(super) fn named_path_ty(&self, path: &Path) -> Ty {
+        if self
+            .resolved
+            .resolved(path.span)
+            .and_then(|id| self.resolved.kind_of(id))
+            == Some(DefKind::TypeAlias)
+        {
+            return self.ast_ty(&Type::Path(path.clone()));
+        }
         let Some(key) = self.path_key(path) else {
             return self.named_ty(path.span);
         };
-        match self.aliases.get(&key) {
-            // A cyclic alias has no type; `Error` also suppresses the
-            // follow-on diagnostics the cycle would otherwise cause.
-            Some(_) if !self.expanding.borrow_mut().insert(key.clone()) => Ty::Error,
-            Some(ty) => {
-                let ty = ty.clone();
-                let result = self.ast_ty(&ty);
-                self.expanding.borrow_mut().remove(&key);
-                result
-            }
+        match self.is_array_family(&key) {
             // A nominal array family (`struct F(Logic[])`): the first index
             // supplies its unconstrained base length.
             // A sized base (`struct Word(Logic[15..8])`, `struct Byte(
             // unsigned[8])`) gives it its length: unsized, a `Word` took or
             // gave any width (#244).
-            None if self.is_array_family(&key) => {
+            true => {
                 let sized = match self.structs.get(&key).and_then(|(base, _)| base.as_ref()) {
                     Some(Type::Indexed {
                         index: Some(index), ..
@@ -192,27 +202,7 @@ impl<'a> Checker<'a> {
                     low,
                 }
             }
-            None => self.named_ty(path.span),
-        }
-    }
-
-    /// Resolve a `use` alias chain transitively. Cycles stop the walk and
-    /// return `None` so callers can suppress follow-on diagnostics.
-    pub(super) fn resolve_alias_type(&self, ty: &Type) -> Option<Type> {
-        let mut current = ty.clone();
-        let mut seen = HashSet::new();
-        loop {
-            let Type::Path(p) = &current else {
-                return Some(current);
-            };
-            let key = self.path_key(p)?;
-            if !seen.insert(key.clone()) {
-                return None;
-            }
-            let Some(alias) = self.aliases.get(&key) else {
-                return Some(current);
-            };
-            current = alias.clone();
+            false => self.named_ty(path.span),
         }
     }
 

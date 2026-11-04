@@ -9,7 +9,18 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-30, borrowed enum members, alias-qualified values and
+Local acceptance (reviewed 2026-11-04, checker alias registry migration): shared
+declaration normalization replaces the checker's copied alias table and separate
+expansion walkers. Frozen gate 2281715 passes both complete Rust suites
+(768 default/747 bitpack library cases), 711 frontend cases, strict Clippy,
+64 runner tests, 56 direct native/debug/VCD runs, five native API cases per mode,
+12 artifacts and both actual 273-program corpora. Each mode passes 66 UI and
+66 JSON cases covering all 54 active codes and two apply/recompile migrations.
+The source/corpus fingerprints still match the successful gate's before/after
+values at review. The estimate remains about **85% of compiler foundations**;
+fully typed constants, other registries and residual hooks are not complete.
+
+Previous local acceptance (2026-10-30, borrowed enum members, alias-qualified values and
 lexical associated owners): the checker's final enum-name compatibility table
 is removed. Both complete Rust suites pass (765 default/744 bitpack library
 cases, all 23 DWARF tests per mode), 708 frontend cases, strict Clippy, 64 runner
@@ -753,6 +764,27 @@ The multi-module fixture checks different encodings, reactive outputs and strict
 VCD traces in ordinary/debug and default/bitpack builds. Terminal successful
 frozen gate 1939640 passes the full matrix above with matching fingerprints.
 Other string-keyed registries and all remaining foundation requirements stay open.
+
+**Implemented checker alias registry migration (accepted 2026-11-04).** The checker no
+longer collects a separate string-keyed, cloned alias-target table or keeps its
+own expansion guard and alias-chain walker. Written types, literal privacy,
+declared array labels and numeric ranges use the existing borrowed declaration
+normalizer. Applied aliases retain parameter identities and definition-site
+constants, including nested type arguments. Checked-type recursion consumes the
+completed normalization rather than traversing each child's aliases again.
+
+Focused validation passes all 711 frontend tests and strict frontend Clippy.
+Regressions cover nested/named generic arguments, provider-owned enum and width
+constants despite caller shadowing, array labels and unconstrained array sizing,
+private struct construction, initializer/parameter/port numeric ranges and cyclic
+aliases returning an error type without cascading expansion. Retained full gate
+2281715 passes the default/bitpack Rust, native/VCD, actual-corpus and diagnostic
+matrix above, with matching before/after fingerprints. The unchanged source and
+corpus still match those fingerprints at acceptance review. The transient unit
+is no longer loaded after the host restart; its default `not-found` properties
+are not used as pass evidence. The full retained results and success-conditional
+follow-up launch establish completion. The estimate remains about 85% of compiler
+foundations, with all five sections still required.
 
 **Implemented cross-module owner coverage (2026-10-25).** Additional tests
 combine equal enum/base/variant leaves, renamed imports, reversed module order
