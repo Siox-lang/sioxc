@@ -522,11 +522,27 @@ pub enum ImplItem {
     /// `attr precedence = 40;` binds the enclosing implementation (or, for an
     /// attribute declared `for entity`, the entity it implements).
     AttrBinding(AttrBinding),
+    /// `counter: { let n: unsigned[8] = 0; step: process { .. } }` — a
+    /// scoped block of members, flattened by `syntax::blocks` right after
+    /// macro expansion, so no later stage sees one.
+    Block(ImplBlock),
     /// `pub attr integers: integer = self'high + 1;` — a type attribute: a
     /// shape fact every value of the implemented type answers (`x'integers`,
     /// `Self'integers`). It has no targets, and its `default` is the value,
     /// written in terms of `self`'s shape only, so a read is a constant.
     Attr(AttrDecl),
+}
+
+/// A scoped block in an implementation: its members' names are private to
+/// it unless `pub let`, and a labelled block is a hierarchy scope.
+#[derive(Clone, Debug)]
+pub struct ImplBlock {
+    /// `counter: { .. }` names the scope; `None` adds no hierarchy level.
+    pub label: Option<Ident>,
+    /// Signals, instances, processes, concurrent statements and nested blocks.
+    pub items: Vec<ImplItem>,
+    /// Label (or opening brace) through the closing brace.
+    pub span: Span,
 }
 
 /// A `process { ... }` block: concurrent with other processes, sequential
@@ -685,6 +701,8 @@ pub struct LetDecl {
     /// `static let`: a process or function local that keeps its value
     /// between activations and calls, initialized once.
     pub is_static: bool,
+    /// `pub let` in a scoped block: visible to the enclosing scope.
+    pub is_pub: bool,
 }
 
 /// A brace-delimited statement sequence.

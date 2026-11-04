@@ -6,6 +6,7 @@
 
 pub mod ast;
 pub mod attributes;
+pub mod blocks;
 pub mod format;
 pub mod imports;
 pub mod lexer;

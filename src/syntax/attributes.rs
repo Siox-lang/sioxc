@@ -403,7 +403,8 @@ impl Reads<'_> {
                             ImplItem::Stmt(statement) => self.fold_stmt(statement, scope, sink),
                             ImplItem::ModeField { .. }
                             | ImplItem::AttrBinding(_)
-                            | ImplItem::Attr(_) => {}
+                            | ImplItem::Attr(_)
+                            | ImplItem::Block(_) => {}
                         }
                     }
                 }

@@ -830,7 +830,7 @@ impl Rewriter<'_> {
                                     self.expr(value, &env, sink);
                                 }
                             }
-                            ImplItem::ModeField { .. } => {}
+                            ImplItem::ModeField { .. } | ImplItem::Block(_) => {}
                         }
                     }
                 }

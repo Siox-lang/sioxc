@@ -152,7 +152,7 @@ impl Lower<'_> {
                         ImplItem::Process(process) => self.block(&mut process.body),
                         ImplItem::Stmt(statement) => self.stmt(statement),
                         ImplItem::AttrBinding(binding) => self.expr(&mut binding.value),
-                        ImplItem::ModeField { .. } | ImplItem::Attr(_) => {}
+                        ImplItem::ModeField { .. } | ImplItem::Attr(_) | ImplItem::Block(_) => {}
                     }
                 }
             }

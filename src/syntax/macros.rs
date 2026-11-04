@@ -915,6 +915,11 @@ impl Expander<'_> {
                     }
                 }
                 ImplItem::ModeField { .. } => {}
+                // A scoped block's members expand like the root's.
+                ImplItem::Block(block) => {
+                    let items = std::mem::take(&mut block.items);
+                    block.items = self.members(items, depth);
+                }
             }
             out.push(member);
         }
@@ -1613,6 +1618,7 @@ fn process_registers(
             value: declaration.value.take(),
             span: declaration.span,
             is_static: false,
+            is_pub: false,
         });
         declaration.is_static = false;
         declaration.value = Some(Expr::Path(Path {

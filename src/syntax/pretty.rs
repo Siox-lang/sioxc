@@ -476,6 +476,16 @@ impl Printer {
             ImplItem::Stmt(s) => self.stmt(s),
             ImplItem::AttrBinding(b) => self.attr_binding(b),
             ImplItem::Attr(a) => self.attr_decl(a),
+            ImplItem::Block(block) => {
+                self.line(&format!("{}{{", label_prefix(&block.label)));
+                self.indent += 1;
+                for item in &block.items {
+                    self.impl_item(item);
+                }
+                self.flush_lets();
+                self.indent -= 1;
+                self.line("}");
+            }
         }
     }
 
@@ -966,6 +976,7 @@ fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
         ImplItem::Stmt(s) => stmt_span(s),
         ImplItem::AttrBinding(b) => b.span,
         ImplItem::Attr(a) => a.span,
+        ImplItem::Block(block) => block.span,
     }
 }
 
@@ -1036,6 +1047,9 @@ fn let_decl(l: &LetDecl) -> String {
     for a in &l.attrs {
         s.push_str(&attr(a));
         s.push(' ');
+    }
+    if l.is_pub {
+        s.push_str("pub ");
     }
     if l.is_static {
         s.push_str("static ");
@@ -1573,6 +1587,14 @@ mod tests {
                y = x\"AB\";\n\
                await 1ns;\n\
              }\n",
+        );
+    }
+
+    #[test]
+    /// Scoped blocks, labelled and not, keep their members and `pub`.
+    fn roundtrips_scoped_blocks() {
+        roundtrip(
+            "module m;\nentity E {\n    y: Bit out,\n}\nimpl E {\n    counter: {\n        let n: Bit;\n        pub let w: Bit;\n        w = n;\n    }\n    {\n        let k: Bit;\n    }\n    y = counter.w;\n}\n",
         );
     }
 

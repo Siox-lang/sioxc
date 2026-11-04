@@ -546,6 +546,7 @@ impl Compiler {
             &mut result.diagnostics,
         );
         result.macro_expansions = expansions;
+        crate::syntax::blocks::flatten(&mut result.modules, &mut result.diagnostics);
         crate::syntax::macros::derive(
             &mut result.modules,
             &operators,
