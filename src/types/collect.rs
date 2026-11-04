@@ -168,6 +168,7 @@ impl<'a> Checker<'a> {
             checked_struct_literals: std::cell::RefCell::new(HashSet::new()),
             current_self_ty: std::cell::RefCell::new(None),
             current_impl_owner: std::cell::RefCell::new(None),
+            in_entity_impl: std::cell::Cell::new(false),
             file_modules,
             entity_names,
             type_attrs: HashMap::new(),

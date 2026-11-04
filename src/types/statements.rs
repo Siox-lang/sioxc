@@ -379,6 +379,15 @@ impl<'a> Checker<'a> {
             Stmt::Use(_) => {}
             // A process a generate block builds, once per iteration.
             Stmt::Process(process) => {
+                if !self.in_entity_impl.get() {
+                    self.error_with_help(
+                        codes::PROCESS_PLACEMENT,
+                        process.span,
+                        "`process` is only allowed in an inherent entity implementation"
+                            .to_string(),
+                        "use a function body for sequential software/type behavior".to_string(),
+                    );
+                }
                 if self.in_testbench.get() {
                     self.error(
                         codes::UNSUPPORTED_EXPR,

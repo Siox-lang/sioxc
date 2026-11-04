@@ -454,6 +454,58 @@ fn path_text(path: &Path) -> String {
         .join("::")
 }
 
+/// The names an impl member introduces into the implementation's namespace,
+/// for duplicate reporting: its own, and the labels of processes an
+/// unlabelled generate block builds (a labelled one scopes them).
+fn impl_members(item: &ImplItem) -> Vec<(&String, Span, &'static str)> {
+    let mut names: Vec<_> = impl_member(item).into_iter().collect();
+    if let ImplItem::Stmt(statement) = item {
+        generate_process_labels(statement, &mut names);
+    }
+    names
+}
+
+/// Process labels inside unlabelled generate `for`/`if` bodies.
+fn generate_process_labels<'s>(
+    statement: &'s Stmt,
+    out: &mut Vec<(&'s String, Span, &'static str)>,
+) {
+    let bodies: Vec<&Block> = match statement {
+        Stmt::For {
+            label: None, body, ..
+        } => vec![body],
+        Stmt::If(chain) if chain.label.is_none() => {
+            let mut bodies = vec![&chain.then];
+            let mut link = chain.else_.as_deref();
+            while let Some(branch) = link {
+                match branch {
+                    ElseBranch::Block(block) => {
+                        bodies.push(block);
+                        link = None;
+                    }
+                    ElseBranch::If(next) => {
+                        bodies.push(&next.then);
+                        link = next.else_.as_deref();
+                    }
+                }
+            }
+            bodies
+        }
+        _ => return,
+    };
+    for body in bodies {
+        for inner in &body.stmts {
+            if let Stmt::Process(ProcessDecl {
+                label: Some(label), ..
+            }) = inner
+            {
+                out.push((&label.text, label.span, "process"));
+            }
+            generate_process_labels(inner, out);
+        }
+    }
+}
+
 /// The name, span and kind-word of an impl member, for duplicate reporting.
 /// `None` for members that introduce no name.
 fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
@@ -1844,7 +1896,7 @@ impl<'a> Resolver<'a> {
             self.check_duplicate_names(
                 im.items
                     .iter()
-                    .filter_map(impl_member)
+                    .flat_map(impl_members)
                     .map(|(name, span, _)| (name, span)),
                 "implementation member",
                 &owner,
@@ -1972,7 +2024,7 @@ impl<'a> Resolver<'a> {
             return;
         }
 
-        for (name, span, kind) in im.items.iter().filter_map(impl_member) {
+        for (name, span, kind) in im.items.iter().flat_map(impl_members) {
             let key = (owner, name.clone());
             if let Some(&(previous, previous_kind)) = self.inherent_members.get(&key) {
                 self.sink.emit(
@@ -2138,7 +2190,22 @@ impl<'a> Resolver<'a> {
     fn resolve_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Use(_) => {}
-            Stmt::Process(process) => self.resolve_block(&process.body),
+            Stmt::Process(process) => {
+                // Assignment labels share the process's namespace, as at the
+                // implementation root.
+                let mut labels = Vec::new();
+                assignment_labels(&process.body, &mut labels);
+                let owner = process.label.as_ref().map_or_else(
+                    || "process".to_string(),
+                    |label| format!("process `{}`", label.text),
+                );
+                self.check_duplicate_names(
+                    labels.into_iter().map(|label| (&label.text, label.span)),
+                    "assignment label",
+                    &owner,
+                );
+                self.resolve_block(&process.body)
+            }
             Stmt::Let(l) => {
                 if let Some(t) = &l.ty {
                     self.resolve_type(t);

@@ -549,6 +549,9 @@ struct Checker<'a> {
     /// have the backing struct as `Self` but remain a distinct method owner,
     /// so privacy checks need both identities.
     current_impl_owner: std::cell::RefCell<Option<String>>,
+    /// Whether the implementation being checked is an entity's inherent one,
+    /// the only place a process may stand, generate-built or not.
+    in_entity_impl: std::cell::Cell<bool>,
     /// Source file to its declared module path. Privacy belongs to the
     /// module, never to the file that happened to hold the declaration.
     file_modules: HashMap<crate::diag::FileId, String>,

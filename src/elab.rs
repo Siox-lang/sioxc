@@ -488,6 +488,7 @@ fn elaborate_roots(
         sink,
         resolved,
         misplaced: std::cell::RefCell::new(Vec::new()),
+        misplaced_processes: std::cell::RefCell::new(Vec::new()),
         collisions: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
@@ -551,6 +552,9 @@ struct Elaborator<'a> {
     /// `&self`) and reported once, deduplicated by span — one entity is
     /// elaborated once per instantiation of it.
     misplaced: std::cell::RefCell<Vec<(String, Span)>>,
+    /// Processes inside a run-time `if`/`match`, reported like `misplaced`:
+    /// a process is built by a generate block, never by a signal's value.
+    misplaced_processes: std::cell::RefCell<Vec<Span>>,
     /// Two instances elaborated to one name in one parent, as
     /// `(name, later site, first site)`. Recorded while gathering (which
     /// borrows `&self`) and reported once per site, like `misplaced`.
@@ -1138,6 +1142,21 @@ impl<'a> Elaborator<'a> {
     /// entity is elaborated once per instantiation of *it*, so the same
     /// source line can be recorded several times.
     fn report_misplaced(&mut self) {
+        let mut processes: Vec<Span> = self.misplaced_processes.borrow().clone();
+        processes.sort_by_key(|span| (span.file.0, span.start));
+        processes.dedup();
+        for span in processes {
+            self.sink.emit(
+                Diagnostic::error("a process cannot be built by a run-time `if` or `match`")
+                    .with_code(codes::INSTANCE_PLACEMENT)
+                    .at(span)
+                    .help(
+                        "this condition tests a signal, so it is behaviour, not a generate. \
+                         Put the process at the top of the entity body and test the condition \
+                         inside it, or use a generate `if` whose condition folds to a constant",
+                    ),
+            );
+        }
         let mut seen: Vec<(String, Span)> = self.misplaced.borrow().clone();
         seen.sort_by_key(|(_, span)| (span.file.0, span.start));
         seen.dedup_by_key(|(_, span)| (span.file.0, span.start));
@@ -1186,6 +1205,9 @@ impl<'a> Elaborator<'a> {
                     for arm in &m.arms {
                         self.note_misplaced(&arm.body, tparams);
                     }
+                }
+                Stmt::Process(process) => {
+                    self.misplaced_processes.borrow_mut().push(process.span);
                 }
                 _ => {}
             }
@@ -1706,6 +1728,17 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
     use ParamValue::{Int, Unknown};
     match e {
         Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
+        // `if true { … }` is a generate condition, as `if 1 == 1` is.
+        Expr::Path(p)
+            if p.segments
+                .last()
+                .is_some_and(|s| s.text == "true" || s.text == "false")
+                && !env.contains_key(&p.segments[0].text) =>
+        {
+            Int(i64::from(
+                p.segments.last().is_some_and(|s| s.text == "true"),
+            ))
+        }
         Expr::Path(p) if p.segments.len() == 1 => env
             .get(&p.segments[0].text)
             .copied()
