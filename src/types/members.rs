@@ -136,6 +136,17 @@ impl<'a> Checker<'a> {
                 }
                 break;
             };
+            // A newtype over a tuple (`struct Pair((A, B))`) has its base's
+            // positions as fields, as a struct base gives its fields (#383).
+            if let Some(Type::Tuple { elems, .. }) = base_ty {
+                if field
+                    .text
+                    .parse::<usize>()
+                    .is_ok_and(|position| position < elems.len())
+                {
+                    return;
+                }
+            }
             if fields.contains(&field.text) {
                 // Applying a view is the explicit structural interface for
                 // its backing storage. It exposes the fields it names without

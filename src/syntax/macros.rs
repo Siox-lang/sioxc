@@ -1477,6 +1477,11 @@ fn derive_text(
     // its base (`integer(self)` for `struct Count(integer)`), which a
     // newtype over a kernel type has no operator for of its own.
     let operands: Vec<(String, String)> = match &declaration.base {
+        // A tuple struct compares position by position (`self.0`, then
+        // `self.1`): a tuple type cannot be called as a conversion (#383).
+        Some(crate::syntax::ast::Type::Tuple { elems, .. }) => (0..elems.len())
+            .map(|position| (format!("self.{position}"), format!("rhs.{position}")))
+            .collect(),
         Some(base) => {
             let base = crate::syntax::pretty::type_str(base);
             vec![(format!("{base}(self)"), format!("{base}(rhs)"))]

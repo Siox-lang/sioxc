@@ -7518,8 +7518,20 @@ fn lower_process_raw_resize(
         }
         _ => None,
     };
+    // An untyped aggregate literal, which a tuple (`Pair((1, 2))` of
+    // `struct Pair((unsigned[8], unsigned[8]))`) is after checking, takes
+    // its fields' widths from the newtype: on its own it typed as plain
+    // integers (#383).
+    let tuple_literal = matches!(
+        (&args[0], &target),
+        (
+            ast::Expr::Construct { ty: None, .. },
+            crate::types::Ty::Named(_)
+        )
+    );
     let operand_type = field_type
         .or_else(|| literal_arithmetic(&args[0]).map(|_| target.clone()))
+        .or_else(|| tuple_literal.then(|| target.clone()))
         .or_else(|| {
             context
                 .typed
@@ -7559,12 +7571,14 @@ fn push_converted(
     kind: ProcessValueKind,
     context: &mut LoweringContext<'_>,
 ) -> ProcessValueId {
+    // A struct keeps its fields too: `Pair(w)` of a `struct W(Pair)` is read
+    // by field (#383), which a bare resize has no layout for.
     let layout = matches!(
         target,
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        }
+        } | crate::types::Ty::Named(_)
     )
     .then(|| process_aggregate_layout_for_type(&target, span, context))
     .flatten()
