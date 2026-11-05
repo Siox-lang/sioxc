@@ -671,6 +671,21 @@ impl<'a> Checker<'a> {
             }
             return;
         };
+        if self.receiver_members.contains(&function) && p.segments.len() == 1 {
+            self.error_with_help(
+                codes::INVALID_METHOD_CALL,
+                expr_span(callee),
+                format!(
+                    "`{}` has a receiver, so a bare call cannot supply it",
+                    name.text
+                ),
+                format!(
+                    "call it on a value: `self.{}(...)` in a member with a receiver",
+                    name.text
+                ),
+            );
+            return;
+        }
         let Some(&want) = self.fn_arity.get(&function) else {
             return;
         };
@@ -1120,9 +1135,11 @@ impl<'a> Checker<'a> {
 
     /// The definition a call's path names, when it resolves to a function.
     pub(super) fn function_id(&self, path: &Path) -> Option<DefId> {
-        self.resolved
-            .resolved(path.span)
-            .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
+        self.resolved.resolved(path.span).filter(|id| {
+            self.resolved.kind_of(*id) == Some(DefKind::Fn)
+                // An impl member called by its bare name (#391).
+                || (path.segments.len() == 1 && self.fn_arity.contains_key(id))
+        })
     }
 
     /// Whether `name` is one of the built-in conversions rather than an ordinary

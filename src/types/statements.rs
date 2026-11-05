@@ -753,7 +753,7 @@ impl<'a> Checker<'a> {
     /// catch-all dropped them elsewhere, so an assertion written into a design
     /// silently never ran.
     pub(super) fn check_stimulus_context(&mut self, e: &Expr) {
-        if self.in_testbench.get() || self.in_fn_body.get() {
+        if self.in_testbench.get() {
             return;
         }
         let Expr::Call { callee, span, .. } = e else {
@@ -766,7 +766,20 @@ impl<'a> Checker<'a> {
             [seg] => seg.text.as_str(),
             _ => return,
         };
-        if !matches!(name, "await" | "wait" | "assert" | "print" | "warn") {
+        if !matches!(
+            name,
+            "await" | "wait" | "assert" | "print" | "warn" | "stop" | "finish"
+        ) {
+            return;
+        }
+        // In a function, the stimulus makes the function testbench-only: a
+        // hardware call to it is reported where it is made (#384).
+        if self.in_fn_body.get() {
+            if let Some(current) = self.current_fn.get() {
+                self.testbench_only_fns
+                    .borrow_mut()
+                    .insert(current, name.to_string());
+            }
             return;
         }
         self.error_with_help(

@@ -11419,7 +11419,14 @@ fn value_ref_with_type_inner(
                     None => ProcessValueKind::Definition(definition),
                 }
             } else {
-                ProcessValueKind::Intrinsic(path_name(path))
+                // `Entity::f`: the owner's registered key, which is module
+                // qualified for an entity (#391).
+                ProcessValueKind::Intrinsic(
+                    context
+                        .functions
+                        .associated_path_key(path)
+                        .unwrap_or_else(|| path_name(path)),
+                )
             }
         }
         ast::Expr::Int { text, .. } => ProcessValueKind::Number(parse_number(text, ty.as_ref())),

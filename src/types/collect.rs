@@ -154,6 +154,8 @@ impl<'a> Checker<'a> {
             aliases: HashMap::new(),
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
+            method_ids: HashMap::new(),
+            receiver_members: HashSet::new(),
             method_traits: HashMap::new(),
             array_methods: HashSet::new(),
             method_param_types: HashMap::new(),
@@ -299,6 +301,27 @@ impl<'a> Checker<'a> {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
                                 self.methods.insert(key.clone(), f.ret.clone());
+                                if let Some(id) = self.resolved.declared(f.name.span) {
+                                    self.method_ids.entry(key.clone()).or_default().push(id);
+                                    // A bare call from the impl's own body
+                                    // (`sum_to(4)`) is checked like a free
+                                    // function's (#391); a generic one is
+                                    // left to its qualified calls.
+                                    if im.params.params.is_empty() && f.generics.params.is_empty() {
+                                        let params: Vec<_> = f
+                                            .params
+                                            .iter()
+                                            .filter(|parameter| !parameter.is_self)
+                                            .map(|parameter| parameter.ty.clone())
+                                            .collect();
+                                        self.fn_arity.insert(id, params.len());
+                                        self.fn_param_types.insert(id, params);
+                                        self.fn_return_types.insert(id, f.ret.clone());
+                                    }
+                                    if !f.is_static && !self.entity_names.contains(&ty) {
+                                        self.receiver_members.insert(id);
+                                    }
+                                }
                                 if let Some(name) =
                                     im.trait_.as_ref().and_then(|path| self.trait_key(path))
                                 {
