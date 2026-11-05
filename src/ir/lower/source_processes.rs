@@ -6592,19 +6592,32 @@ fn generic_struct_layout(
         })?;
     let mut types = std::collections::HashMap::new();
     let mut values = std::collections::HashMap::new();
-    for (parameter, argument) in declaration.params.params.iter().zip(args) {
+    // A named argument (`Packet<N = 3>`) binds its parameter by name, a
+    // positional one the parameter at its position (#404).
+    for (position, argument) in args.iter().enumerate() {
+        let parameter = match argument {
+            ast::GenericArg::Named { name, .. } | ast::GenericArg::NamedType { name, .. } => {
+                declaration
+                    .params
+                    .params
+                    .iter()
+                    .find(|parameter| parameter.name.text == name.text)?
+            }
+            _ => declaration.params.params.get(position)?,
+        };
         let name = parameter.name.text.clone();
         match argument {
-            ast::GenericArg::PositionalType(ty) => {
+            ast::GenericArg::PositionalType(ty) | ast::GenericArg::NamedType { ty, .. } => {
                 types.insert(name, ty.clone());
             }
-            ast::GenericArg::Positional(value) if parameter.bound.is_some() => {
+            ast::GenericArg::Positional(value) | ast::GenericArg::Named { value, .. }
+                if parameter.bound.is_some() =>
+            {
                 values.insert(name, value.clone());
             }
-            ast::GenericArg::Positional(value) => {
+            ast::GenericArg::Positional(value) | ast::GenericArg::Named { value, .. } => {
                 types.insert(name, crate::ir::expr_to_type(value)?);
             }
-            _ => return None,
         }
     }
     let fields = declaration
