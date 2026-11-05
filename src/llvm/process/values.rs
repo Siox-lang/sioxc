@@ -750,7 +750,7 @@ pub(super) fn process_value<'ctx>(
             .collect::<std::collections::HashSet<_>>();
         cache.clear();
         builder.position_at_end(execute);
-        let returned = process_value(
+        let Some(returned) = process_value(
             context,
             module,
             builder,
@@ -759,7 +759,23 @@ pub(super) fn process_value<'ctx>(
             None,
             index_sites,
             cache,
-        )?;
+        ) else {
+            // An effect that cannot be emitted leaves the value unsupported
+            // for the caller to report; the guard it was given must go too,
+            // or its blocks stay without terminators and the module fails
+            // verification (#416).
+            if let Some(branch) = previous.get_terminator() {
+                branch.erase_from_basic_block();
+            }
+            // SAFETY: both blocks were appended above, nothing outside this
+            // function refers to them, and the only branch to them is gone.
+            unsafe {
+                let _ = join.delete();
+                let _ = execute.delete();
+            }
+            builder.position_at_end(previous);
+            return None;
+        };
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;
         builder.position_at_end(join);
