@@ -6570,6 +6570,16 @@ fn generic_struct_layout(
     span: crate::diag::Span,
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
+    // `type BytePacket = Packet<unsigned[8]>;`: the alias's written type,
+    // whose arguments its `Ty` no longer carries (#411).
+    if let ast::Type::Path(path) = declared {
+        let aliased = context
+            .resolved
+            .resolved(path.span)
+            .and_then(|definition| context.type_aliases.get(&definition))
+            .copied()?;
+        return generic_struct_layout(aliased, span, context);
+    }
     let ast::Type::Generic { base, args, .. } = declared else {
         return None;
     };
