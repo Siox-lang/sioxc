@@ -740,6 +740,12 @@ impl Expander<'_> {
         let mark = *self.counter;
         for i in 0..tokens.len() {
             let member = i > 0 && matches!(tokens[i - 1].0.kind, K::Dot | K::ColonColon | K::Tick);
+            // `Cell<W = 8>`: a named generic argument's key names the
+            // declaration's parameter, never the macro's own `W` (#428).
+            let argument_key = i > 0
+                && matches!(tokens[i - 1].0.kind, K::Lt | K::Comma)
+                && tokens.get(i + 1).is_some_and(|t| t.0.kind == K::Eq);
+            let member = member || argument_key;
             let (token, from_body) = &mut tokens[i];
             if *from_body && token.kind == K::Ident && !member && declared.contains(&token.text) {
                 token.text = format!("{}#{mark}", token.text);
