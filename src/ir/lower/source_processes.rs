@@ -5022,9 +5022,23 @@ fn widen_operand(
     };
     let source_type = operand_type(expression, process, context)?;
     let source = process_type_key(&source_type, context)?;
-    let function = context
-        .functions
-        .get_conversion(&context.functions.canonical_type_key(family), &source)?;
+    let owner = context.functions.canonical_type_key(family);
+    let Some(function) = context.functions.get_conversion(&owner, &source) else {
+        // Within one family with no `From` of its own (`unsigned`), widening
+        // is the kernel's raw resize, as `unsigned[32](x)` is: `total +
+        // arr[0]` took the wider type with the element's layout (#407).
+        if owner != source {
+            return None;
+        }
+        let operand = value_ref_with_type(expression, process, context, Some(&source_type));
+        return Some(push_converted(
+            span,
+            target.clone(),
+            *len,
+            ProcessValueKind::RawResize { operand },
+            context,
+        ));
+    };
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(expression, process, context, Some(&source_type));
     let number = |value: i64| {
