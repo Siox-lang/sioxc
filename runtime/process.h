@@ -44,6 +44,12 @@ void sx_runtime_suspend_condition_for_signed(uint32_t process,
 
 /* Resume the current foreground process after reactive delta cycles settle. */
 void sx_runtime_settle(uint32_t process, uint32_t resume_block);
+/* The settle ending an `await <condition> for <time>`: also disarms the
+ * await's timer. The signed form rejects a negative computed timeout. */
+void sx_runtime_settle_await(uint32_t process, uint32_t resume_block,
+                             uint64_t delay);
+void sx_runtime_settle_await_signed(uint32_t process, uint32_t resume_block,
+                                    uint64_t delay);
 
 /* Report source-level runtime operations emitted from Process IR. Assertions
  * return nonzero when they fail so the generated process entry can stop before

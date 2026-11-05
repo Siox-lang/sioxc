@@ -735,6 +735,12 @@ pub enum ProcessSuspendOp {
     /// Publish a foreground drive, settle reactive processes to a fixed
     /// point, then resume at the same simulation time.
     Settle,
+    /// The settle that ends an `await <condition> for <time>`: as
+    /// [`Self::Settle`], and it disarms the await's timer. Only this one does,
+    /// so a settle inside the condition (a helper writing a signal) leaves the
+    /// timer armed. Its optional argument is the timeout, checked for sign
+    /// even when the condition held at once.
+    SettleAwait,
 }
 
 /// A typed process operand. Composite expressions refer to earlier arena
@@ -1884,7 +1890,9 @@ impl ProcessIr {
                 }
                 if let ProcessTerminator::Suspend {
                     operation:
-                        ProcessSuspendOp::AwaitTime | ProcessSuspendOp::AwaitConditionFor { .. },
+                        ProcessSuspendOp::AwaitTime
+                        | ProcessSuspendOp::AwaitConditionFor { .. }
+                        | ProcessSuspendOp::SettleAwait,
                     arguments,
                     ..
                 } = &block.terminator

@@ -147,7 +147,8 @@ pub(super) fn block_is_supported(
         ProcessTerminator::Suspend {
             operation:
                 siox::ir::ProcessSuspendOp::AwaitTime
-                | siox::ir::ProcessSuspendOp::AwaitConditionFor { .. },
+                | siox::ir::ProcessSuspendOp::AwaitConditionFor { .. }
+                | siox::ir::ProcessSuspendOp::SettleAwait,
             arguments,
             ..
         } => {
@@ -379,6 +380,70 @@ pub(super) fn emit_condition_suspend<'ctx>(
             &[
                 i32.const_int(u64::from(process.0), false).into(),
                 i32.const_int(u64::from(resume.0), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
+}
+
+/// The settle that ends an `await … for`: `sx_runtime_settle_await`, which
+/// disarms the timer, with the timeout's sign checked when it was computed.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_settle_await<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    resume: siox::ir::ProcessBlockId,
+    delay: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let computed = !matches!(
+        design
+            .process_ir
+            .values
+            .get(delay.0 as usize)
+            .map(|value| &value.kind),
+        Some(ProcessValueKind::Number(_) | ProcessValueKind::Suffixed { .. })
+    );
+    let delay = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        delay,
+        64,
+        false,
+        None,
+        index_sites,
+        cache,
+    )?;
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let name = if computed {
+        "sx_runtime_settle_await_signed"
+    } else {
+        "sx_runtime_settle_await"
+    };
+    let function = module.get_function(name).unwrap_or_else(|| {
+        module.add_function(
+            name,
+            context
+                .void_type()
+                .fn_type(&[i32.into(), i32.into(), i64.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    builder
+        .build_call(
+            function,
+            &[
+                i32.const_int(u64::from(process.0), false).into(),
+                i32.const_int(u64::from(resume.0), false).into(),
+                delay.into(),
             ],
             "",
         )
