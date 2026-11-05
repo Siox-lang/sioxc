@@ -674,7 +674,9 @@ impl<'a> Elaborator<'a> {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
-                let cparams = eval_params(sub_decl, spec.ty, &env);
+                // In the generate loop's environment, as its connections
+                // are: `Sub<i>` reads the loop index (#427).
+                let cparams = eval_params(sub_decl, spec.ty, &spec.loop_env);
                 self.check_params_bound(sub_decl, &cparams, spec.site);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
