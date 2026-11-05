@@ -3515,6 +3515,29 @@ fn lower_call(
             {
                 return Some(tail);
             }
+            // A Siox procedure the statement expansion could not take, a
+            // recursive one (`sum_down(n - 1, acc);`), is expanded as a call
+            // with an unread result, which keeps a frame (#392).
+            if context
+                .functions
+                .get(callee)
+                .is_some_and(|function| function.body.is_some() && function.ret.is_none())
+            {
+                let call = ast::Expr::Call {
+                    callee: Box::new(callee.clone()),
+                    type_args: Vec::new(),
+                    qualifier: None,
+                    args: arguments.to_vec(),
+                    bang: false,
+                    span,
+                };
+                let value = value_ref(&call, process, context);
+                let node = &mut context.process_ir.values[value.0 as usize];
+                node.ty = Some(crate::types::Ty::Integer);
+                node.bit_width = Some(64);
+                cfg_calls::frame_copy(value, process, context, block);
+                return Some(block);
+            }
             // `putchar(65);`: a C function called for its effect is the
             // call's value, taken and dropped. As a runtime statement it
             // had no lowering (#193). So is a Siox function or method with
