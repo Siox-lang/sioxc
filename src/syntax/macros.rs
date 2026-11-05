@@ -1465,9 +1465,20 @@ fn derive_text(
         );
         return None;
     }
-    // A generic struct derives for every instance: `impl<A, B> Eq<Pair<A, B>>
-    // for Pair<A, B>`, its parameters and bounds as declared.
-    let binder = crate::syntax::pretty::params(&declaration.params);
+    // A generic struct derives for every instance whose parameters have the
+    // trait: `impl<A: Eq, B: Eq> Eq<Pair<A, B>> for Pair<A, B>`, as Rust's
+    // derive bounds each type parameter (#403). A bounded parameter (a value
+    // `<W: integer>`, or a type with its own trait) keeps its bound.
+    let mut bounded = declaration.params.clone();
+    for parameter in &mut bounded.params {
+        if parameter.bound.is_none() {
+            parameter.bound = Some(crate::syntax::ast::Type::Path(crate::syntax::ast::Path {
+                segments: vec![derive.clone()],
+                span: derive.span,
+            }));
+        }
+    }
+    let binder = crate::syntax::pretty::params(&bounded);
     let arguments: Vec<&str> = declaration
         .params
         .params
