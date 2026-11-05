@@ -2151,57 +2151,68 @@ impl<'a> Lowering<'a> {
                     store_packed(env, merged)?;
                 }
                 ast::Stmt::Expr(ast::Expr::Call { callee, args, .. }) => {
-                    let ast::Expr::Field { base, field, .. } = callee.as_ref() else {
-                        return None;
-                    };
-                    let ast::Expr::Path(path) = base.as_ref() else {
-                        return None;
-                    };
-                    let [segment] = path.segments.as_slice() else {
-                        return None;
-                    };
-                    let recv_name = &segment.text;
-                    let recv_val = env.get(recv_name)?.clone();
-                    let recv_layout = self.source_operand_layout(base, env);
-                    let ty = self
-                        .operand_type_name(base)
-                        .or_else(|| recv_layout.as_ref().and_then(Self::source_layout_family))?;
-                    let input = args.first().and_then(|arg| match arg {
-                        ast::Expr::Construct { ty: Some(ty), .. }
-                            if type_head_name(ty) == Some("Range") =>
-                        {
-                            Some("Range".to_string())
-                        }
-                        ast::Expr::StrLit { .. }
-                        | ast::Expr::BitStrLit { .. }
-                        | ast::Expr::CharLit { .. } => None,
-                        _ => self.operand_type_name(arg),
-                    });
-                    let f = self.find_method(&ty, &field.text, input.as_deref())?;
-                    let body = f.body.as_ref()?;
+                    // `c.step(x);` on a local receiver, or a void free
+                    // function `bump(x);` (#387).
                     let mut fenv: HashMap<String, Val> = HashMap::new();
                     let mut shapes = HashMap::new();
-                    if let Some(layout) = recv_layout {
-                        shapes.insert("self".to_owned(), layout);
-                    }
-                    fenv.insert(
-                        "self".to_string(),
-                        self.bind_source_value(recv_val, ast::expr_span(base), None),
-                    );
-                    fenv.insert(
-                        "self::length".to_string(),
-                        Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
-                    );
-                    self.bind_range_attrs(&mut fenv, "self", base, env);
                     let mut saved: Vec<(String, Option<String>)> = Vec::new();
                     let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
                     let mut added_integers: Vec<String> = Vec::new();
-                    let self_prev = self
-                        .param_types
-                        .borrow_mut()
-                        .insert("self".to_string(), ty.clone());
-                    saved.push(("self".to_string(), self_prev));
-                    let receiver_width = self.ast_width(base);
+                    let (f, receiver, ty, receiver_width) = match callee.as_ref() {
+                        ast::Expr::Field { base, field, .. } => {
+                            let ast::Expr::Path(path) = base.as_ref() else {
+                                return None;
+                            };
+                            let [segment] = path.segments.as_slice() else {
+                                return None;
+                            };
+                            let recv_name = &segment.text;
+                            let recv_val = env.get(recv_name)?.clone();
+                            let recv_layout = self.source_operand_layout(base, env);
+                            let ty = self.operand_type_name(base).or_else(|| {
+                                recv_layout.as_ref().and_then(Self::source_layout_family)
+                            })?;
+                            let input = args.first().and_then(|arg| match arg {
+                                ast::Expr::Construct { ty: Some(ty), .. }
+                                    if type_head_name(ty) == Some("Range") =>
+                                {
+                                    Some("Range".to_string())
+                                }
+                                ast::Expr::StrLit { .. }
+                                | ast::Expr::BitStrLit { .. }
+                                | ast::Expr::CharLit { .. } => None,
+                                _ => self.operand_type_name(arg),
+                            });
+                            let f = self.find_method(&ty, &field.text, input.as_deref())?;
+                            if let Some(layout) = recv_layout {
+                                shapes.insert("self".to_owned(), layout);
+                            }
+                            fenv.insert(
+                                "self".to_string(),
+                                self.bind_source_value(recv_val, ast::expr_span(base), None),
+                            );
+                            fenv.insert(
+                                "self::length".to_string(),
+                                Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
+                            );
+                            self.bind_range_attrs(&mut fenv, "self", base, env);
+                            let self_prev = self
+                                .param_types
+                                .borrow_mut()
+                                .insert("self".to_string(), ty.clone());
+                            saved.push(("self".to_string(), self_prev));
+                            (f, Some(recv_name.clone()), Some(ty), self.ast_width(base))
+                        }
+                        ast::Expr::Path(_) => {
+                            let f = self.free_fns.get(callee)?;
+                            if f.ret.is_some() {
+                                return None;
+                            }
+                            (f, None, None, 0)
+                        }
+                        _ => return None,
+                    };
+                    let body = f.body.as_ref()?;
                     for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
                         if let Some(n) = &p.name {
                             let a = &self.as_struct_literal(p.ty.as_ref(), a);
@@ -2220,17 +2231,18 @@ impl<'a> Lowering<'a> {
                                 Val::Scalar(Expr::Const(w as u64)),
                             );
                             self.bind_range_attrs(&mut fenv, &n.text, a, env);
-                            let declared = p.ty.as_ref().and_then(type_head_name).map(|head| {
-                                if head == "Self" {
-                                    ty.clone()
-                                } else {
-                                    head.to_owned()
-                                }
-                            });
+                            let declared =
+                                p.ty.as_ref().and_then(type_head_name).map(|head| {
+                                    match (&ty, head) {
+                                        (Some(ty), "Self") => ty.clone(),
+                                        _ => head.to_owned(),
+                                    }
+                                });
                             if let Some(mut fam) = self.operand_type_name(a).or(declared) {
-                                if fam == "integer"
-                                    && p.ty.as_ref().and_then(type_head_name) != Some("integer")
-                                {
+                                if let Some(ty) = ty.as_ref().filter(|_| {
+                                    fam == "integer"
+                                        && p.ty.as_ref().and_then(type_head_name) != Some("integer")
+                                }) {
                                     fam = ty.clone();
                                 }
                                 let prev =
@@ -2258,6 +2270,32 @@ impl<'a> Lowering<'a> {
                                 .insert("self".to_string(), receiver_width),
                         ));
                     }
+                    // Locals passed to a parameter of their own width, which
+                    // the binding did not resize: decided before the callee's
+                    // shapes hide the caller's (#387).
+                    let write_backs: Vec<(String, String)> = f
+                        .params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .zip(args)
+                        .filter_map(|(p, a)| {
+                            let ast::Expr::Path(path) = a else {
+                                return None;
+                            };
+                            let [segment] = path.segments.as_slice() else {
+                                return None;
+                            };
+                            let declared = self
+                                .source_layout(p.ty.as_ref()?, &self.attribute_env(env))
+                                .bit_width()?;
+                            let local = self
+                                .source_bound_layout(&segment.text)
+                                .or_else(|| self.source_operand_layout(a, env))?;
+                            let name = p.name.as_ref()?;
+                            (env.contains_key(&segment.text) && local.bit_width() == Some(declared))
+                                .then(|| (name.text.clone(), segment.text.clone()))
+                        })
+                        .collect();
                     let _shapes = self.source_shape_scope(shapes, None);
                     let mark = self.local_type_saves.borrow().len();
                     let result = self.inline_effects(&body.stmts, &mut fenv);
@@ -2278,7 +2316,16 @@ impl<'a> Lowering<'a> {
                         self.param_integers.borrow_mut().remove(&name);
                     }
                     result?;
-                    env.insert(recv_name.clone(), fenv.remove("self")?);
+                    if let Some(recv_name) = receiver {
+                        env.insert(recv_name, fenv.remove("self")?);
+                    }
+                    // A parameter is an alias of a local passed to it: its
+                    // writes reach the caller's local, not only `self`'s.
+                    for (parameter, local) in write_backs {
+                        if let Some(value) = fenv.remove(&parameter) {
+                            env.insert(local, value);
+                        }
+                    }
                 }
                 ast::Stmt::For {
                     var,
@@ -2331,6 +2378,7 @@ impl<'a> Lowering<'a> {
                 ast::Stmt::If(iff) if !if_returns(iff) => {
                     self.inline_merged_if(iff, env)?;
                 }
+                ast::Stmt::Match(m) => self.inline_merged_match(m, env)?,
                 _ => return None,
             }
         }
@@ -2466,6 +2514,51 @@ impl<'a> Lowering<'a> {
             Some(ast::ElseBranch::If(inner)) => self.inline_merged_if(inner, &mut else_env)?,
             None => {}
         }
+        self.merge_branches(cond, then_env, else_env, env, iff.span)
+    }
+
+    /// A `match` statement in a function body that does not return: each
+    /// arm's writes, selected by its pattern, first match first (#387).
+    fn inline_merged_match(
+        &self,
+        m: &ast::MatchStmt,
+        env: &mut HashMap<String, Val>,
+    ) -> Option<()> {
+        let scrut = self.bind_source_expression(
+            if self.is_tuple_scrutinee(&m.scrutinee) {
+                Expr::Const(0)
+            } else {
+                self.lower_scalar_env(&m.scrutinee, env)
+            },
+            ast::expr_span(&m.scrutinee),
+        );
+        // No arm matched: nothing written.
+        let mut merged = env.clone();
+        for arm in m.arms.iter().rev() {
+            let mut arm_env = env.clone();
+            self.inline_scoped(&arm.body.stmts, &mut arm_env)?;
+            match self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, env) {
+                None => merged = arm_env,
+                Some(cond) => {
+                    let mut next = env.clone();
+                    self.merge_branches(cond, arm_env, merged, &mut next, arm.span)?;
+                    merged = next;
+                }
+            }
+        }
+        *env = merged;
+        Some(())
+    }
+
+    /// Each binding of `env` as `cond ? then : else` of the two branches'.
+    fn merge_branches(
+        &self,
+        cond: Expr,
+        mut then_env: HashMap<String, Val>,
+        mut else_env: HashMap<String, Val>,
+        env: &mut HashMap<String, Val>,
+        span: crate::diag::Span,
+    ) -> Option<()> {
         let same = |a: &Val, b: &Val| match (a, b) {
             (
                 Val::Scalar(Expr::Canonical { value: a, .. }),
@@ -2480,8 +2573,8 @@ impl<'a> Lowering<'a> {
                 then_value
             } else {
                 self.bind_source_value(
-                    self.source_select_value(cond.clone(), then_value, else_value, iff.span),
-                    iff.span,
+                    self.source_select_value(cond.clone(), then_value, else_value, span),
+                    span,
                     None,
                 )
             };
@@ -2837,9 +2930,7 @@ impl<'a> Lowering<'a> {
                     if statements_always_return(branch) {
                         return self.inline_block(branch, env);
                     }
-                    let mut all = branch.to_vec();
-                    all.extend(rest.iter().cloned());
-                    self.inline_block(&all, env)
+                    self.inline_block(&branch_then_rest(branch, rest), env)
                 };
                 let els = || match &iff.else_ {
                     Some(e) => match e.as_ref() {
@@ -2881,15 +2972,16 @@ impl<'a> Lowering<'a> {
                     },
                     ast::expr_span(&m.scrutinee),
                 );
-                // What the body yields when no arm returns.
-                let after = self.inline_block(rest, env);
-                let mut acc = after.clone();
+                // What the body yields when no arm matches.
+                let mut acc = self.inline_block(rest, env);
                 for arm in m.arms.iter().rev() {
-                    let value = match self.inline_block(&arm.body.stmts, env) {
-                        Some(value) => value,
-                        // An arm that returns nothing (`_ => {}`) falls
-                        // through to the statements after the match.
-                        None => after.clone()?,
+                    // An arm that can fall through (`0 => { m = 10; }`, or
+                    // `_ => {}`) continues with the statements after the
+                    // match, with its writes, as an `if` branch does (#387).
+                    let value = if statements_always_return(&arm.body.stmts) {
+                        self.inline_block(&arm.body.stmts, env)?
+                    } else {
+                        self.inline_block(&branch_then_rest(&arm.body.stmts, rest), env)?
                     };
                     acc = Some(
                         match (
@@ -2965,4 +3057,32 @@ fn if_returns(statement: &ast::IfStmt) -> bool {
             Some(ast::ElseBranch::If(inner)) => if_returns(inner),
             None => false,
         }
+}
+
+/// A branch that can fall through, followed by the statements after its
+/// `if` or `match`. The branch's own `let`s are renamed, so one shadowing an
+/// outer name ends with the branch instead of replacing the outer binding in
+/// the continuation (#387).
+fn branch_then_rest(branch: &[ast::Stmt], rest: &[ast::Stmt]) -> Vec<ast::Stmt> {
+    let mut renamed: HashMap<String, ast::Expr> = HashMap::new();
+    let mut all = Vec::with_capacity(branch.len() + rest.len());
+    for statement in branch {
+        let mut statement = subst_stmt_paths(statement, &renamed);
+        if let ast::Stmt::Let(declaration) = &mut statement {
+            let name = &mut declaration.name;
+            let scoped = format!("{}#{}", name.text, name.span.start);
+            let path = ast::Path {
+                segments: vec![ast::Ident {
+                    text: scoped.clone(),
+                    span: name.span,
+                }],
+                span: name.span,
+            };
+            renamed.insert(name.text.clone(), ast::Expr::Path(path));
+            name.text = scoped;
+        }
+        all.push(statement);
+    }
+    all.extend(rest.iter().cloned());
+    all
 }
