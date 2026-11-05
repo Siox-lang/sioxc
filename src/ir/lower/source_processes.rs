@@ -3295,6 +3295,52 @@ fn await_is_event(argument: &ast::Expr) -> bool {
 
 /// Lower a call: either a runtime operation (`assert!`, `print!`) or an
 /// ordinary named call that lowering did not inline.
+/// `Trait::method(s, a)` as the method call `s.method(a)` it means, so
+/// statement-body and procedure trait members lower as any method does
+/// (#159, #392).
+/// When the trait's own member differs from the one the name finds (two
+/// traits giving the type one method name), the call is left to the
+/// trait-qualified lookup of [`inline_process_call`].
+fn ufcs_method(
+    callee: &ast::Expr,
+    arguments: &[ast::Expr],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<(ast::Expr, Vec<ast::Expr>)> {
+    let ast::Expr::Path(path) = callee else {
+        return None;
+    };
+    let [.., owner, method] = path.segments.as_slice() else {
+        return None;
+    };
+    let (receiver, rest) = arguments.split_first()?;
+    let trait_ = context.resolved.resolved(owner.span)?;
+    if context.resolved.kind_of(trait_) != Some(crate::resolve::DefKind::Trait) {
+        return None;
+    }
+    // Typed as the method call types its receiver: by its lowered value.
+    let value = value_ref(receiver, process, context);
+    let ty = process_value_type(value, context)?;
+    let ty_key = process_type_key(&ty, context)?;
+    let by_name = context.functions.get_associated(&ty_key, &method.text)?;
+    let qualified = context.functions.trait_key(trait_).and_then(|key| {
+        context
+            .functions
+            .get_associated(&format!("{ty_key}#{key}"), &method.text)
+    });
+    if qualified.is_some_and(|qualified| !std::ptr::eq(qualified, by_name)) {
+        return None;
+    }
+    Some((
+        ast::Expr::Field {
+            base: Box::new(receiver.clone()),
+            field: method.clone(),
+            span: path.span,
+        },
+        rest.to_vec(),
+    ))
+}
+
 fn lower_call(
     callee: &ast::Expr,
     arguments: &[ast::Expr],
@@ -3303,6 +3349,9 @@ fn lower_call(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    if let Some((callee, arguments)) = ufcs_method(callee, arguments, process, context) {
+        return lower_call(&callee, &arguments, span, context, process, block);
+    }
     // `xs.push(v)` on a runtime array: append, then keep the handle (a new
     // one when the array was empty).
     if let (ast::Expr::Field { base, field, .. }, [pushed]) = (callee, arguments) {
@@ -3468,12 +3517,19 @@ fn lower_call(
             }
             // `putchar(65);`: a C function called for its effect is the
             // call's value, taken and dropped. As a runtime statement it
-            // had no lowering (#193).
-            if context
-                .functions
-                .get(callee)
-                .is_some_and(|function| function.body.is_none())
-            {
+            // had no lowering (#193). So is a Siox function or method with
+            // a result called for its effect (`bump(x);`, `c.step();`, #392).
+            let returns = match context.functions.get(callee) {
+                Some(function) => function.body.is_none() || function.ret.is_some(),
+                None => {
+                    matches!(callee, ast::Expr::Field { .. })
+                        && context
+                            .typed
+                            .expr_type(span)
+                            .is_some_and(|ty| !matches!(ty, crate::types::Ty::Void))
+                }
+            };
+            if returns {
                 let call = ast::Expr::Call {
                     callee: Box::new(callee.clone()),
                     type_args: Vec::new(),
@@ -3576,6 +3632,19 @@ fn inline_process_procedure_call(
         give_literal_parameter_layout(parameter, argument, process, context);
         bindings.push((definition, argument));
     }
+    let values: Vec<_> = bindings.iter().map(|(_, value)| *value).collect();
+    let formals: Vec<_> = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .collect();
+    for (definition, value) in
+        cfg_calls::length_generics(function, &formals, &values, call_span, process, context)
+    {
+        if !bindings.iter().any(|(bound, _)| *bound == definition) {
+            bindings.push((definition, value));
+        }
+    }
     if !context.inline_functions.insert(function.span) {
         truncate_process_values(context, first_value);
         return None;
@@ -3588,9 +3657,9 @@ fn inline_process_procedure_call(
     // Evaluate non-place arguments and place selectors once, before callee
     // writes or suspension. Places themselves remain aliases, so later reads
     // observe immediate local writes but not uncommitted signal writes.
-    let receiver = receiver.map(|value| capture_process_argument(value, context, process, block));
+    let receiver = receiver.map(|value| capture_call_argument(value, context, process, block));
     for (_, value) in &mut bindings {
-        *value = capture_process_argument(*value, context, process, block);
+        *value = capture_call_argument(*value, context, process, block);
     }
     let bindings = bindings.into_iter().collect();
     let resume = process.push_block();
@@ -3785,6 +3854,44 @@ fn capture_process_operand(
     ) {
         return value;
     }
+    capture_into_local(value, context, process, block)
+}
+
+/// A call's argument or receiver: as [`capture_process_argument`], but a
+/// constant gets a local too, since the callee may write its parameter
+/// (`inc(5)` with `x = x + 1`, `Counter::default().bumped()`) and a constant
+/// is no place (#378).
+fn capture_call_argument(
+    value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    // ponytail: a string literal stays a constant, since a call local
+    // initialized from one does not lower yet; a callee writing a string
+    // parameter passed as a literal still fails as #378 did.
+    let constant = matches!(
+        context.process_ir.values[value.0 as usize].kind,
+        ProcessValueKind::Number(_)
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::Default
+    );
+    if constant {
+        capture_into_local(value, context, process, block)
+    } else {
+        capture_process_argument(value, context, process, block)
+    }
+}
+
+/// Declare a call local initialized to `value` and read it back.
+fn capture_into_local(
+    value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    let node = context.process_ir.values[value.0 as usize].clone();
     let local = ProcessLocalId(process.locals.len() as u32);
     // A checked runtime index is the label it passed with, a plain word: as
     // the index's own `unsigned[2]` it needed metavalue planes it has none
@@ -11249,6 +11356,31 @@ fn value_ref_with_type_inner(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang,
+        span,
+        ..
+    } = expression
+    {
+        if let Some((callee, args)) = type_args
+            .is_empty()
+            .then(|| ufcs_method(callee, args, process, context))
+            .flatten()
+        {
+            let call = ast::Expr::Call {
+                callee: Box::new(callee),
+                type_args: Vec::new(),
+                qualifier: None,
+                args,
+                bang: *bang,
+                span: *span,
+            };
+            return value_ref_with_type_inner(&call, process, context, contextual_type);
+        }
+    }
     // `regs.index(2)` spelled out selects its `Index` overload as `regs[2]`
     // does: by name alone, the last declared `index` was taken.
     if let ast::Expr::Call { callee, args, .. } = expression {
