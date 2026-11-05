@@ -26,13 +26,13 @@ impl<'a> Checker<'a> {
                 // Implicit numbering counts on from the previous variant, as
                 // lowering numbers them, so it can collide with an explicit
                 // value too (`Zero, One, Two = 1`, #184).
-                let mut seen: HashMap<i64, &str> = HashMap::new();
-                let mut next = Some(0i64);
+                // In `i128`, so a discriminant from `2^63` to `u64::MAX` is
+                // read and counted on from like any other (#421).
+                let mut seen: HashMap<i128, &str> = HashMap::new();
+                let mut next = Some(0i128);
                 for v in &e.variants {
                     let n = match &v.value {
-                        Some(val) => match Self::const_literal(val)
-                            .or_else(|| self.const_int(val).and_then(|n| i64::try_from(n).ok()))
-                        {
+                        Some(val) => match Self::fit_literal(val).or_else(|| self.const_int(val)) {
                             Some(n) => n,
                             None => {
                                 // Not a literal: the count is unknown from here.
@@ -47,6 +47,18 @@ impl<'a> Checker<'a> {
                     };
                     next = n.checked_add(1);
                     let val = v.value.as_ref();
+                    if n > i128::from(u64::MAX) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            val.map(expr_span).unwrap_or(v.name.span),
+                            format!(
+                                "`{}::{}` has the discriminant {n}, past the 64 bits a \
+                                 discriminant holds",
+                                e.name.text, v.name.text
+                            ),
+                        );
+                        continue;
+                    }
                     // Discriminants are unsigned: the enum's width is what
                     // its largest one needs. A negative one was dropped in
                     // lowering and numbered from zero instead (#166).

@@ -8631,7 +8631,7 @@ fn lower_process_host_call(
     if args.len() != arity {
         return None;
     }
-    let arguments = args
+    let arguments: Vec<_> = args
         .iter()
         .map(|argument| value_ref_with_type(argument, process, context, None))
         .collect();
@@ -8659,12 +8659,52 @@ fn lower_process_host_call(
         | ProcessHostValueOp::ArrayFrom
         | ProcessHostValueOp::StringFrom => return None,
     });
+    // The runtime draws between unsigned bounds. A signed `integer` range
+    // (`randint(-5, 5)`) crossed zero and drew from `[5, 2^64 - 5]` (#422):
+    // flipping the sign bit maps signed order onto unsigned order, and is
+    // `+ 2^63` modulo `2^64`, so the bounds go in flipped and the draw comes
+    // back flipped.
+    let signed = matches!(operation, ProcessHostValueOp::RandomRange)
+        && matches!(ty, Some(crate::types::Ty::Integer));
+    let sign_bit = |value: ProcessValueId, context: &mut LoweringContext<'_>| {
+        let bit = push_value(
+            *span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![1 << 63])),
+            context,
+        );
+        push_value(
+            *span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Xor,
+                left: value,
+                right: bit,
+            },
+            context,
+        )
+    };
+    let arguments = if signed {
+        arguments
+            .into_iter()
+            .map(|argument| sign_bit(argument, context))
+            .collect()
+    } else {
+        arguments
+    };
     let kind = ProcessValueKind::HostCall {
         operation,
         arguments,
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
-    Some(push_value(*span, ty, width, kind, context))
+    let drawn = push_value(*span, ty, width, kind, context);
+    Some(if signed {
+        sign_bit(drawn, context)
+    } else {
+        drawn
+    })
 }
 
 fn process_type_is_string(ty: Option<&crate::types::Ty>) -> bool {

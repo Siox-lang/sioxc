@@ -200,7 +200,8 @@ pub fn enum_discriminants(
         for (v, disc) in effective_variants(name, &enums, fns, &mut Vec::new(), &constants) {
             let d = disc.map(|d| d as u64).unwrap_or(next);
             vars.insert(v, d);
-            next = d + 1;
+            // Past `u64::MAX` is a checker error; lowering must not panic.
+            next = d.wrapping_add(1);
         }
         out.insert(name.clone(), vars);
     }
