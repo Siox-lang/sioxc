@@ -766,6 +766,39 @@ impl<'a> Lowering<'a> {
         // every build.
         let mut bindings: Vec<_> = bindings.into_iter().collect();
         bindings.sort_by(|a, b| a.0.cmp(&b.0));
+        // `let c: Consumer = { .data = p.data };`: a name that is another
+        // instance's port (`Top.p.data`, or a leaf of one) drives the inputs
+        // bound to it, as the connection does in an entity. No `out` binds
+        // that name, so the inputs were left undriven (#419).
+        let by_path: HashMap<&str, SignalId> = self
+            .out
+            .signals
+            .iter()
+            .enumerate()
+            .filter_map(|(index, signal)| {
+                Some((signal.path.as_str(), SignalId(u32::try_from(index).ok()?)))
+            })
+            .collect();
+        let peers: Vec<Option<SignalId>> = bindings
+            .iter()
+            .map(|(tbname, ports)| {
+                let driven = ports
+                    .iter()
+                    .any(|(_, d, _)| *d == Some(ast::Direction::Out));
+                (!driven && tbname.contains('.'))
+                    .then(|| by_path.get(format!("{name}.{tbname}").as_str()).copied())
+                    .flatten()
+            })
+            .collect();
+        drop(by_path);
+        for ((_, ports), peer) in bindings.iter_mut().zip(peers) {
+            if let Some(peer) = peer {
+                let span = ports.first().map(|(_, _, span)| *span);
+                if let Some(span) = span {
+                    ports.push((peer, Some(ast::Direction::Out), span));
+                }
+            }
+        }
         for (tbname, ports) in &bindings {
             // A tristate net needs one shared node that folds each driver's
             // *expression*; the entity path builds one, this path has no
