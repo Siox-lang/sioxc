@@ -173,20 +173,23 @@ pub(in crate::ir) fn enum_reprs(
             };
             // Implicit variants count on from the last value: `A = 15, B`
             // makes `B` 16.
-            let mut next = 0i64;
+            // Discriminants are unsigned 64-bit values, as
+            // `enum_discriminants` stores them: `0x8000_..` read as an `i64`
+            // was negative and left the enum one bit wide (#421).
+            let mut next = 0u64;
             let max_disc = variants
                 .iter()
                 .map(|(_, d)| {
-                    let value = d.unwrap_or(next);
-                    next = value.saturating_add(1);
+                    let value = d.map(|d| d as u64).unwrap_or(next);
+                    next = value.wrapping_add(1);
                     value
                 })
                 .max()
                 .unwrap_or(0);
-            let disc_bits = if max_disc <= 0 {
+            let disc_bits = if max_disc == 0 {
                 1
             } else {
-                u64::BITS - (max_disc as u64).leading_zeros()
+                u64::BITS - max_disc.leading_zeros()
             };
             count_bits.max(disc_bits)
         };
