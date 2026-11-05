@@ -65,6 +65,9 @@ impl<'a> Checker<'a> {
         let backing = self
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());
+        let saved_entity_impl = self
+            .in_entity_impl
+            .replace(im.trait_.is_none() && self.entity_names.contains(&backing));
         for item in &im.items {
             if let ImplItem::Attr(declaration) = item {
                 self.check_type_attr_decl(declaration, im.trait_.is_some());
@@ -111,6 +114,7 @@ impl<'a> Checker<'a> {
         }
         self.check_impl_inner(im);
         self.current_impl_owner.replace(saved_impl_owner);
+        self.in_entity_impl.set(saved_entity_impl);
         self.current_self_ty.replace(saved_self);
         *self.type_params.borrow_mut() = saved_params;
         self.in_testbench.set(saved_tb);

@@ -418,6 +418,7 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
                 block(inner, ranges, resolved);
             }
             Stmt::While { body: inner, .. } => block(inner, ranges, resolved),
+            Stmt::Process(process) => block(&mut process.body, ranges, resolved),
             Stmt::If(nested) => if_stmt(nested, ranges, resolved),
             Stmt::Match(nested) => {
                 for arm in &mut nested.arms {

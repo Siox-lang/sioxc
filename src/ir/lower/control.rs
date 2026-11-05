@@ -593,7 +593,10 @@ impl<'a> Lowering<'a> {
                         format!("{}::{}", self.cur_instance_path, label.text),
                     );
                 }
-                self.lower_combinational_block(&process.body, cond);
+                // A process is its own context: the generate condition that built it
+                // is structural, not a run-time guard.
+                let _ = cond;
+                self.lower_combinational_block(&process.body, None);
                 self.cur_ctx = saved;
             }
             // Other statement forms (bare expr and return) are not hardware
