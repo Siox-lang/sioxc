@@ -2399,7 +2399,7 @@ impl<'a> Resolver<'a> {
         }
         if p.segments.len() == 1 {
             let name = p.segments[0].text.clone();
-            if let Some(id) = self.lookup(&name) {
+            if let Some(id) = self.lookup_beyond_fields(&name) {
                 self.record_qualified_use(p.span, id);
                 self.mark_impl_param_use(id);
             } else {
@@ -2594,7 +2594,7 @@ impl<'a> Resolver<'a> {
             let enum_position = p.segments.len() - 2;
             let head = p.segments[enum_position].text.clone();
             let enum_id = if enum_position == 0 {
-                self.lookup(&head)
+                self.lookup_beyond_fields(&head)
             } else {
                 let module = p.segments[..enum_position]
                     .iter()
@@ -3226,12 +3226,31 @@ impl<'a> Resolver<'a> {
     }
 
     /// Find `name` in the nearest enclosing scope.
+    /// `name` where a value is not possible: a type, or the head of a path
+    /// (`state::Busy`). A bare field name binds only values, so a field
+    /// spelled like a type never hides the type (#380).
+    fn lookup_beyond_fields(&self, name: &str) -> Option<DefId> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(id) = scope.get(name) {
+                if !self.field_defs.contains_key(id) {
+                    return Some(*id);
+                }
+            }
+        }
+        self.lookup_outside_scopes(name)
+    }
+
     fn lookup(&self, name: &str) -> Option<DefId> {
         for scope in self.scopes.iter().rev() {
             if let Some(id) = scope.get(name) {
                 return Some(*id);
             }
         }
+        self.lookup_outside_scopes(name)
+    }
+
+    /// The module-level and builtin part of [`Self::lookup`].
+    fn lookup_outside_scopes(&self, name: &str) -> Option<DefId> {
         if let Some(module) = &self.current_module {
             if let Some(id) = self
                 .module_defs
