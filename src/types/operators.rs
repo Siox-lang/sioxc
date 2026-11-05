@@ -17,10 +17,10 @@ impl<'a> Checker<'a> {
     ) {
         for (operand, lit) in [(lhs, rhs), (rhs, lhs)] {
             // Only flag a bare constant against a sized runtime operand.
-            if Self::const_literal(operand).is_some() {
+            if Self::fit_literal(operand).is_some() {
                 continue;
             }
-            let Some(v) = Self::const_literal(lit) else {
+            let Some(v) = Self::fit_literal(lit) else {
                 continue;
             };
             if let Ty::Array {
