@@ -617,6 +617,34 @@ impl<'a> Checker<'a> {
                 // no place to put the call. A call from hardware to a function
                 // is checked once every body is seen, for whether the function
                 // reaches such an operation.
+                // A method call (`c.next()`) joins the call graph too, so a
+                // method that reaches a testbench-only operation is reported
+                // when hardware calls it (#384).
+                if let Expr::Field { base, field, .. } = callee.as_ref() {
+                    let receiver = self.type_of(base, sym);
+                    let ids = self
+                        .ty_head(&receiver)
+                        .and_then(|head| self.method_ids.get(&(head, field.text.clone())))
+                        .cloned()
+                        .unwrap_or_default();
+                    for id in ids {
+                        if self.in_fn_body.get() {
+                            if let Some(current) = self.current_fn.get() {
+                                self.fn_callees
+                                    .borrow_mut()
+                                    .entry(current)
+                                    .or_default()
+                                    .push(id);
+                            }
+                        } else if !self.in_testbench.get() && !self.in_initializer.get() {
+                            self.hardware_fn_calls.borrow_mut().push((
+                                id,
+                                expr_span(callee),
+                                crate::syntax::pretty::expr_string(callee),
+                            ));
+                        }
+                    }
+                }
                 if let Expr::Path(path) = callee.as_ref() {
                     let callee_id = self
                         .resolved

@@ -429,7 +429,25 @@ impl<'a> FunctionIndex<'a> {
 
     /// Retrieve a free function using a canonical callee's resolved identity.
     pub(crate) fn get_definition(&self, definition: DefId) -> Option<&'a ast::FnDecl> {
-        self.free.get(&definition).copied()
+        self.free
+            .get(&definition)
+            .copied()
+            .or_else(|| self.impl_member(definition))
+    }
+
+    /// An impl's own function called unqualified from that impl's body
+    /// (`double(x)` in `impl Top`): the impl scope binds the name as a local
+    /// at the function's declaration (#292, #391).
+    fn impl_member(&self, id: DefId) -> Option<&'a ast::FnDecl> {
+        if self.resolved.kind_of(id) != Some(crate::resolve::DefKind::Local) {
+            return None;
+        }
+        let span = self.resolved.def(id)?.span?;
+        self.associated
+            .values()
+            .flat_map(|functions| functions.values())
+            .find(|function| function.name.span == span)
+            .copied()
     }
 
     /// Stable owner key for an already-resolved nominal type. This is the
@@ -474,19 +492,8 @@ impl<'a> FunctionIndex<'a> {
                 if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Fn) {
                     return self.free.get(&id).copied();
                 }
-                // An impl's own function called unqualified from that impl's
-                // body (`double(x)` in `impl Top`): the impl scope binds the
-                // name as a local at the function's declaration (#292).
-                if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Local) {
-                    let declared = self.resolved.def(id).and_then(|def| def.span);
-                    if let Some(function) = declared.and_then(|span| {
-                        self.associated
-                            .values()
-                            .flat_map(|functions| functions.values())
-                            .find(|function| function.name.span == span)
-                    }) {
-                        return Some(*function);
-                    }
+                if let Some(function) = self.impl_member(id) {
+                    return Some(function);
                 }
             }
             if let Some(key) = self.associated_path_key(path) {
@@ -690,7 +697,7 @@ impl<'a> FunctionIndex<'a> {
     /// `Pair::tag` and its fully qualified `a::record::Pair::tag` spelling
     /// select the same implementation without conflating another module's
     /// `Pair`.
-    fn associated_path_key(&self, path: &ast::Path) -> Option<String> {
+    pub(crate) fn associated_path_key(&self, path: &ast::Path) -> Option<String> {
         let function = path.segments.last()?;
         let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
         let id = self.resolved.resolved(owner.span)?;

@@ -3225,7 +3225,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Find `name` in the nearest enclosing scope.
     /// `name` where a value is not possible: a type, or the head of a path
     /// (`state::Busy`). A bare field name binds only values, so a field
     /// spelled like a type never hides the type (#380).
@@ -3240,6 +3239,7 @@ impl<'a> Resolver<'a> {
         self.lookup_outside_scopes(name)
     }
 
+    /// Find `name` in the nearest enclosing scope.
     fn lookup(&self, name: &str) -> Option<DefId> {
         for scope in self.scopes.iter().rev() {
             if let Some(id) = scope.get(name) {

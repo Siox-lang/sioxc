@@ -503,6 +503,12 @@ struct Checker<'a> {
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
+    /// (type head, method name) -> the declarations defining it, so a
+    /// method call joins the call graph the testbench-only check walks.
+    method_ids: HashMap<(String, String), Vec<DefId>>,
+    /// Struct and trait members with a receiver, which a bare call cannot
+    /// supply (`read_v(2)` for `self.read_v(2)`).
+    receiver_members: HashSet<DefId>,
     /// `(type head, method name)` -> the traits whose impls define it, so a
     /// method two traits share is ambiguous unqualified.
     method_traits: HashMap<(String, String), Vec<String>>,
