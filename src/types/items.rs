@@ -142,12 +142,18 @@ impl<'a> Checker<'a> {
                 }
                 // A generic fn's body is verified at each call (it inlines),
                 // where the concrete types are known; checking it abstractly
-                // (operators on the opaque `T`) would wrongly reject it.
-                if f.generics.params.is_empty() {
-                    if let Some(b) = &f.body {
-                        self.check_function_block(f, b, None, true);
-                    }
-                } else if let Some(body) = &f.body {
+                // (operators on the opaque `T`) would wrongly reject it. One
+                // generic only over values (`<W: integer>`) has no opaque
+                // type, and its calls bind no type to check it with, so it
+                // is checked here (#386).
+                let value_only = f.generics.params.iter().all(|parameter| {
+                    parameter
+                        .bound
+                        .as_ref()
+                        .and_then(type_head_name)
+                        .is_some_and(|head| head == "integer")
+                });
+                if let Some(body) = f.body.as_ref().filter(|_| !f.generics.params.is_empty()) {
                     for statement in &body.stmts {
                         if let Stmt::Let(declaration) = statement {
                             if declaration.is_static {
@@ -155,6 +161,12 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
+                }
+                if value_only {
+                    if let Some(b) = &f.body {
+                        self.check_function_block(f, b, None, true);
+                    }
+                } else if let Some(body) = &f.body {
                     // Operator/type checks wait for monomorphization, but
                     // reaching the end without a value is independent of the
                     // concrete type arguments and is already invalid here.

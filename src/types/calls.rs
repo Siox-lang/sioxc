@@ -554,6 +554,44 @@ impl<'a> Checker<'a> {
                     },
                 }
             }
+            // `-> unsigned[W]` of `fn id<W: integer>(x: unsigned[W])`: `W`
+            // is the length of the argument declared with it (#386).
+            Type::Indexed {
+                base,
+                index: Some(index),
+                span,
+            } if self.value_generic(index, function).is_some() => {
+                let name = self.value_generic(index, function).unwrap_or_default();
+                let Some((_, params)) = self.generic_fns.get(&function) else {
+                    return Ty::Error;
+                };
+                let length = params.iter().zip(args).find_map(|(parameter, argument)| {
+                    let Some(Type::Indexed {
+                        index: Some(declared),
+                        ..
+                    }) = parameter
+                    else {
+                        return None;
+                    };
+                    (self.value_generic(declared, function).as_deref() == Some(name.as_str()))
+                        .then(|| match self.type_of(argument, sym) {
+                            Ty::Array { len, .. } => Some(len),
+                            _ => None,
+                        })
+                        .flatten()
+                });
+                let Some(length) = length else {
+                    return self.ast_ty(declared);
+                };
+                self.ast_ty(&Type::Indexed {
+                    base: base.clone(),
+                    index: Some(Box::new(Expr::Int {
+                        text: length.to_string(),
+                        span: *span,
+                    })),
+                    span: *span,
+                })
+            }
             Type::Path(path) if path.segments.len() == 1 => {
                 let parameter_name = &path.segments[0].text;
                 match self.generic_fns.get(&function) {
@@ -585,6 +623,45 @@ impl<'a> Checker<'a> {
 
     /// What `name` stands for when a parameter written `ty` takes an argument
     /// of type `argument`.
+    /// The value parameter (`W` of `<W: integer>`) `index` names, if any.
+    fn value_generic(&self, index: &Expr, function: DefId) -> Option<String> {
+        let Expr::Path(path) = index else {
+            return None;
+        };
+        let [segment] = path.segments.as_slice() else {
+            return None;
+        };
+        let (generics, _) = self.generic_fns.get(&function)?;
+        generics
+            .iter()
+            .any(|parameter| {
+                parameter.name.text == segment.text
+                    && parameter
+                        .bound
+                        .as_ref()
+                        .and_then(type_head_name)
+                        .is_some_and(|head| head == "integer")
+            })
+            .then(|| segment.text.clone())
+    }
+
+    /// Every type `name` takes where it appears inside `ty` (`(T, T)` gives
+    /// two), for bound and consistency checks.
+    pub(super) fn type_param_occurrences(ty: &Type, argument: &Ty, name: &str, out: &mut Vec<Ty>) {
+        match (ty, argument) {
+            _ if Self::is_direct_type_param(ty, name) => out.push(argument.clone()),
+            (Type::Indexed { base, .. }, Ty::Array { elem, .. }) => {
+                Self::type_param_occurrences(base, elem, name, out)
+            }
+            (Type::Tuple { elems, .. }, Ty::Tuple(arguments)) => {
+                for (elem, argument) in elems.iter().zip(arguments) {
+                    Self::type_param_occurrences(elem, argument, name, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn bind_type_param(ty: &Type, argument: &Ty, name: &str) -> Option<Ty> {
         match (ty, argument) {
             _ if Self::is_direct_type_param(ty, name) => {
