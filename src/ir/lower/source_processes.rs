@@ -1268,9 +1268,6 @@ pub fn lower(
             }
         }
 
-        // Storages pushed from here on are function `static let`s, created
-        // as their functions are lowered into this test's processes.
-        let statics_from = process_ir.storages.len();
         // Initializers are ordinary canonical CFGs with an earlier activation
         // boundary. Their locals, returned calls and suspension are real state,
         // never an expression evaluated against a fake process id.
@@ -1563,7 +1560,6 @@ pub fn lower(
             test_processes.push(id);
         }
 
-        initialize_function_statics(&mut process_ir, statics_from, &test_processes);
         process_ir.tests.push(ProcessTest {
             entity: test.entity,
             root: test.root,
@@ -2613,8 +2609,7 @@ fn lower_statement(
         Stmt::Let(declaration)
             if declaration.is_static && !context.inline_return_blocks.is_empty() =>
         {
-            lower_function_static(declaration, process, context);
-            Some(block)
+            lower_function_static(declaration, process, context, block)
         }
         // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
         // struct's construct has no field types to give its values, but the
@@ -6550,96 +6545,123 @@ fn push_local(
     id
 }
 
-/// A root's initialization CFG owns every initializer write, so a function
-/// static's retained initializer is written first in it, before any other
-/// initializer can call the function. Without one, the backend applies the
-/// retained initializer itself.
-fn initialize_function_statics(
-    process_ir: &mut ProcessIr,
-    statics_from: usize,
-    test_processes: &[ProcessId],
-) {
-    let Some(&init) = test_processes.iter().find(|id| {
-        matches!(
-            process_ir.processes[id.0 as usize].activation,
-            ProcessActivation::Initialization
-        )
-    }) else {
-        return;
-    };
-    for index in (statics_from..process_ir.storages.len()).rev() {
-        let storage = &process_ir.storages[index];
-        let (id, span) = (storage.id, storage.span);
-        let Some(value) = storage.initializer else {
-            continue;
-        };
-        // Any value naming the storage is a place for it; an unread,
-        // unwritten static has none and needs no write.
-        let Some(target) = process_ir
-            .values
-            .iter()
-            .position(|value| matches!(value.kind, ProcessValueKind::Storage(at) if at == id))
-        else {
-            continue;
-        };
-        let process = &mut process_ir.processes[init.0 as usize];
-        let entry = process.entry.0 as usize;
-        process.blocks[entry].instructions.insert(
-            0,
-            ProcessInstruction::Assign {
-                semantics: ProcessAssignment::ImmediateStorage,
-                driver_context: None,
-                target: crate::ir::ProcessValueId(target as u32),
-                value,
-                span,
-            },
-        );
-    }
-}
-
-/// Create the storage of a function's `static let` on first reach: one per
-/// test root and declaration, found again by every later call. Its constant
-/// initializer is retained on the storage; the per-test tail moves it into
-/// the root's initialization CFG when there is one, so it is written once
-/// before any process runs.
+/// A function's `static let`: one storage per test root and declaration,
+/// found again by every later call, plus a flag saying whether its
+/// initializer has run. The first call to reach the declaration runs it.
 fn lower_function_static(
     declaration: &ast::LetDecl,
     process: &mut ProcessCfg,
     context: &mut LoweringContext<'_>,
-) {
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
     let Some(definition) = context.resolved.declared(declaration.name.span) else {
-        return;
+        return Some(block);
     };
     let owner = process.owner;
-    if context
+    let existing = context
         .process_ir
         .storages
         .iter()
-        .any(|storage| storage.owner == owner && storage.source == Some(definition))
-    {
-        return;
-    }
-    // The type and layout a local of this declaration would have.
+        .find(|storage| storage.owner == owner && storage.source == Some(definition))
+        .map(|storage| storage.id);
+    // The type and layout a local of this declaration would have; the local
+    // stays while the initializer is lowered, so a generic struct keeps its
+    // layout (#385).
     push_local(process, declaration, context);
-    let Some(local) = process.locals.pop() else {
-        return;
+    let local = process.locals.last().cloned()?;
+    let (storage, flag) = match existing {
+        Some(storage) => (storage, ProcessStorageId(storage.0 + 1)),
+        None => {
+            let storage = ProcessStorageId(context.process_ir.storages.len() as u32);
+            context.process_ir.storages.push(ProcessStorage {
+                id: storage,
+                owner,
+                name: format!("<static>{}", declaration.name.text),
+                source: Some(definition),
+                span: declaration.span,
+                ty: local.ty.clone(),
+                layout: local.layout.clone(),
+                initializer: None,
+                bindings: Vec::new(),
+            });
+            // Whether the initializer has run: one bit of state beside it.
+            let flag = ProcessStorageId(context.process_ir.storages.len() as u32);
+            context.process_ir.storages.push(ProcessStorage {
+                id: flag,
+                owner,
+                name: format!("<static-init>{}", declaration.name.text),
+                source: None,
+                span: declaration.span,
+                ty: Some(crate::types::Ty::Integer),
+                layout: None,
+                initializer: None,
+                bindings: Vec::new(),
+            });
+            (storage, flag)
+        }
     };
-    let initializer = declaration
-        .value
-        .as_ref()
-        .map(|value| value_ref_with_type(value, process, context, local.ty.as_ref()));
-    let id = ProcessStorageId(context.process_ir.storages.len() as u32);
-    context.process_ir.storages.push(ProcessStorage {
-        id,
-        owner,
-        name: format!("<static>{}", declaration.name.text),
-        source: Some(definition),
-        span: declaration.span,
-        ty: local.ty,
-        layout: local.layout,
-        initializer,
-        bindings: Vec::new(),
-    });
+    let Some(value) = &declaration.value else {
+        process.locals.pop();
+        return Some(block);
+    };
+    // Initialized on first reach, as an ordinary assignment of this process,
+    // so a call in the initializer is lowered like any other (#385): the
+    // name is not in scope before its declaration, so nothing can tell.
+    let span = declaration.span;
+    let integer = Some(crate::types::Ty::Integer);
+    let initialized = push_value(
+        span,
+        integer.clone(),
+        Some(64),
+        ProcessValueKind::Storage(flag),
+        context,
+    );
+    let first = process.push_block();
+    let join = process.push_block();
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Branch {
+        condition: initialized,
+        then_block: join,
+        else_block: first,
+    };
+    let target = push_value(
+        span,
+        local.ty.clone(),
+        local.layout.as_ref().and_then(SourceLayout::packed_width),
+        ProcessValueKind::Storage(storage),
+        context,
+    );
+    if let Some(layout) = &local.layout {
+        context.process_ir.value_layouts[target.0 as usize] = Some(layout.clone());
+    }
+    let value = value_ref_with_type(value, process, context, local.ty.as_ref());
+    let one = push_value(
+        span,
+        integer,
+        Some(64),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+        context,
+    );
+    let flag_target = push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::Storage(flag),
+        context,
+    );
+    for (target, value) in [(target, value), (flag_target, one)] {
+        process.blocks[first.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateStorage,
+                driver_context: None,
+                target,
+                value,
+                span,
+            });
+    }
+    process.blocks[first.0 as usize].terminator = ProcessTerminator::Goto(join);
+    process.locals.pop();
+    Some(join)
 }
 
 /// Resolve an enum-variant declaration to its elaborated discriminant while
