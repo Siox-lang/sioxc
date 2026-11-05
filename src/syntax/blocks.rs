@@ -49,12 +49,26 @@ pub fn flatten(modules: &mut [Module], sink: &mut DiagnosticSink) {
                 continue;
             }
             let mut visible: HashSet<String> = implementation_names(&implementation.items);
+            // `impl<N: integer> Top<N>`: a member may not shadow `N` (#402).
+            visible.extend(
+                implementation
+                    .params
+                    .params
+                    .iter()
+                    .map(|parameter| parameter.name.text.clone()),
+            );
             if let Some(target) = head_name(&implementation.target) {
                 visible.extend(ports.get(&target).cloned().unwrap_or_default());
             }
             let items = std::mem::take(&mut implementation.items);
             let mut flat = Flat {
                 taken: visible.clone(),
+                generics: implementation
+                    .params
+                    .params
+                    .iter()
+                    .map(|parameter| parameter.name.text.clone())
+                    .collect(),
                 sink,
             };
             let mut out = Vec::new();
@@ -69,7 +83,8 @@ pub fn flatten(modules: &mut [Module], sink: &mut DiagnosticSink) {
             }
             let scope = Scope {
                 prefix: String::new(),
-                visible: HashSet::new(),
+                // Generic parameters are visible to every block (#402).
+                visible: flat.generics.clone(),
                 renames: HashMap::new(),
                 labels: HashMap::new(),
             };
@@ -134,6 +149,8 @@ struct Child {
 struct Flat<'s> {
     /// Every flattened name in the implementation, for collisions.
     taken: HashSet<String>,
+    /// The implementation's generic parameters, visible everywhere in it.
+    generics: HashSet<String>,
     sink: &'s mut DiagnosticSink,
 }
 
@@ -238,11 +255,13 @@ impl Flat<'_> {
             self.scope(own, nested, &scope, false, out);
         }
         // This scope's own members, renamed.
+        let generics = self.generics.clone();
         let rewrite = Rewrite {
             renames: &renames,
             labels: &labels,
             children: &children,
             names: &names,
+            generics: &generics,
         };
         for mut item in items {
             match &mut item {
@@ -339,7 +358,14 @@ impl Flat<'_> {
                         }
                     }
                     Stmt::Match(m) => stack.extend(m.arms.iter().map(|arm| &arm.body)),
-                    Stmt::For { body, .. } | Stmt::While { body, .. } => stack.push(body),
+                    // A loop variable hides a member as a `let` does (#402).
+                    Stmt::For { var, body, .. } => {
+                        if renames.contains_key(&var.text) {
+                            self.shadow(&var.text, var.span);
+                        }
+                        stack.push(body);
+                    }
+                    Stmt::While { body, .. } => stack.push(body),
                     _ => {}
                 }
             }
@@ -375,18 +401,26 @@ struct Rewrite<'r> {
     labels: &'r HashMap<String, Label>,
     children: &'r [Child],
     names: &'r HashSet<String>,
+    generics: &'r HashSet<String>,
 }
 
 impl Rewrite<'_> {
     fn item(&self, item: &mut ImplItem, sink: &mut DiagnosticSink) {
-        crate::syntax::walk::walk_impl_item(item, &mut |e| self.expr(e, sink));
+        let locals = bound_names(item);
+        crate::syntax::walk::walk_impl_item(item, &mut |e| self.expr(e, &locals, sink));
     }
 
-    fn expr(&self, e: &mut Expr, sink: &mut DiagnosticSink) -> bool {
+    fn expr(&self, e: &mut Expr, locals: &HashSet<String>, sink: &mut DiagnosticSink) -> bool {
         match e {
             Expr::Path(path) if path.segments.len() == 1 => {
                 let name = path.segments[0].text.clone();
                 let name = &name;
+                // A parameter, `let` or loop variable of the function or
+                // process: its own, never a block member's (#402). One that
+                // hides a member is reported by `process_locals`.
+                if locals.contains(name) || self.generics.contains(name) {
+                    return true;
+                }
                 if let Some(flat) = self.renames.get(name) {
                     path.segments[0].text = flat.clone();
                 } else if !self.names.contains(name) {
@@ -467,6 +501,61 @@ impl Rewrite<'_> {
             _ => true,
         }
     }
+}
+
+/// The names a function or process binds for itself: parameters, generic
+/// parameters, `let`s and loop variables anywhere in its body.
+// ponytail: one set per item, not per lexical scope, so a name bound late in
+// a body is also left alone before its binding; a block member it would hide
+// is an error anyway.
+fn bound_names(item: &ImplItem) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let body = match item {
+        ImplItem::Fn(function) => {
+            names.extend(
+                function
+                    .params
+                    .iter()
+                    .filter_map(|parameter| parameter.name.as_ref().map(|name| name.text.clone())),
+            );
+            names.extend(function.generics.params.iter().map(|p| p.name.text.clone()));
+            function.body.as_ref()
+        }
+        ImplItem::Process(process) => Some(&process.body),
+        _ => None,
+    };
+    let mut stack: Vec<&Block> = body.into_iter().collect();
+    while let Some(block) = stack.pop() {
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Let(declaration) => {
+                    names.insert(declaration.name.text.clone());
+                }
+                Stmt::For { var, body, .. } => {
+                    names.insert(var.text.clone());
+                    stack.push(body);
+                }
+                Stmt::While { body, .. } => stack.push(body),
+                Stmt::If(chain) => {
+                    let mut link = Some(chain);
+                    while let Some(current) = link {
+                        stack.push(&current.then);
+                        link = match current.else_.as_deref() {
+                            Some(ElseBranch::If(next)) => Some(next),
+                            Some(ElseBranch::Block(block)) => {
+                                stack.push(block);
+                                None
+                            }
+                            None => None,
+                        };
+                    }
+                }
+                Stmt::Match(m) => stack.extend(m.arms.iter().map(|arm| &arm.body)),
+                _ => {}
+            }
+        }
+    }
+    names
 }
 
 fn impl_item_span(item: &ImplItem) -> Span {

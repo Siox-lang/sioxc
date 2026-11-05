@@ -2333,7 +2333,16 @@ impl<'a> Parser<'a> {
             );
         }
         let object = if self.eat(TokenKind::For) {
-            Some(self.parse_ident())
+            // `attr keep for counter.wrapped = true;`: a block member, named
+            // as its flattened signal is (#402).
+            let mut object = self.parse_ident();
+            while self.at(TokenKind::Dot) {
+                self.bump();
+                let member = self.parse_ident();
+                object.text = format!("{}.{}", object.text, member.text);
+                object.span = Span::new(object.span.file, object.span.start..member.span.end);
+            }
+            Some(object)
         } else {
             None
         };
