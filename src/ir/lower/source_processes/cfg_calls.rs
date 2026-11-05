@@ -729,7 +729,10 @@ fn inline_call_once(
         _ => return None,
     };
     let body = function.body.as_ref()?;
-    function.ret.as_ref()?;
+    // A procedure (no result) comes here when it recurses, for the frame a
+    // statement-level expansion has no means to keep (#392); its result is
+    // an unread integer.
+    let procedure = function.ret.is_none();
     if context.inline_functions.contains(&function.span) {
         if let Some(frame) = context
             .frames
@@ -795,6 +798,9 @@ fn inline_call_once(
     }
     let mut node = context.process_ir.values[call.0 as usize].clone();
     let generic_argument = generic_return_argument(function, arguments);
+    if procedure {
+        node.ty = Some(crate::types::Ty::Integer);
+    }
     node.ty = node
         .ty
         .filter(|ty| is_concrete_type(ty, context))
@@ -930,6 +936,15 @@ fn inline_call_once(
         context.frames.last_mut()?.written = written;
     }
     finish_inline_call(scope, entry, first_local, process);
+    // A procedure may end without `return`: it returns there.
+    let tail = match tail {
+        Some(tail) if procedure => {
+            process.blocks[tail.0 as usize].terminator =
+                ProcessTerminator::Goto(dispatch.unwrap_or(resume));
+            None
+        }
+        tail => tail,
+    };
     let body_end = process.blocks.len();
     let mut supported = tail.is_none();
     for index in first_body_block..body_end {

@@ -504,19 +504,18 @@ fn recursive_procedure_fails_before_argument_or_callee_effects() {
         )
         .with_output(&binary),
     );
+    // A recursive procedure keeps a frame (#392), but this one writes its
+    // parameter back to an implementation signal, which a frame's copy
+    // cannot reach: refused where it is compiled, so no foreign argument
+    // runs at all. It used to build and fail at run time.
+    assert!(!compilation.succeeded());
     assert!(
-        compilation.succeeded(),
+        compilation.render_diagnostics().contains(
+            "`recurse` calls itself, directly or through other calls, and cannot keep a frame"
+        ),
         "{}",
         compilation.render_diagnostics()
     );
-    let output = Command::new(&binary).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        !stdout.contains('@'),
-        "foreign argument executed before unsupported call: {stdout}"
-    );
-    assert!(stdout.contains("direct Process IR lowering is incomplete"));
     let _ = std::fs::remove_file(binary);
 }
 
