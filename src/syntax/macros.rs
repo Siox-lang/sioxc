@@ -1482,6 +1482,15 @@ fn derive_text(
         Some(crate::syntax::ast::Type::Tuple { elems, .. }) => (0..elems.len())
             .map(|position| (format!("self.{position}"), format!("rhs.{position}")))
             .collect(),
+        // A newtype over a plain array (`struct Byte(Bit[8])`) has no
+        // conversion to its base: a plain array is no family. It compares
+        // element by element in declared order, read on the newtype itself
+        // (#405).
+        Some(base) if plain_array_positions(base).is_some() => plain_array_positions(base)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|index| (format!("self[{index}]"), format!("rhs[{index}]")))
+            .collect(),
         Some(base) => {
             let base = crate::syntax::pretty::type_str(base);
             vec![(format!("{base}(self)"), format!("{base}(rhs)"))]
@@ -1517,6 +1526,52 @@ fn derive_text(
             lexicographic(&operands, "<"),
             lexicographic(&operands, "<="),
         ),
+    })
+}
+
+/// The indices of a plain array of a kernel or logic element with a literal
+/// size (`Bit[8]`, `Logic[3..0]`), in declared order; `None` for anything
+/// else, a vector family (`unsigned[8]`) among them.
+// ponytail: an array of a user enum or struct is read as a family and keeps
+// the conversion, which fails; it needs the module's declarations here.
+fn plain_array_positions(base: &crate::syntax::ast::Type) -> Option<Vec<i64>> {
+    use crate::syntax::ast::{Expr, Type};
+    let Type::Indexed {
+        base: element,
+        index: Some(index),
+        ..
+    } = base
+    else {
+        return None;
+    };
+    let Type::Path(path) = element.as_ref() else {
+        return None;
+    };
+    let [head] = path.segments.as_slice() else {
+        return None;
+    };
+    if !matches!(
+        head.text.as_str(),
+        "Bit" | "Logic" | "ULogic" | "Bool" | "integer" | "natural" | "real" | "Char"
+    ) {
+        return None;
+    }
+    let literal = |e: &Expr| match e {
+        Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
+        _ => None,
+    };
+    let (left, right) = match index.as_ref() {
+        Expr::Range { lo, hi, .. } => (literal(lo)?, literal(hi)?),
+        size => (0, literal(size)? - 1),
+    };
+    // ponytail: unrolled, so a large array writes a long impl; bounded here.
+    if left.abs_diff(right) >= 256 {
+        return None;
+    }
+    Some(if left <= right {
+        (left..=right).collect()
+    } else {
+        (right..=left).rev().collect()
     })
 }
 

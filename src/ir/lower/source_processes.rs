@@ -7542,6 +7542,30 @@ fn lower_process_raw_resize(
     if args.len() != 1 {
         return None;
     }
+    // `Byte(['0', '1', ..])`: an array of bit characters is the bit string
+    // it spells, which reads through the newtype's field; an unpacked array
+    // into a packed newtype had no lowering (#405).
+    let spelled = match &args[0] {
+        ast::Expr::Array { elems, span }
+            if !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|elem| matches!(elem, ast::Expr::CharLit { .. })) =>
+        {
+            Some(ast::Expr::StrLit {
+                text: elems
+                    .iter()
+                    .filter_map(|elem| match elem {
+                        ast::Expr::CharLit { ch, .. } => Some(*ch),
+                        _ => None,
+                    })
+                    .collect(),
+                span: *span,
+            })
+        }
+        _ => None,
+    };
+    let argument = spelled.as_ref().unwrap_or(&args[0]);
     let target = match callee.as_ref() {
         ast::Expr::Index { base, index, .. } => {
             let ast::Expr::Path(path) = base.as_ref() else {
@@ -7608,7 +7632,7 @@ fn lower_process_raw_resize(
             if packed {
                 // A string literal is the vector under the family: `B("0110")`
                 // for `struct B(Bit[4])` lowered "0110" as text.
-                let operand_type = match (&args[0], target) {
+                let operand_type = match (argument, target) {
                     (
                         ast::Expr::StrLit { .. },
                         Some(crate::types::Ty::Array { elem, len, low, .. }),
@@ -7620,12 +7644,12 @@ fn lower_process_raw_resize(
                     }),
                     _ => context
                         .typed
-                        .expr_type(ast::expr_span(&args[0]))
+                        .expr_type(ast::expr_span(argument))
                         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                         .cloned(),
                 };
                 let operand =
-                    value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+                    value_ref_with_type(argument, process, context, operand_type.as_ref());
                 let width = context.process_ir.values[operand.0 as usize].bit_width?;
                 let (elem, len) = match process_value_type(operand, context) {
                     Some(crate::types::Ty::Array { elem, len, .. }) if len > 0 => (elem, len),
@@ -7676,7 +7700,7 @@ fn lower_process_raw_resize(
     // A string literal reads through the newtype's field: `B("0110")` with
     // `struct B(Bit[4])` lowered "0110" as text, which no raw resize can
     // carry.
-    let field_type = match (&args[0], &target) {
+    let field_type = match (argument, &target) {
         (ast::Expr::StrLit { .. }, crate::types::Ty::Array { elem, len, low, .. }) => {
             Some(crate::types::Ty::Array {
                 elem: elem.clone(),
@@ -7700,23 +7724,23 @@ fn lower_process_raw_resize(
     // its fields' widths from the newtype: on its own it typed as plain
     // integers (#383).
     let tuple_literal = matches!(
-        (&args[0], &target),
+        (argument, &target),
         (
             ast::Expr::Construct { ty: None, .. },
             crate::types::Ty::Named(_)
         )
     );
     let operand_type = field_type
-        .or_else(|| literal_arithmetic(&args[0]).map(|_| target.clone()))
+        .or_else(|| literal_arithmetic(argument).map(|_| target.clone()))
         .or_else(|| tuple_literal.then(|| target.clone()))
         .or_else(|| {
             context
                 .typed
-                .expr_type(ast::expr_span(&args[0]))
+                .expr_type(ast::expr_span(argument))
                 .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                 .cloned()
         });
-    let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+    let operand = value_ref_with_type(argument, process, context, operand_type.as_ref());
     // `Wrapper(Inner { .x = 42 })`, `Pair((1, 2))`: a newtype derives its
     // base's fields, so a constructed base is the newtype built from the same
     // fields. A raw resize of an aggregate construct did not lower (#176).
