@@ -47,7 +47,12 @@ fn unlabelled_processes_across_impls_get_distinct_registers() {
     let file = dir.join("unlabelled.siox");
     std::fs::write(&file, I379_UNLABELLED).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std"), "--emit", "ir"])
+        .args([
+            "--std",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+            "--emit",
+            "ir",
+        ])
         .arg(&file)
         .output()
         .unwrap();
