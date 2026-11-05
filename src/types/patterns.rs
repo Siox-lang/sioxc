@@ -44,7 +44,9 @@ impl<'a> Checker<'a> {
                 let half = 1i128 << (width - 1);
                 Some((-half, half - 1))
             }
-            Some("unsigned") => Some((0, (1i128 << width) - 1)),
+            // `2^width - 1` without the shift into the sign bit, which
+            // overflowed at 127 bits (#409).
+            Some("unsigned") => Some((0, i128::MAX >> (127 - width))),
             _ => None,
         }
     }
@@ -78,19 +80,23 @@ impl<'a> Checker<'a> {
         // none does, the gap runs to the top of the domain.
         let mut frontier = lo;
         let mut gap_end = hi;
+        // Reaching `hi` covers the rest: one past it does not exist at the
+        // top of a 127-bit domain, where `hi` is `i128::MAX` (#409).
+        let mut complete = false;
         for (start, end) in covered {
             if start > frontier {
                 gap_end = (start - 1).min(hi);
                 break;
             }
-            frontier = frontier.max(end.saturating_add(1));
-            if frontier > hi {
+            if end >= hi {
+                complete = true;
                 break;
             }
+            frontier = frontier.max(end + 1);
         }
         // Every value is named: a target every arm assigns is no latch, and
         // a function's arms all return (#347).
-        if frontier > hi {
+        if complete {
             self.covered_tuple_matches.insert(span);
             return;
         }

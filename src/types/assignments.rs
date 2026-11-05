@@ -403,7 +403,11 @@ impl<'a> Checker<'a> {
                 },
                 _,
             ) => {
-                if let Some(constant) = self.constant_value(value) {
+                if let Some(constant) = self
+                    .constant_value(value)
+                    .map(i128::from)
+                    .or_else(|| Self::fit_literal(value))
+                {
                     self.check_fits_width(constant, *len, expr_span(value));
                 }
             }

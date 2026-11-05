@@ -303,10 +303,12 @@ impl<'a> Checker<'a> {
                 _ => signed_lit(e),
             }
         }
-        let Some(v) = args
-            .first()
-            .and_then(|arg| const_fold(arg).or_else(|| self.constant_value(arg)))
-        else {
+        let Some(v) = args.first().and_then(|arg| {
+            const_fold(arg)
+                .or_else(|| self.constant_value(arg))
+                .map(i128::from)
+                .or_else(|| Self::fit_literal(arg))
+        }) else {
             return;
         };
         self.check_fits_width(v, width as u32, expr_span(site));

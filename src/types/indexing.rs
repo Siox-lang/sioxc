@@ -8,25 +8,15 @@ impl<'a> Checker<'a> {
     /// wherever it meets a sized vector — a conversion or a comparison. No
     /// signedness: a literal fits an N-bit vector if it lands in the union of
     /// the unsigned (`0..2^N`) and signed (`-2^(N-1)..`) ranges.
-    pub(super) fn check_fits_width(&mut self, v: i64, width: u32, span: Span) {
-        if !(1..=64).contains(&width) {
+    pub(super) fn check_fits_width(&mut self, v: i128, width: u32, span: Span) {
+        if !(1..=127).contains(&width) {
             return;
         }
-        // Both bounds are computed in `i64` and so saturate near its top:
-        // `1i64 << 63` is already `i64::MIN`, which makes `- 1` overflow at
-        // width 63 and the negation overflow at width 64. Those widths are
-        // exactly where a bit vector meets a plain integer literal, so this is
-        // reachable from any `a == 5` on a 63- or 64-bit signal.
-        let hi = if width >= 63 {
-            i64::MAX
-        } else {
-            (1i64 << width) - 1
-        };
-        let lo = if width >= 64 {
-            i64::MIN
-        } else {
-            -(1i64 << (width - 1))
-        };
+        // Bounds in `i128`, so a literal up to `u64::MAX` (`0x8000_..` and
+        // above, #410) is checked as any other: the unsigned top `2^width -
+        // 1` and the signed bottom `-2^(width - 1)`.
+        let hi = i128::MAX >> (127 - width);
+        let lo = -(1i128 << (width - 1));
         if v < lo || v > hi {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -34,6 +24,16 @@ impl<'a> Checker<'a> {
                 format!("`{v}` does not fit in a {width}-bit vector"),
             );
         }
+    }
+
+    /// A literal's value for a width check: as [`Self::const_literal`], or
+    /// an integer literal from `2^63` to `u64::MAX`, which no `i64` holds
+    /// (#410).
+    pub(super) fn fit_literal(e: &Expr) -> Option<i128> {
+        Self::const_literal(e).map(i128::from).or_else(|| match e {
+            Expr::Int { text, .. } => unsigned_lit_text(text).map(i128::from),
+            _ => None,
+        })
     }
 
     /// Const-fold a literal arithmetic expression (`3`, `0 - 3`). `None` once
