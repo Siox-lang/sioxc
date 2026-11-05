@@ -17,6 +17,7 @@ pub(super) use source::*;
 pub(super) use substitute::*;
 pub(super) use types::*;
 
+pub(in crate::ir) use builders::expr_is_event;
 pub use builders::{eval_const_fns, eval_const_stmts};
 pub(in crate::ir) use substitute::{label_chain, subst_stmt};
 pub use substitute::{loop_range, subst_expr_paths, subst_stmt_paths};

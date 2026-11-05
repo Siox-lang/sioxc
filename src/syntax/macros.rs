@@ -1552,6 +1552,9 @@ pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
                 _ => None,
             })
             .collect();
+        // Unlabelled processes are numbered per entity across all its
+        // implementations, `process#0`, a spelling no label can take.
+        let mut unlabelled: HashMap<String, usize> = HashMap::new();
         for item in &mut module.items {
             let Item::Impl(implementation) = item else {
                 continue;
@@ -1564,18 +1567,22 @@ pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
                 },
                 _ => None,
             };
-            if target.is_none_or(|name| tests.contains(&name)) {
+            let Some(target) = target.filter(|name| !tests.contains(name)) else {
                 continue;
-            }
+            };
             let mut registers = Vec::new();
-            for (index, member) in implementation.items.iter_mut().enumerate() {
+            for member in implementation.items.iter_mut() {
                 let ImplItem::Process(process) = member else {
                     continue;
                 };
-                let label = process
-                    .label
-                    .as_ref()
-                    .map_or_else(|| format!("process{index}"), |label| label.text.clone());
+                let label = match &process.label {
+                    Some(label) => label.text.clone(),
+                    None => {
+                        let count = unlabelled.entry(target.clone()).or_default();
+                        *count += 1;
+                        format!("process#{}", *count - 1)
+                    }
+                };
                 registers.extend(process_registers(process, &label, sink));
             }
             implementation
@@ -1690,10 +1697,12 @@ fn clock_write_backs(
                     // A next-state update: the local's final value.
                     current.then.stmts.extend(write_backs.iter().cloned());
                 } else if clocked_link {
-                    // An asynchronous reset is level-sensitive: write the
-                    // register with each assigned value itself, as a plain
-                    // signal would be, so the write reads no feedback.
-                    mirror_writes(&mut current.then, names, write_backs);
+                    // An asynchronous reset is level-sensitive: the branch
+                    // reads and writes the register itself, as it would a
+                    // plain signal, so no write reads the local's feedback.
+                    // A method call on the static (`c.reset()`) then
+                    // changes the register too.
+                    to_registers(&mut current.then, names, write_backs);
                 }
                 link = match current.else_.as_deref_mut() {
                     Some(ElseBranch::If(next)) => Some(next),
@@ -1766,78 +1775,30 @@ fn clock_write_backs(
     }
 }
 
-/// After each write to a static in `block` (at any depth), write its
-/// register with the same value.
-fn mirror_writes(block: &mut Block, names: &[String], write_backs: &[Stmt]) {
-    let mut index = 0;
-    while index < block.stmts.len() {
-        match &mut block.stmts[index] {
-            Stmt::If(chain) => {
-                let mut link = Some(chain);
-                while let Some(current) = link {
-                    mirror_writes(&mut current.then, names, write_backs);
-                    link = match current.else_.as_deref_mut() {
-                        Some(ElseBranch::If(next)) => Some(next),
-                        Some(ElseBranch::Block(inner)) => {
-                            mirror_writes(inner, names, write_backs);
-                            None
-                        }
-                        None => None,
-                    };
-                }
-            }
-            Stmt::Match(m) => {
-                for arm in &mut m.arms {
-                    mirror_writes(&mut arm.body, names, write_backs);
-                }
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                mirror_writes(body, names, write_backs)
-            }
+/// Rename every use of a static in `block` to its register.
+fn to_registers(block: &mut Block, names: &[String], write_backs: &[Stmt]) {
+    let registers: HashMap<&str, String> = names
+        .iter()
+        .zip(write_backs)
+        .filter_map(|(name, write)| match write {
             Stmt::Assign {
-                target,
-                value,
-                after: None,
-                span,
+                target: Expr::Path(register),
                 ..
-            } => {
-                let mirrored = names.iter().zip(write_backs).find_map(|(name, write)| {
-                    let Stmt::Assign {
-                        target: Expr::Path(register),
-                        ..
-                    } = write
-                    else {
-                        return None;
-                    };
-                    let mut copy = target.clone();
-                    let mut root = &mut copy;
-                    while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
-                        root = base;
+            } => Some((name.as_str(), register.segments.first()?.text.clone())),
+            _ => None,
+        })
+        .collect();
+    for statement in &mut block.stmts {
+        crate::syntax::walk::walk_stmt(statement, &mut |e| {
+            if let Expr::Path(path) = e {
+                if let [segment] = path.segments.as_mut_slice() {
+                    if let Some(register) = registers.get(segment.text.as_str()) {
+                        segment.text = register.clone();
                     }
-                    match root {
-                        Expr::Path(path)
-                            if path.segments.len() == 1 && path.segments[0].text == *name =>
-                        {
-                            *path = register.clone();
-                            Some(Stmt::Assign {
-                                label: None,
-                                target: copy,
-                                value: value.clone(),
-                                after: None,
-                                span: *span,
-                            })
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some(mirrored) = mirrored {
-                    block.stmts.insert(index + 1, mirrored);
-                    index += 1;
                 }
             }
-            _ => {}
-        }
-        index += 1;
+            true
+        });
     }
 }
 

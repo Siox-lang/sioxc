@@ -1710,8 +1710,17 @@ void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
     }
     sx_settle_resume_block = resume_block;
     sx_suspension_kind = SX_SUSPENSION_SETTLE;
-    /* The condition of an `await <condition> for <time>` held: its timer, the
-     * only resume event a running process can own, must not fire. */
+}
+
+/* The settle ending an `await <condition> for <time>`: the condition held,
+ * so its timer, the only resume event a running process can own, must not
+ * fire. Only this settle disarms it; a settle inside the condition (a helper
+ * writing a signal) leaves it armed. */
+void sx_runtime_settle_await(uint32_t process, uint32_t resume_block,
+                             uint64_t delay) {
+    (void)delay;
+    sx_runtime_settle(process, resume_block);
+    if (sx_error) return;
     if (sx_armed_timeouts) {
         for (sx_event **at = &sx_events; *at; at = &(*at)->next) {
             if ((*at)->timeout && (*at)->target == process) {
@@ -1723,6 +1732,19 @@ void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
             }
         }
     }
+}
+
+/* The same for a timeout computed at run time: a negative one fails the
+ * test even when the condition held at once and no timer was armed. */
+void sx_runtime_settle_await_signed(uint32_t process, uint32_t resume_block,
+                                    uint64_t delay) {
+    if (sx_error) return;
+    if ((int64_t)delay < 0) {
+        sx_set_error("`await ... for` was given a negative time (%lld fs)",
+                     (long long)(int64_t)delay);
+        return;
+    }
+    sx_runtime_settle_await(process, resume_block, delay);
 }
 
 void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {

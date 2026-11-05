@@ -3284,17 +3284,17 @@ fn await_is_time(argument: &ast::Expr, context: &LoweringContext<'_>) -> bool {
 /// suspend before testing the event predicate, even if the process itself was
 /// resumed during the current event. The CFG shape records that distinction;
 /// the fixed scheduler only needs a generic "wake after state change" record.
+/// Whether an awaited condition depends on an edge, anywhere in it:
+/// `await (clk.rising() and ready == '1')` waits for the next edge, as
+/// `await clk.rising()` does, rather than testing the one that has passed.
 fn await_is_event(argument: &ast::Expr) -> bool {
     match argument {
-        ast::Expr::SysAttr { attr, .. } => {
-            matches!(attr.text.as_str(), "event" | "rising" | "falling")
+        ast::Expr::SysAttr { attr, .. }
+            if matches!(attr.text.as_str(), "event" | "rising" | "falling") =>
+        {
+            true
         }
-        ast::Expr::Call { callee, .. } => matches!(
-            callee.as_ref(),
-            ast::Expr::Field { field, .. }
-                if matches!(field.text.as_str(), "edge" | "rising" | "falling")
-        ),
-        _ => false,
+        other => crate::ir::lower_helpers::expr_is_event(other),
     }
 }
 
@@ -3442,9 +3442,16 @@ fn lower_call(
                 resume: check,
                 span,
             };
+            // An `await … for` settles with its own operation: it disarms the
+            // timer and checks the timeout's sign, even when the condition
+            // held at once.
+            let (operation, arguments) = match lowered_arguments.get(1) {
+                Some(&delay) => (ProcessSuspendOp::SettleAwait, vec![delay]),
+                None => (ProcessSuspendOp::Settle, Vec::new()),
+            };
             process.blocks[settle.0 as usize].terminator = ProcessTerminator::Suspend {
-                operation: ProcessSuspendOp::Settle,
-                arguments: Vec::new(),
+                operation,
+                arguments,
                 resume,
                 span,
             };

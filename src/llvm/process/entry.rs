@@ -893,6 +893,36 @@ pub(super) fn process_entry<'ctx>(
                     .unwrap();
             }
             ProcessTerminator::Suspend {
+                operation: siox::ir::ProcessSuspendOp::SettleAwait,
+                arguments,
+                resume,
+                ..
+            } => {
+                let emitted = arguments.first().copied().and_then(|delay| {
+                    emit_settle_await(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        process.id,
+                        *resume,
+                        delay,
+                        index_sites,
+                        &mut cache,
+                    )
+                });
+                builder
+                    .build_return(Some(&i8.const_int(
+                        u64::from(if emitted.is_some() {
+                            PROCESS_SETTLING
+                        } else {
+                            PROCESS_UNSUPPORTED
+                        }),
+                        false,
+                    )))
+                    .unwrap();
+            }
+            ProcessTerminator::Suspend {
                 operation: siox::ir::ProcessSuspendOp::Settle,
                 arguments,
                 resume,
