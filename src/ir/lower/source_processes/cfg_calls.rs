@@ -620,6 +620,10 @@ pub(super) struct FrameState {
     /// Which parameters the body writes: each call copies them back to its
     /// argument when that is a local, as a plain call writes through.
     pub(super) written: Vec<bool>,
+    /// A method's receiver: every activation shares it, as the place it
+    /// aliases, so only a recursive call on the same receiver takes the
+    /// frame (`self.f(n - 1)`, #389).
+    pub(super) receiver: Option<ProcessValueId>,
 }
 
 /// Expand a call; a function found recursive is expanded again with a frame
@@ -730,7 +734,7 @@ fn inline_call_once(
         if let Some(frame) = context
             .frames
             .iter()
-            .rposition(|frame| frame.function == function.span)
+            .rposition(|frame| frame.function == function.span && frame.receiver == receiver)
         {
             if let Some(result) =
                 recursive_frame_call(frame, call, arguments, block, process, context, memo)
@@ -765,7 +769,7 @@ fn inline_call_once(
     };
     // With a frame stack each activation has its own parameters: copies,
     // not aliases of the caller's places.
-    let framed = receiver.is_none() && context.frame_functions.contains(&function.span);
+    let framed = context.frame_functions.contains(&function.span);
     let frame_first_local = process.locals.len();
     let mut frame_parameters = Vec::new();
     let mut frame_arguments = Vec::new();
@@ -859,17 +863,59 @@ fn inline_call_once(
             first_local: frame_first_local,
             sites: vec![resume],
             written: Vec::new(),
+            receiver,
         });
     }
     let first_body_block = entry.0 as usize;
+    let first_body_value = context.process_ir.values.len();
     let tail = lower_statements(&body.stmts, context, process, entry);
     // Before normalization adds the recursive sites' own argument bindings.
     let mut writes_parameter = false;
     if framed {
         let parameters = context.frames.last()?.parameters.clone();
+        // A parameter handed to a call (`add_into(acc, 10)`) may be written
+        // by it, which shows only once that call inlines: copied back as if
+        // written, which an unwritten one survives unchanged (#389).
+        let local_of =
+            |value: ProcessValueId| match context.process_ir.values[value.0 as usize].kind {
+                ProcessValueKind::Local { local, .. } => Some(local),
+                _ => None,
+            };
+        let passed = |parameter: ProcessValueId| {
+            let Some(local) = local_of(parameter) else {
+                return false;
+            };
+            // The function's own recursive calls pass parameters down
+            // without being a helper that writes them.
+            let recursive =
+                |callee: ProcessValueId| match &context.process_ir.values[callee.0 as usize].kind {
+                    ProcessValueKind::Definition(definition) => context
+                        .functions
+                        .get_definition(*definition)
+                        .is_some_and(|callee| callee.span == function.span),
+                    ProcessValueKind::Field { field, .. } => *field == function.name.text,
+                    _ => false,
+                };
+            context.process_ir.values[first_body_value..]
+                .iter()
+                .any(|value| match &value.kind {
+                    ProcessValueKind::Call {
+                        callee, arguments, ..
+                    } => {
+                        !recursive(*callee)
+                            && arguments
+                                .iter()
+                                .any(|argument| local_of(*argument) == Some(local))
+                    }
+                    _ => false,
+                })
+        };
         let written = parameters
             .iter()
-            .map(|parameter| writes_local(&[*parameter], first_body_block, process, context))
+            .map(|parameter| {
+                writes_local(&[*parameter], first_body_block, process, context)
+                    || passed(*parameter)
+            })
             .collect::<Vec<_>>();
         // The first call writes back too, which only a local can take here;
         // an expression argument has no place, as in a plain call.

@@ -6315,6 +6315,9 @@ fn lower_for(
         ty,
         layout: None,
     });
+    if let (ast::Expr::Range { lo, hi, .. }, false) = (iterable, context.frames.is_empty()) {
+        return lower_framed_range_for(local, lo, hi, body, span, context, process, block);
+    }
 
     let iterable = value_ref(iterable, process, context);
     let (block, iterable) = cfg_calls::lower_loop_iterable(iterable, block, process, context);
@@ -6341,6 +6344,157 @@ fn lower_for(
     };
     if let Some(tail) = lower_statements(&body.stmts, context, process, body_block) {
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(header);
+    }
+    Some(exit)
+}
+
+/// A range loop inside a recursive function's frame. The native loop keeps
+/// its cursor in one global per loop, which a recursive call in the body
+/// overwrote, so the outer activation's loop never ended (#389). Here the
+/// cursor (the loop variable) and both bounds are integer process locals,
+/// which each activation's frame saves; the direction is read from the
+/// bounds.
+#[allow(clippy::too_many_arguments)]
+fn lower_framed_range_for(
+    cursor: ProcessLocalId,
+    lo: &ast::Expr,
+    hi: &ast::Expr,
+    body: &ast::Block,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let integer = Some(crate::types::Ty::Integer);
+    let local = |name: &str, ty: Option<crate::types::Ty>, process: &mut ProcessCfg| {
+        let id = ProcessLocalId(process.locals.len() as u32);
+        process.locals.push(ProcessLocal {
+            id,
+            name: name.to_string(),
+            source: None,
+            span,
+            scope: Some(span),
+            ty,
+            layout: None,
+        });
+        id
+    };
+    let end = local("<for-end>", integer.clone(), process);
+    let origin = local("<for-start>", integer.clone(), process);
+    let read = |local: ProcessLocalId,
+                ty: Option<crate::types::Ty>,
+                width: u32,
+                process: &ProcessCfg,
+                context: &mut LoweringContext<'_>| {
+        push_value(
+            span,
+            ty,
+            Some(width),
+            ProcessValueKind::Local {
+                process: process.id,
+                local,
+            },
+            context,
+        )
+    };
+    let compare = |operation: ProcessBinaryOp,
+                   left: ProcessValueId,
+                   right: ProcessValueId,
+                   context: &mut LoweringContext<'_>| {
+        push_value(
+            span,
+            bool_type(context.resolved),
+            Some(1),
+            ProcessValueKind::Binary {
+                operation,
+                left,
+                right,
+            },
+            context,
+        )
+    };
+    let start = value_ref_with_type(lo, process, context, integer.as_ref());
+    let bound = value_ref_with_type(hi, process, context, integer.as_ref());
+    let first = read(cursor, integer.clone(), 64, process, context);
+    for (local, value) in [(cursor, start), (end, bound), (origin, first)] {
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Declare {
+                local,
+                initializer: Some(value),
+                span,
+            });
+    }
+    let rising = |process: &ProcessCfg, context: &mut LoweringContext<'_>| {
+        let first = read(origin, integer.clone(), 64, process, context);
+        let last = read(end, integer.clone(), 64, process, context);
+        compare(ProcessBinaryOp::SignedLe, first, last, context)
+    };
+    let [header, rises, falls, body_block, step, increment, decrement, exit] =
+        std::array::from_fn(|_| process.push_block());
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(header);
+    let direction = rising(process, context);
+    process.blocks[header.0 as usize].terminator = ProcessTerminator::Branch {
+        condition: direction,
+        then_block: rises,
+        else_block: falls,
+    };
+    for (check, operation) in [
+        (rises, ProcessBinaryOp::SignedLe),
+        (falls, ProcessBinaryOp::SignedGe),
+    ] {
+        let at = read(cursor, integer.clone(), 64, process, context);
+        let last = read(end, integer.clone(), 64, process, context);
+        let condition = compare(operation, at, last, context);
+        process.blocks[check.0 as usize].terminator = ProcessTerminator::Branch {
+            condition,
+            then_block: body_block,
+            else_block: exit,
+        };
+    }
+    if let Some(tail) = lower_statements(&body.stmts, context, process, body_block) {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(step);
+    }
+    let direction = rising(process, context);
+    process.blocks[step.0 as usize].terminator = ProcessTerminator::Branch {
+        condition: direction,
+        then_block: increment,
+        else_block: decrement,
+    };
+    for (next, operation) in [
+        (increment, ProcessBinaryOp::SignedAdd),
+        (decrement, ProcessBinaryOp::SignedSub),
+    ] {
+        let at = read(cursor, integer.clone(), 64, process, context);
+        let one = push_value(
+            span,
+            integer.clone(),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+            context,
+        );
+        let moved = push_value(
+            span,
+            integer.clone(),
+            Some(64),
+            ProcessValueKind::Binary {
+                operation,
+                left: at,
+                right: one,
+            },
+            context,
+        );
+        let target = read(cursor, integer.clone(), 64, process, context);
+        process.blocks[next.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateLocal,
+                driver_context: None,
+                target,
+                value: moved,
+                span,
+            });
+        process.blocks[next.0 as usize].terminator = ProcessTerminator::Goto(header);
     }
     Some(exit)
 }
@@ -10784,24 +10938,59 @@ fn drops_effect(first: usize, result: ProcessValueId, context: &LoweringContext<
         .filter(|index| {
             matches!(
                 values[*index].kind,
-                ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+                ProcessValueKind::ForeignCall { .. }
+                    | ProcessValueKind::HostCall { .. }
+                    | ProcessValueKind::Call { .. }
             )
         })
         .collect::<Vec<_>>();
     if effects.is_empty() {
         return false;
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut pending = vec![result];
-    while let Some(id) = pending.pop() {
-        if (id.0 as usize) >= first && seen.insert(id.0 as usize) {
-            crate::ir::process::for_each_process_value_dependency(
-                &values[id.0 as usize].kind,
-                |dependency| pending.push(dependency),
-            );
+    // What the result reads, and what it reads other than through a call's
+    // arguments.
+    let reached = |through_calls: bool| {
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![result];
+        while let Some(id) = pending.pop() {
+            let index = id.0 as usize;
+            // A value from before the expansion (a parameter's binding) is
+            // read, but not walked into.
+            if !seen.insert(index) || index < first {
+                continue;
+            }
+            let kind = &values[index].kind;
+            if through_calls || !matches!(kind, ProcessValueKind::Call { .. }) {
+                crate::ir::process::for_each_process_value_dependency(kind, |dependency| {
+                    pending.push(dependency)
+                });
+            }
         }
+        seen
+    };
+    let seen = reached(true);
+    if effects.iter().any(|effect| !seen.contains(effect)) {
+        return true;
     }
-    effects.iter().any(|effect| !seen.contains(effect))
+    // A statement call may write a local it is passed (`let d = bump(v);
+    // return v + d;`), which the value form cannot order before the
+    // result's own read of it (#389).
+    let outside = reached(false);
+    let place = |id: ProcessValueId| {
+        matches!(
+            values[id.0 as usize].kind,
+            ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_)
+        )
+    };
+    effects.iter().any(|effect| match &values[*effect].kind {
+        ProcessValueKind::Call { arguments, .. } => arguments.iter().any(|argument| {
+            place(*argument)
+                && outside
+                    .iter()
+                    .any(|read| values[*read].kind == values[argument.0 as usize].kind)
+        }),
+        _ => false,
+    })
 }
 
 /// A shape attribute (`'length`, `'high`, ..) of a value whose layout is
@@ -12245,10 +12434,22 @@ fn value_ref_with_type_inner(
                         .iter()
                         .filter(|parameter| !parameter.is_self)
                         .map(|parameter| {
-                            parameter
-                                .ty
-                                .as_ref()
-                                .and_then(|ty| process_declared_type(ty, context))
+                            let ty = parameter.ty.as_ref()?;
+                            // `bounce<unsigned[8]>(42)`: a parameter of type
+                            // `T` takes the written type argument (#389).
+                            let explicit = match ty {
+                                ast::Type::Path(path) if path.segments.len() == 1 => function
+                                    .generics
+                                    .params
+                                    .iter()
+                                    .zip(type_args)
+                                    .find(|(generic, _)| {
+                                        generic.name.text == path.segments[0].text
+                                    })
+                                    .and_then(|(_, argument)| argument.as_type()),
+                                _ => None,
+                            };
+                            process_declared_type(explicit.as_ref().unwrap_or(ty), context)
                         })
                         .collect::<Vec<_>>()
                 }
@@ -12258,7 +12459,11 @@ fn value_ref_with_type_inner(
                     .collect(),
             };
             let arguments = lower_call_arguments(args, &declared, receiver, process, context);
-            let type_arguments = if type_args.is_empty() {
+            // A Siox function inlines with the call's checked type, so its
+            // explicit type arguments (`Helper::bounce<unsigned[8]>(42)`)
+            // are already applied; kept, they stopped the inlining (#389).
+            let siox_body = function.is_some_and(|function| function.body.is_some());
+            let type_arguments = if type_args.is_empty() || siox_body {
                 Vec::new()
             } else {
                 // Explicit type arguments are currently accepted only by
