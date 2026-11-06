@@ -652,6 +652,68 @@ impl<'a> Checker<'a> {
                     .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
                 self.const_int_at(self.const_values.get(&id)?, depth + 1)
             }
+            // `WIDTHS[0]` of a constant array and `CFG.width` of a constant
+            // struct are constants too: as widths they read as unknown and
+            // left the design parametric (#459).
+            Expr::Index { base, index, .. } => {
+                let Expr::Array { elems, .. } = self.const_aggregate(base, depth + 1)? else {
+                    return None;
+                };
+                let position = usize::try_from(self.const_int_at(index, depth + 1)?).ok()?;
+                self.const_int_at(elems.get(position)?, depth + 1)
+            }
+            Expr::Field { base, field, .. } => {
+                let Expr::Construct { args, .. } = self.const_aggregate(base, depth + 1)? else {
+                    return None;
+                };
+                let value = args
+                    .iter()
+                    .find(|arg| {
+                        arg.field
+                            .as_ref()
+                            .is_some_and(|name| name.text == field.text)
+                    })?
+                    .value
+                    .as_ref()?;
+                self.const_int_at(value, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// The literal a constant aggregate is declared with, through nested
+    /// projections (`TABLE[1]`, `CFG.inner`).
+    fn const_aggregate<'e>(&'e self, e: &'e Expr, depth: u8) -> Option<&'e Expr> {
+        if depth > 32 {
+            return None;
+        }
+        match e {
+            Expr::Path(p) => {
+                let id = self
+                    .resolved
+                    .resolved(p.span)
+                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
+                self.const_values.get(&id)
+            }
+            Expr::Index { base, index, .. } => {
+                let Expr::Array { elems, .. } = self.const_aggregate(base, depth + 1)? else {
+                    return None;
+                };
+                elems.get(usize::try_from(self.const_int_at(index, depth + 1)?).ok()?)
+            }
+            Expr::Field { base, field, .. } => {
+                let Expr::Construct { args, .. } = self.const_aggregate(base, depth + 1)? else {
+                    return None;
+                };
+                args.iter()
+                    .find(|arg| {
+                        arg.field
+                            .as_ref()
+                            .is_some_and(|name| name.text == field.text)
+                    })?
+                    .value
+                    .as_ref()
+            }
             _ => None,
         }
     }

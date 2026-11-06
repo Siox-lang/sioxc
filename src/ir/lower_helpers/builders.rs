@@ -326,6 +326,11 @@ pub fn eval_const_fns(
         ast::Expr::Path(path) => fns
             .constant_path_key(path)
             .and_then(|key| env.get(&key).copied()),
+        // `CFG.width`, `WIDTHS[0]`: a constant aggregate's part, as its key
+        // names it (#459).
+        ast::Expr::Field { .. } | ast::Expr::Index { .. } => fns
+            .constant_expr_key(e)
+            .and_then(|key| env.get(&key).copied()),
         // A bound argument's range attribute (`v'low`), as the caller binds it.
         ast::Expr::SysAttr { base, attr, .. } => match base.as_ref() {
             ast::Expr::Path(path) if path.segments.len() == 1 => env

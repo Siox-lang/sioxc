@@ -267,6 +267,48 @@ fn module_constant_integers(
             }
             if let Some(value) = crate::ir::eval_const_fns(&constant.value, &values, functions, 0) {
                 values.insert(key, value);
+                continue;
+            }
+            // An array's elements and a struct's fields, as `SIZES[0]` and
+            // `CFG.width` read them (#459).
+            let parts: Vec<(String, &ast::Expr)> = match &constant.value {
+                ast::Expr::Array { elems, .. } => {
+                    let low = match &constant.ty {
+                        ast::Type::Indexed {
+                            index: Some(index), ..
+                        } => match index.as_ref() {
+                            ast::Expr::Range { lo, hi, .. } => {
+                                crate::ir::eval_const_fns(lo, &values, functions, 0)
+                                    .zip(crate::ir::eval_const_fns(hi, &values, functions, 0))
+                                    .map(|(lo, hi)| lo.min(hi))
+                                    .unwrap_or(0)
+                            }
+                            _ => 0,
+                        },
+                        _ => 0,
+                    };
+                    (0i64..)
+                        .zip(elems)
+                        .map(|(offset, element)| (format!("{key}[{}]", low + offset), element))
+                        .collect()
+                }
+                ast::Expr::Construct { args, .. } => args
+                    .iter()
+                    .filter_map(|arg| {
+                        Some((
+                            format!("{key}.{}", arg.field.as_ref()?.text),
+                            arg.value.as_ref()?,
+                        ))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (part, value) in parts {
+                if !values.contains_key(&part) {
+                    if let Some(value) = crate::ir::eval_const_fns(value, &values, functions, 0) {
+                        values.insert(part, value);
+                    }
+                }
             }
         }
         if values.len() == previous {
