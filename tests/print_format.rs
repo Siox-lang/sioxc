@@ -24,7 +24,7 @@ struct Packet { pub kind: Kind, pub at: Point, pub payload: integer[3], pub flag
 struct Pair { pub a: integer, pub b: integer }
 
 impl Display for Pair {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         let total: integer = self.a + self.b;
         write!(f, "<{} and {} = {}>", self.a, self.b, total);
     }
@@ -154,7 +154,7 @@ enum Kind { Idle, Data }
 struct Tag { pub name: string[2], pub c: Char, pub k: Kind }
 struct Pair { pub a: integer, pub b: integer }
 impl Display for Pair {
-    fn fmt(self, f: Formatter) { write!(f, "<{} {}>", self.a, self.b); }
+    fn fmt(f: Formatter) { write!(f, "<{} {}>", self.a, self.b); }
 }
 #[test] entity T {}
 impl T {

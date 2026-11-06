@@ -375,16 +375,41 @@ impl<'a> Checker<'a> {
             return;
         };
         let name = &path.segments[path.segments.len() - 1].text;
-        // A type's own `fn new(..)` replaces the derived `T::new()` (#264).
-        let declared_new = self.methods.contains_key(&(owner.clone(), name.clone()));
-        if name == "new" && !declared_new && self.associated_conversion_ty(path).is_some() {
+        // A type's own `fn default(..)` replaces the derived `T::default()`.
+        let declared = self.methods.contains_key(&(owner.clone(), name.clone()));
+        if name == "default" && !declared && self.associated_conversion_ty(path).is_some() {
             if !args.is_empty() {
                 self.error(
                     codes::TYPE_MISMATCH,
                     expr_span(callee),
                     format!(
-                        "`{owner}::new` takes no arguments, but {} were given",
+                        "`{owner}::default` takes no arguments, but {} were given",
                         args.len()
+                    ),
+                );
+            }
+            return;
+        }
+        // `T::new()` was the default's old name; `new` is now an ordinary
+        // constructor name a type declares itself.
+        if name == "new" && !declared && self.associated_conversion_ty(path).is_some() {
+            let owner_name = &path.segments[path.segments.len() - 2];
+            if args.is_empty() {
+                self.warn(
+                    codes::RENAMED_DEFAULT,
+                    expr_span(callee),
+                    format!("`{0}::new()` is now `{0}::default()`", owner_name.text),
+                    "the default constructor was renamed after Rust's `Default`; `T()` \
+                     still builds it, and `new` is free for a constructor a type declares",
+                );
+            } else {
+                self.error_with_help(
+                    codes::UNKNOWN_NAME,
+                    expr_span(callee),
+                    format!("`{owner}` has no function `new`"),
+                    format!(
+                        "the default constructor is `{0}::default()`, or `{0}()`",
+                        owner_name.text
                     ),
                 );
             }
@@ -401,8 +426,11 @@ impl<'a> Checker<'a> {
             self.error_with_help(
                 codes::INVALID_METHOD_CALL,
                 expr_span(callee),
-                format!("method `{owner}.{name}` needs a `self` receiver"),
-                format!("call it on a `{owner}` value, e.g. `value.{name}(...)`"),
+                format!("method `{owner}.{name}` has a receiver"),
+                format!(
+                    "call it on a `{owner}` value, e.g. `value.{name}(...)`, or declare it \
+                     `static fn {name}` if it needs none"
+                ),
             );
             return;
         }

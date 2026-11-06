@@ -63,6 +63,8 @@ pub fn lower_in(
         .set_enum_values(std::sync::Arc::clone(&hier.enum_values));
     l.expr_types = hier.expr_types.clone();
     l.promotions = hier.promotions.clone();
+    l.conversions = hier.conversions.clone();
+    l.covered_matches = hier.covered_matches.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
     // Enum discriminants first: `collect` folds constants, and a constant may
@@ -188,7 +190,6 @@ pub fn lower_in(
     l.report_bad_operators();
     l.report_bad_conversions();
     l.report_unresolved_names();
-    l.report_unelaborated_instance_uses();
     l.report_unsupported_exprs();
     l.lint_possible_latches();
     l.prepare_test_input_metavalues(modules, hier);
@@ -263,6 +264,10 @@ struct Lowering<'a> {
     expr_types: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Operands of mixed numeric operations that widen (spec 3.17), by span.
     promotions: HashMap<crate::diag::Span, crate::types::Ty>,
+    /// Values an `impl Into` converts where stored.
+    conversions: HashMap<crate::diag::Span, crate::types::Conversion>,
+    /// Matches the checker proved complete without a `_` arm.
+    covered_matches: std::collections::HashSet<crate::diag::Span>,
     /// Operands being widened now: their source value is lowered as written.
     widening: std::cell::RefCell<HashSet<crate::diag::Span>>,
     /// Root for relative compile-time file reads (the source directory).
@@ -318,8 +323,8 @@ struct Lowering<'a> {
     /// Nominal array families forward these when their element satisfies the
     /// implementation's constraint.
     blanket_array_impls: HashMap<String, String>,
-    /// Literal suffix -> (target type, fn), for suffix inlining.
-    suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
+    /// Literal suffix -> its source method. Typed carries the result's identity.
+    suffix_impls: HashMap<String, &'a ast::FnDecl>,
     /// Module-level and static associated functions, inlined at call sites /
     /// const-evaluated without collapsing namespaced free functions by leaf.
     free_fns: FunctionIndex<'a>,
@@ -384,10 +389,6 @@ struct Lowering<'a> {
     instance_array_facts: HashMap<String, Vec<crate::elab::InstanceArrayFact>>,
     /// Dotted path of the body currently being lowered.
     cur_instance_path: String,
-    /// Reads of declared slots omitted by the active generate conditions.
-    /// Expression lowering is intentionally `&self`, so these are collected
-    /// through interior mutability and emitted after the design is lowered.
-    unelaborated_instance_uses: std::cell::RefCell<Vec<UnelaboratedInstanceUse>>,
     /// The receiver signal bound to `self` while inlining a method body, so a
     /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
@@ -585,29 +586,4 @@ struct BlockLocal {
     value: Val,
     /// Its declared type.
     ty: ast::Type,
-}
-
-/// A use of an instance slot that elaboration never populated. Kept
-/// with both spans so the diagnostic can point at the use and at the
-/// declaration it refers to.
-#[derive(Clone, Debug)]
-struct UnelaboratedInstanceUse {
-    /// Slot name as written.
-    slot: String,
-    /// Path of the entity the slot belongs to.
-    parent_path: String,
-    /// Span of the use.
-    use_span: crate::diag::Span,
-    /// Span of the slot's declaration.
-    declaration_span: crate::diag::Span,
-}
-
-impl UnelaboratedInstanceUse {
-    /// The storage root this slot belongs to, i.e. the path prefix its leaves
-    /// share.
-    fn slot_root(&self) -> &str {
-        self.slot
-            .split_once('[')
-            .map_or(self.slot.as_str(), |(root, _)| root)
-    }
 }

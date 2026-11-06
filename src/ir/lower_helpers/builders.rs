@@ -343,6 +343,16 @@ pub(in crate::ir) fn eval_condition_fns(
     consteval::evaluate_condition(expression, &WordConstants { env, fns }, depth).ok()
 }
 
+pub(in crate::ir) fn eval_range_order_fns(
+    left: &ast::Expr,
+    right: &ast::Expr,
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+    expected_enum: Option<DefId>,
+) -> Option<consteval::RangeOrder> {
+    consteval::evaluate_range_order(left, right, &WordConstants { env, fns }, expected_enum, 0).ok()
+}
+
 pub(in crate::ir) fn eval_call_fns(
     callee: &ast::Expr,
     arguments: &[ast::Expr],

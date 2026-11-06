@@ -264,7 +264,9 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        if !matches!(expected, Ty::Error) && !self.assignable(&expected, value, sym) {
+        // A field is a store site: an `impl Into` converts into it, as into a
+        // `let` (conversions proposal).
+        if !matches!(expected, Ty::Error) && !self.site_assignable(&expected, value, sym) {
             let actual = self.type_of(value, sym);
             self.error_with_help(
                 codes::TYPE_MISMATCH,
@@ -284,8 +286,8 @@ impl<'a> Checker<'a> {
 
     /// The inclusive labels of a packed vector or data-array declaration:
     /// `unsigned[15..8]` is `(8, 15)`, while `unsigned[8]` and
-    /// `unsigned[8][4]` are `(0, 7)` and `(0, 3)`. Instance arrays and
-    /// parametric bounds return `None`.
+    /// `unsigned[8][4]` are `(0, 7)` and `(0, 3)`. Instance arrays use the
+    /// same declared labels; unknown parametric bounds return `None`.
     pub(super) fn declared_index_bounds(&self, decl_ty: &Type) -> Option<(i64, i64)> {
         let resolved = self.declarations.normalize_type(decl_ty)?;
         let Type::Indexed {
@@ -295,7 +297,7 @@ impl<'a> Checker<'a> {
             return None;
         };
         match self.ast_ty(&resolved) {
-            Ty::Array { elem, .. } if !self.is_entity_ty(&elem) => {}
+            Ty::Array { .. } => {}
             _ => return None,
         }
         // In written order, `'left` then `'right`: an open range's omitted

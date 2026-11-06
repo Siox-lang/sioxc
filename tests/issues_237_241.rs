@@ -186,7 +186,7 @@ struct MyVal {
 }
 
 impl Div<MyVal, MyVal> for MyVal {
-    fn div(self, rhs: MyVal) -> MyVal {
+    fn div(rhs: MyVal) -> MyVal {
         return MyVal { .v = self.v / rhs.v };
     }
 }

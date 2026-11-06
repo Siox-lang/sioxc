@@ -288,7 +288,11 @@ fn absolute_head(
 fn expand_aliases(segments: Vec<Ident>, env: &Env, index: &Index) -> Vec<Ident> {
     let mut segments = segments;
     if segments.len() >= 2 && !env.shadow.contains(&segments[0].text) {
-        if let Some(target) = env.aliases.get(&segments[0].text) {
+        if let Some(target) = env
+            .aliases
+            .get(&segments[0].text)
+            .or_else(|| env.names.get(&segments[0].text))
+        {
             let span = segments[0].span;
             let mut out: Vec<Ident> = target.iter().map(|s| ident(s, span)).collect();
             out.extend(segments.drain(1..));
@@ -855,6 +859,7 @@ impl Rewriter<'_> {
     fn stmt(&self, statement: &mut Stmt, env: &mut Env, sink: &mut DiagnosticSink) {
         match statement {
             Stmt::Use(u) => self.block_use(u, env, sink),
+            Stmt::Process(p) => self.block(&mut p.body, env, sink),
             Stmt::Let(l) => {
                 if let Some(ty) = &mut l.ty {
                     self.ty(ty, env, sink);
@@ -893,6 +898,10 @@ impl Rewriter<'_> {
                 inner.shadow.insert(var.text.clone());
                 inner.names.remove(&var.text);
                 self.block(body, &inner, sink);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond, env, sink);
+                self.block(body, env, sink);
             }
             Stmt::Expr(e) => self.expr(e, env, sink),
             Stmt::Return { value, .. } => {

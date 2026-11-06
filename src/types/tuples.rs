@@ -38,6 +38,7 @@ pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
         .map(|&arity| {
             let param = |index: usize| format!("T{index}");
             Item::Struct(StructDecl {
+                derives: Vec::new(),
                 is_pub: true,
                 name: ident(tuple_struct_name(arity)),
                 params: Params {
@@ -74,6 +75,7 @@ pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
         lints: Vec::new(),
         span,
         macro_args: Default::default(),
+        derived_files: Vec::new(),
     });
 }
 
@@ -207,6 +209,7 @@ impl Lower<'_> {
         match statement {
             Stmt::Let(declaration) => self.let_decl(declaration),
             Stmt::Use(_) => {}
+            Stmt::Process(process) => self.block(&mut process.body),
             Stmt::Assign {
                 target,
                 value,
@@ -227,8 +230,11 @@ impl Lower<'_> {
                     self.block(&mut arm.body);
                 }
             }
-            Stmt::For { range, body, .. } => {
-                self.expr(range);
+            Stmt::For {
+                range: cond, body, ..
+            }
+            | Stmt::While { cond, body, .. } => {
+                self.expr(cond);
                 self.block(body);
             }
             Stmt::Expr(e) => self.expr(e),

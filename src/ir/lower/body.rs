@@ -28,6 +28,13 @@ impl<'a> Lowering<'a> {
             self.const_arrays.remove(name);
             self.consts_real.remove(name);
             self.const_ranges.remove(name);
+            let member = |key: &String| {
+                key.strip_prefix(name.as_str())
+                    .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            };
+            self.const_values.retain(|key, _| !member(key));
+            self.const_arrays.retain(|key, _| !member(key));
+            self.consts.retain(|key, _| !member(key));
         }
         for _ in 0..=body_consts.len() {
             let mut progressed = false;
@@ -219,6 +226,47 @@ impl<'a> Lowering<'a> {
                             type_head_name(&cty).is_some_and(|h| self.cur_type_env.contains_key(h));
                         if !is_type_param {
                             subinsts.push((l.name.text.clone(), cty, args));
+                            continue;
+                        }
+                    }
+                    // `let stage: Cell[N];`: N instances, not signals, every
+                    // one built; `stage[i] = Cell { .. }` and later port
+                    // writes wire them (#290).
+                    // `Cell[R][C]` nests (#300).
+                    let slots = l.ty.as_ref().filter(|_| l.value.is_none()).and_then(|ty| {
+                        crate::elab::instance_array_slots(ty, env, self.free_fns.constant_source())
+                    });
+                    if let Some((base, slots)) = slots {
+                        let entity = self.free_fns.entity_type_id(base).is_some();
+                        if entity {
+                            self.instance_arrays.insert(l.name.text.clone());
+                            // Each level's labels, for bounds checks; no signals.
+                            for slot in &slots {
+                                let mut prefix = l.name.text.clone();
+                                for label in slot
+                                    .trim_start_matches('[')
+                                    .trim_end_matches(']')
+                                    .split("][")
+                                {
+                                    let Ok(label) = label.parse::<i64>() else {
+                                        break;
+                                    };
+                                    let labels =
+                                        self.local_array.entry(prefix.clone()).or_default();
+                                    if !labels.contains(&label) {
+                                        labels.push(label);
+                                    }
+                                    prefix = format!("{prefix}[{label}]");
+                                }
+                            }
+                            // Every slot exists; a construction only wires
+                            // the one it names.
+                            for slot in slots {
+                                let name = format!("{}{slot}", l.name.text);
+                                if !subinsts.iter().any(|(built, _, _)| *built == name) {
+                                    subinsts.push((name, base.clone(), Vec::new()));
+                                }
+                            }
                             continue;
                         }
                     }
@@ -644,6 +692,27 @@ impl<'a> Lowering<'a> {
             // an output need not be wired to a local to be read.
             for (port, &(sig, _)) in &sub_ports {
                 self.locals.entry(format!("{inst}.{port}")).or_insert(sig);
+                // Each array a port path passes through (`data` of
+                // `data[2]`, `buses` and `buses[1].x` of `buses[1].x[0]`)
+                // gets its labels, so a runtime index can select among the
+                // child's elements, as among a local array's (#306).
+                let mut rest = port.as_str();
+                let mut consumed = 0;
+                while let Some(open) = rest.find('[') {
+                    let Some(close) = rest[open..].find(']').map(|close| open + close) else {
+                        break;
+                    };
+                    if let Ok(label) = rest[open + 1..close].parse::<i64>() {
+                        let array = format!("{inst}.{}", &port[..consumed + open]);
+                        let labels = self.local_array.entry(array).or_default();
+                        if !labels.contains(&label) {
+                            labels.push(label);
+                            labels.sort_unstable();
+                        }
+                    }
+                    consumed += close + 1;
+                    rest = &port[consumed..];
+                }
             }
             for (field, value) in &norm {
                 let field = field.as_str();
@@ -733,7 +802,31 @@ impl<'a> Lowering<'a> {
                 // leaf from the matching field. Without this the whole
                 // connection was dropped in silence and the port kept its
                 // default — a scalar port has always accepted a value here.
-                if expr_path(value).is_none() {
+                if expr_path(value).is_none()
+                    && self.slice_connection(value, &leaves, field).is_none()
+                {
+                    // Read through the port's own layout, any nesting of
+                    // arrays and structs drives its leaves (#355).
+                    if let Some(values) = self.port_literal_leaves(value, &leaves, field) {
+                        for (k, child_id, dir) in &leaves {
+                            if *dir == Some(ast::Direction::Out) {
+                                continue;
+                            }
+                            let Some(expr) = values.get(&k[field.len()..]) else {
+                                continue;
+                            };
+                            let ctx = self.next_ctx_at(ast::expr_span(value));
+                            self.hardware.drivers.push(Driver {
+                                span: self.cur_span,
+                                target: *child_id,
+                                cond: None,
+                                expr: expr.clone(),
+                                meta: None,
+                                ctx,
+                            });
+                        }
+                        continue;
+                    }
                     if let ast::Expr::Construct { args, .. } = value {
                         let mut fields: HashMap<String, &ast::Expr> = HashMap::new();
                         literal_leaves(args, "", &mut fields);
@@ -794,12 +887,36 @@ impl<'a> Lowering<'a> {
                 // A composite (struct/array) port: wire each leaf to the matching
                 // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
                 // The parent side must be a signal path.
-                let Some(base) = expr_path(value) else {
-                    continue;
+                // `.inp = arr[1..2]`: a slice of an array signal, whose port
+                // position `p` is the array's `p`-th selected label. The
+                // connection was dropped in silence (#358).
+                let (base, relabel) = match expr_path(value) {
+                    Some(base) => (base, None),
+                    None => match self.slice_connection(value, &leaves, field) {
+                        Some((base, relabel)) => (base, Some(relabel)),
+                        None => continue,
+                    },
                 };
                 leaves.sort_by(|a, b| a.0.cmp(&b.0));
                 for (k, child_id, dir) in leaves {
                     let suffix = &k[field.len()..]; // ".valid", "[0]"
+                    let suffix = match &relabel {
+                        Some(relabel) => {
+                            let Some((label, rest)) = suffix
+                                .strip_prefix('[')
+                                .and_then(|inner| inner.split_once(']'))
+                            else {
+                                continue;
+                            };
+                            let Some(parent) =
+                                label.parse().ok().and_then(|l: i64| relabel.get(&l))
+                            else {
+                                continue;
+                            };
+                            format!("[{parent}]{rest}")
+                        }
+                        None => suffix.to_string(),
+                    };
                     let Some(&parent_id) = self.locals.get(&format!("{base}{suffix}")) else {
                         continue;
                     };

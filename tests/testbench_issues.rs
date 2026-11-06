@@ -35,9 +35,9 @@ fn issues_155_158_159_testbench_values_lower() {
     let out = compile(
         "values",
         r#"module m;
-trait Scale { fn scale(self, k: integer) -> integer; }
+trait Scale { fn scale(k: integer) -> integer; }
 struct S { pub v: integer }
-impl Scale for S { fn scale(self, k: integer) -> integer { return self.v * k; } }
+impl Scale for S { fn scale(k: integer) -> integer { return self.v * k; } }
 #[test] entity T {}
 impl T {
     process {
@@ -91,7 +91,7 @@ fn issues_150_162_structural_trait_targets_are_rejected_at_the_impl() {
             name,
             &format!(
                 "module m;\nuse std::ops::Add;\n\
-                 impl Add<{target}, {target}> for {target} {{ fn add(self, rhs: {target}) -> {target} {{ return self; }} }}\n"
+                 impl Add<{target}, {target}> for {target} {{ fn add(rhs: {target}) -> {target} {{ return self; }} }}\n"
             ),
             false,
         );

@@ -11,6 +11,7 @@
 //! so later stages only ever see system attributes (`x'high + 1`).
 
 use super::*;
+use crate::syntax::walk::{walk_expr, walk_item};
 
 impl Checker<'_> {
     /// The type attribute `name` that `base`'s type declares, with its owner
@@ -244,6 +245,15 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
                 Expr::Range { lo, hi, .. } => literal(lo).zip(literal(hi)),
                 _ => None,
             },
+            // A constructor builds its written labels: `unsigned[6..4](5)'left`
+            // is 6, where the testbench read the checked width as 0..2 (#144).
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Index { index, .. } => match index.as_ref() {
+                    Expr::Range { lo, hi, .. } => literal(lo).zip(literal(hi)),
+                    _ => None,
+                },
+                _ => None,
+            },
             _ => None,
         };
         let len = match (attribute, typed.expr_type(expr_span(base)), labels) {
@@ -339,9 +349,17 @@ pub fn flatten_slice_chains(modules: &mut [Module]) {
                 },
                 _ => return true,
             },
+            // A runtime index counts the same way: `arr[1..3][i]` is
+            // `arr[1 + i]` (#315). ponytail: checked against the array's
+            // bounds, not the slice's.
             single => match literal(single) {
                 Some(position) => at(position),
-                None => return true,
+                None => Expr::Binary {
+                    op: if step > 0 { BinOp::Add } else { BinOp::Sub },
+                    lhs: Box::new(at(0)),
+                    rhs: Box::new(single.clone()),
+                    span: *span,
+                },
             },
         };
         *e = Expr::Index {
@@ -383,262 +401,6 @@ fn expand_read(e: &mut Expr, reads: &HashMap<Span, Expr>, depth: usize) -> bool 
     });
     *e = replacement;
     false
-}
-
-/// Visit every expression of an item, types' width expressions included.
-fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
-    match item {
-        Item::Const(constant) => {
-            walk_type(&mut constant.ty, f);
-            walk_expr(&mut constant.value, f);
-        }
-        Item::Fn(function) => walk_fn(function, f),
-        Item::Entity(entity) => {
-            walk_attrs(&mut entity.attrs, f);
-            for port in &mut entity.ports {
-                walk_attrs(&mut port.attrs, f);
-                walk_type(&mut port.ty, f);
-            }
-        }
-        Item::Impl(implementation) => {
-            walk_attrs(&mut implementation.attrs, f);
-            for member in &mut implementation.items {
-                match member {
-                    ImplItem::Const(constant) => {
-                        walk_type(&mut constant.ty, f);
-                        walk_expr(&mut constant.value, f);
-                    }
-                    ImplItem::Let(declaration) => walk_let(declaration, f),
-                    ImplItem::Fn(function) => walk_fn(function, f),
-                    ImplItem::Process(process) => walk_block(&mut process.body, f),
-                    ImplItem::Stmt(statement) => walk_stmt(statement, f),
-                    ImplItem::AttrBinding(binding) => walk_expr(&mut binding.value, f),
-                    ImplItem::Attr(declaration) => {
-                        if let Some(value) = &mut declaration.default {
-                            walk_expr(value, f);
-                        }
-                    }
-                    ImplItem::ModeField { .. } => {}
-                }
-            }
-        }
-        Item::Trait(declaration) => {
-            for function in &mut declaration.items {
-                walk_fn(function, f);
-            }
-        }
-        Item::AttrDecl(declaration) => {
-            if let Some(value) = &mut declaration.default {
-                walk_expr(value, f);
-            }
-        }
-        Item::AttrBinding(binding) => walk_expr(&mut binding.value, f),
-        _ => {}
-    }
-}
-
-fn walk_fn(function: &mut FnDecl, f: &mut impl FnMut(&mut Expr) -> bool) {
-    for parameter in &mut function.params {
-        if let Some(ty) = &mut parameter.ty {
-            walk_type(ty, f);
-        }
-    }
-    if let Some(ty) = &mut function.ret {
-        walk_type(ty, f);
-    }
-    if let Some(body) = &mut function.body {
-        walk_block(body, f);
-    }
-}
-
-fn walk_let(declaration: &mut LetDecl, f: &mut impl FnMut(&mut Expr) -> bool) {
-    walk_attrs(&mut declaration.attrs, f);
-    if let Some(ty) = &mut declaration.ty {
-        walk_type(ty, f);
-    }
-    if let Some(value) = &mut declaration.value {
-        walk_expr(value, f);
-    }
-}
-
-fn walk_attrs(attrs: &mut [Attr], f: &mut impl FnMut(&mut Expr) -> bool) {
-    for attr in attrs {
-        if let Some(value) = &mut attr.value {
-            walk_expr(value, f);
-        }
-    }
-}
-
-fn walk_block(block: &mut Block, f: &mut impl FnMut(&mut Expr) -> bool) {
-    for statement in &mut block.stmts {
-        walk_stmt(statement, f);
-    }
-}
-
-fn walk_if(statement: &mut IfStmt, f: &mut impl FnMut(&mut Expr) -> bool) {
-    walk_expr(&mut statement.cond, f);
-    walk_block(&mut statement.then, f);
-    match statement.else_.as_deref_mut() {
-        Some(ElseBranch::Block(block)) => walk_block(block, f),
-        Some(ElseBranch::If(nested)) => walk_if(nested, f),
-        None => {}
-    }
-}
-
-fn walk_stmt(statement: &mut Stmt, f: &mut impl FnMut(&mut Expr) -> bool) {
-    match statement {
-        Stmt::Let(declaration) => walk_let(declaration, f),
-        Stmt::Use(_) => {}
-        Stmt::Assign {
-            target,
-            value,
-            after,
-            ..
-        } => {
-            walk_expr(target, f);
-            walk_expr(value, f);
-            if let Some(after) = after {
-                walk_expr(after, f);
-            }
-        }
-        Stmt::If(nested) => walk_if(nested, f),
-        Stmt::Match(nested) => {
-            walk_expr(&mut nested.scrutinee, f);
-            for arm in &mut nested.arms {
-                walk_block(&mut arm.body, f);
-            }
-        }
-        Stmt::For { range, body, .. } => {
-            walk_expr(range, f);
-            walk_block(body, f);
-        }
-        Stmt::Expr(e) => walk_expr(e, f),
-        Stmt::Return { value, .. } => {
-            if let Some(value) = value {
-                walk_expr(value, f);
-            }
-        }
-    }
-}
-
-fn walk_type(ty: &mut Type, f: &mut impl FnMut(&mut Expr) -> bool) {
-    match ty {
-        Type::Path(_) => {}
-        Type::Indexed { base, index, .. } => {
-            walk_type(base, f);
-            if let Some(index) = index {
-                walk_expr(index, f);
-            }
-        }
-        Type::Generic { base, args, .. } => {
-            walk_type(base, f);
-            for argument in args {
-                walk_generic_arg(argument, f);
-            }
-        }
-        Type::View { target, .. } => walk_type(target, f),
-        Type::Tuple { elems, .. } => {
-            for elem in elems {
-                walk_type(elem, f);
-            }
-        }
-    }
-}
-
-fn walk_generic_arg(argument: &mut GenericArg, f: &mut impl FnMut(&mut Expr) -> bool) {
-    match argument {
-        GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => walk_expr(e, f),
-        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => walk_type(ty, f),
-    }
-}
-
-/// Visit `e` and, while `f` says so, its subexpressions, before-order.
-fn walk_expr(e: &mut Expr, f: &mut impl FnMut(&mut Expr) -> bool) {
-    if !f(e) {
-        return;
-    }
-    match e {
-        Expr::Int { .. }
-        | Expr::SuffixLit { .. }
-        | Expr::BitStrLit { .. }
-        | Expr::CharLit { .. }
-        | Expr::StrLit { .. }
-        | Expr::Path(_) => {}
-        Expr::Field { base, .. } | Expr::SysAttr { base, .. } => walk_expr(base, f),
-        Expr::Index { base, index, .. } => {
-            walk_expr(base, f);
-            walk_expr(index, f);
-        }
-        Expr::Range { lo, hi, .. } => {
-            walk_expr(lo, f);
-            walk_expr(hi, f);
-        }
-        Expr::PartialRange { lo, hi, .. } => {
-            for bound in [lo, hi].into_iter().flatten() {
-                walk_expr(bound, f);
-            }
-        }
-        Expr::Unary { rhs, .. } => walk_expr(rhs, f),
-        Expr::Binary { lhs, rhs, .. } => {
-            walk_expr(lhs, f);
-            walk_expr(rhs, f);
-        }
-        Expr::IfExpr {
-            cond, then, els, ..
-        } => {
-            walk_expr(cond, f);
-            walk_expr(then, f);
-            walk_expr(els, f);
-        }
-        Expr::Match {
-            scrutinee, arms, ..
-        } => {
-            walk_expr(scrutinee, f);
-            for arm in arms {
-                walk_block(&mut arm.body, f);
-            }
-        }
-        Expr::Call {
-            callee,
-            type_args,
-            qualifier,
-            args,
-            ..
-        } => {
-            walk_expr(callee, f);
-            for argument in type_args {
-                walk_generic_arg(argument, f);
-            }
-            if let Some(qualifier) = qualifier {
-                walk_type(qualifier, f);
-            }
-            for argument in args {
-                walk_expr(argument, f);
-            }
-        }
-        Expr::Construct {
-            ty, args, spread, ..
-        } => {
-            if let Some(ty) = ty {
-                walk_type(ty, f);
-            }
-            for argument in args {
-                if let Some(value) = &mut argument.value {
-                    walk_expr(value, f);
-                }
-            }
-            if let Some(spread) = spread {
-                walk_expr(spread, f);
-            }
-        }
-        Expr::Concat { parts: items, .. }
-        | Expr::Array { elems: items, .. }
-        | Expr::Tuple { elems: items, .. } => {
-            for item in items {
-                walk_expr(item, f);
-            }
-        }
-    }
 }
 
 /// `for i in R` where `R` is a constant range: the range itself. A generate
@@ -691,6 +453,7 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
                 }
                 block(inner, ranges, resolved);
             }
+            Stmt::While { body: inner, .. } => block(inner, ranges, resolved),
             Stmt::If(nested) => if_stmt(nested, ranges, resolved),
             Stmt::Match(nested) => {
                 for arm in &mut nested.arms {
@@ -708,7 +471,7 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
             None => {}
         }
     }
-    for module in modules {
+    for module in modules.iter_mut() {
         for item in &mut module.items {
             match item {
                 Item::Fn(function) => {
@@ -736,4 +499,263 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
             }
         }
     }
+    // `v[R]`: a slice by the named range is the written one (#280). The
+    // checker and lowering read a slice from its `lo..hi`, so `v[R]` typed
+    // as one element.
+    let mut slice = |e: &mut Expr| {
+        if let Expr::Index { index, .. } = e {
+            if let Expr::Path(path) = index.as_ref() {
+                if let Some(value) = resolved.resolved(path.span).and_then(|id| ranges.get(&id)) {
+                    **index = value.clone();
+                }
+            }
+        }
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut slice);
+        }
+    }
+}
+
+/// `stage[i] = { .din = x }` (or `= {}`) on an instance array: the element's
+/// entity, `stage[i] = Cell { .din = x }`, as the declaration names it. A
+/// slot already exists from its declaration; this only rebuilds it with the
+/// connections written (#290).
+pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
+    fn stmt(statement: &mut Stmt, arrays: &HashMap<String, (Type, usize)>) {
+        match statement {
+            Stmt::Assign { target, value, .. } => {
+                // A whole slot: as many indices as the array has levels.
+                let mut root = &*target;
+                let mut depth = 0;
+                while let Expr::Index { base, .. } = root {
+                    root = base;
+                    depth += 1;
+                }
+                let Expr::Path(path) = root else { return };
+                let [name] = path.segments.as_slice() else {
+                    return;
+                };
+                let Some((entity, levels)) = arrays.get(&name.text) else {
+                    return;
+                };
+                if depth != *levels {
+                    return;
+                }
+                match value {
+                    Expr::Construct { ty: ty @ None, .. } => *ty = Some(entity.clone()),
+                    Expr::Concat { parts, span } if parts.is_empty() => {
+                        *value = Expr::Construct {
+                            ty: Some(entity.clone()),
+                            args: Vec::new(),
+                            spread: None,
+                            span: *span,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                for inner in &mut body.stmts {
+                    stmt(inner, arrays);
+                }
+            }
+            Stmt::If(nested) => if_stmt(nested, arrays),
+            _ => {}
+        }
+    }
+    fn if_stmt(statement: &mut IfStmt, arrays: &HashMap<String, (Type, usize)>) {
+        for inner in &mut statement.then.stmts {
+            stmt(inner, arrays);
+        }
+        match statement.else_.as_deref_mut() {
+            Some(ElseBranch::Block(block)) => {
+                for inner in &mut block.stmts {
+                    stmt(inner, arrays);
+                }
+            }
+            Some(ElseBranch::If(nested)) => if_stmt(nested, arrays),
+            None => {}
+        }
+    }
+    for module in modules {
+        for item in &mut module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            let arrays: HashMap<String, (Type, usize)> = implementation
+                .items
+                .iter()
+                .filter_map(|member| match member {
+                    ImplItem::Let(LetDecl {
+                        name,
+                        ty: Some(ty @ Type::Indexed { .. }),
+                        value: None,
+                        ..
+                    }) => {
+                        // `Cell[R][C]`: the element under every level (#300).
+                        let mut base = ty;
+                        let mut levels = 0;
+                        while let Type::Indexed { base: inner, .. } = base {
+                            base = inner;
+                            levels += 1;
+                        }
+                        let head = match base {
+                            Type::Generic { base, .. } => base.as_ref(),
+                            head => head,
+                        };
+                        let Type::Path(path) = head else {
+                            return None;
+                        };
+                        let id = resolved.resolved(path.span)?;
+                        (resolved.kind_of(id) == Some(DefKind::Entity))
+                            .then(|| (name.text.clone(), (base.clone(), levels)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if arrays.is_empty() {
+                continue;
+            }
+            for member in &mut implementation.items {
+                if let ImplItem::Stmt(statement) = member {
+                    stmt(statement, &arrays);
+                }
+            }
+        }
+    }
+}
+
+/// `y: unsigned[x'length] out`: an attribute of a port or signal in a
+/// declared type is read from that declaration's own type, so `x:
+/// unsigned[W]` gives `W` per instance. Widths are evaluated before any
+/// signal exists, and the name was read as a value there, which had none
+/// (#295). `'length`, `'low` and `'high` of a width (`[8]` is `0..7` by
+/// position) or of a literal range.
+pub fn fold_type_attributes(modules: &mut [Module], resolved: &Resolved) {
+    let replacements = {
+        let declarations =
+            crate::resolve::declarations::DeclarationIndex::collect(resolved, modules);
+        let mut replacements = HashMap::new();
+        for item in modules.iter().flat_map(|module| &module.items) {
+            let owner = match item {
+                Item::Entity(entity) => resolved.declared(entity.name.span),
+                Item::Impl(implementation) => declarations.entity_type_id(&implementation.target),
+                _ => None,
+            };
+            let Some(owner) = owner else { continue };
+            let mut read = |expression: &Expr| {
+                let Expr::SysAttr { base, attr, span } = expression else {
+                    return;
+                };
+                let Expr::Path(path) = base.as_ref() else {
+                    return;
+                };
+                let [name] = path.segments.as_slice() else {
+                    return;
+                };
+                // Names in width expressions may be unresolved. Limit this
+                // lexical lookup to the selected declaration's own interface.
+                let declared = declarations
+                    .entity(owner)
+                    .and_then(|entity| entity.ports.iter().find(|port| port.name.text == name.text))
+                    .map(|port| &port.ty)
+                    .or_else(|| {
+                        declarations
+                            .implementations_for(owner)
+                            .find_map(|implementation| {
+                                implementation.items.iter().find_map(|member| match member {
+                                    ImplItem::Let(declaration)
+                                        if declaration.name.text == name.text =>
+                                    {
+                                        declaration.ty.as_ref()
+                                    }
+                                    _ => None,
+                                })
+                            })
+                    });
+                let Some(ty) = declared.and_then(|ty| declarations.normalize_type(ty)) else {
+                    return;
+                };
+                let Type::Indexed {
+                    index: Some(index), ..
+                } = ty.as_ref()
+                else {
+                    return;
+                };
+                let literal = |value: i128| {
+                    let magnitude = Expr::Int {
+                        text: value.unsigned_abs().to_string(),
+                        span: *span,
+                    };
+                    if value < 0 {
+                        Expr::Unary {
+                            op: UnOp::Neg,
+                            rhs: Box::new(magnitude),
+                            span: *span,
+                        }
+                    } else {
+                        magnitude
+                    }
+                };
+                let replacement = match (index.as_ref(), attr.text.as_str()) {
+                    (Expr::Range { lo, hi, .. }, attribute) => {
+                        let (Ok(left), Ok(right)) = (
+                            consteval::evaluate(lo, &declarations, 0),
+                            consteval::evaluate(hi, &declarations, 0),
+                        ) else {
+                            return;
+                        };
+                        let value = match attribute {
+                            "length" => left
+                                .abs_diff(right)
+                                .checked_add(1)
+                                .and_then(|length| i128::try_from(length).ok()),
+                            "low" => Some(left.min(right)),
+                            "high" => Some(left.max(right)),
+                            "left" => Some(left),
+                            "right" => Some(right),
+                            _ => None,
+                        };
+                        let Some(value) = value else { return };
+                        literal(value)
+                    }
+                    (Expr::PartialRange { .. }, _) => return,
+                    (width, "length") => width.clone(),
+                    (_, "low" | "left") => literal(0),
+                    (width, "high" | "right") => Expr::Binary {
+                        op: BinOp::Sub,
+                        lhs: Box::new(width.clone()),
+                        rhs: Box::new(literal(1)),
+                        span: *span,
+                    },
+                    _ => return,
+                };
+                replacements.insert(*span, replacement);
+            };
+            match item {
+                Item::Entity(entity) => {
+                    for port in &entity.ports {
+                        crate::syntax::visit::read_roots::ty(&port.ty, &mut |_| {}, &mut read);
+                    }
+                }
+                Item::Impl(implementation) => {
+                    for member in &implementation.items {
+                        if let ImplItem::Let(LetDecl { ty: Some(ty), .. }) = member {
+                            crate::syntax::visit::read_roots::ty(ty, &mut |_| {}, &mut read);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        replacements
+    };
+    crate::syntax::visit::write::modules(modules, &mut |_| {}, &mut |expression| {
+        if let Some(replacement) = replacements.get(&expr_span(expression)) {
+            *expression = replacement.clone();
+        }
+    });
 }

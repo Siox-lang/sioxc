@@ -370,7 +370,7 @@ fn trait_argument_diagnostics_keep_definition_and_use_site_identity() {
 #[test]
 fn invalid_method_shapes_do_not_cascade_into_signature_type_errors() {
     for method in [
-        "fn apply(value: real) -> real { return value; }",
+        "static fn apply(value: real) -> real { return value; }",
         "fn apply(self, value: real, extra: integer) -> real { return value; }",
     ] {
         let source = format!(
@@ -512,7 +512,7 @@ fn source_from_contract_names_the_source_and_target_types() {
         let user = format!(
             "module model; struct Value(integer);
              impl core::convert::From<real> for Value {{
-                 fn from(value: {input}) -> Value {{ return Value(1); }}
+                 static fn from(value: {input}) -> Value {{ return Value(1); }}
              }}"
         );
         assert_errors(

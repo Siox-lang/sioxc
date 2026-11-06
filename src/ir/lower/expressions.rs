@@ -5,6 +5,12 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        if let Some(Val::Scalar(value)) = self.converted_value(e, &HashMap::new()) {
+            return value;
+        }
+        if let Some(value) = self.computed_bit(e) {
+            return value;
+        }
         if let Some(value) = self.promoted_operand(e, &HashMap::new()) {
             return value;
         }
@@ -299,9 +305,6 @@ impl<'a> Lowering<'a> {
                     if let Some(v) = self.lower_custom_index(base, index) {
                         return v;
                     }
-                }
-                if self.record_unelaborated_instance_use(e) {
-                    return Expr::Unknown;
                 }
                 if self.is_unresolved_instance_array_reference(e) {
                     return Expr::Unknown;
@@ -847,6 +850,17 @@ impl<'a> Lowering<'a> {
             let Val::Fields(fields) = self.lower_val_env(expression, env) else {
                 return None;
             };
+            // Composite elements (`M[0][1]`, `P[0].x`) compare leaf by leaf;
+            // both operands have the checked type's leaves, so name order
+            // pairs them (#283).
+            if matches!(
+                element.kind,
+                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+            ) {
+                let mut leaves = fields;
+                leaves.sort_by(|a, b| a.0.cmp(&b.0));
+                return Some((leaves.into_iter().map(|(_, value)| value).collect(), false));
+            }
             let fields = fields.into_iter().collect::<HashMap<_, _>>();
             let elements = loop_range(range.left, range.right)
                 .into_iter()
@@ -968,6 +982,23 @@ impl<'a> Lowering<'a> {
         if let Some(crate::types::Ty::Array { len, low, .. }) = self.promotion_of(e) {
             return Some((low + i64::from(*len) - 1, *low));
         }
+        if let ast::Expr::Binary {
+            op: ast::BinOp::Custom { symbol, .. },
+            lhs,
+            rhs,
+            ..
+        } = e
+        {
+            // An operator's declared result owns its labels, not its operands.
+            if let Some(range) = self
+                .source_operand_layout(e, env)
+                .and_then(|layout| layout.index_range())
+                .map(|range| (range.left, range.right))
+                .or_else(|| self.custom_operator_range(symbol, lhs, rhs))
+            {
+                return Some(range);
+            }
+        }
         match e {
             ast::Expr::Path(_) => {
                 let path = expr_path(e)?;
@@ -1003,11 +1034,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
                     .or_else(|| self.persisted_range(&path))
             }
-            ast::Expr::Field { .. }
-            | ast::Expr::Binary {
-                op: ast::BinOp::Custom { .. },
-                ..
-            } => self
+            ast::Expr::Field { .. } => self
                 .source_operand_layout(e, env)
                 .and_then(|layout| layout.index_range())
                 .map(|range| (range.left, range.right)),
@@ -1058,6 +1085,23 @@ impl<'a> Lowering<'a> {
                 .and_then(|layout| layout.index_range())
                 .map(|range| (range.left, range.right)),
         }
+    }
+
+    /// The range a custom operator's impl declares for its result, through
+    /// aliases; `None` when it writes none (`-> unsigned`, `-> Self`).
+    fn custom_operator_range(
+        &self,
+        symbol: &str,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+    ) -> Option<(i64, i64)> {
+        let function = self.source_binary_operator(
+            symbol,
+            &self.operand_type_name(lhs)?,
+            self.operand_type_name(rhs).as_deref(),
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
+        )?;
+        self.declared_range(self.resolve_alias(function.ret.as_ref()?), &self.cur_env)
     }
 
     /// Bind `name'left`/`'right`/`'high`/`'low` for an inlined body, beside
@@ -1186,12 +1230,72 @@ impl<'a> Lowering<'a> {
     /// Constant source bounds translated from declared labels to packed
     /// storage positions. Arrays are excluded because their elements are
     /// separate signals rather than bits of one scalar.
+    /// A runtime bit of a computed packed value (`(a + b)[i]`, `f()[i]`):
+    /// the value shifted down to the bit, as a signal's runtime bit is
+    /// (#316). A named vector reads through its own signal instead.
+    pub(super) fn computed_bit(&self, e: &ast::Expr) -> Option<Expr> {
+        let ast::Expr::Index { base, index, .. } = e else {
+            return None;
+        };
+        if expr_path(base).is_some()
+            || matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            )
+            || self.eval_const(index, &self.cur_env).is_some()
+        {
+            return None;
+        }
+        let Some(crate::types::Ty::Array {
+            family: Some(_),
+            len,
+            low,
+            ..
+        }) = self.expr_types.get(&ast::expr_span(base))
+        else {
+            return None;
+        };
+        let labels: Vec<i64> = (0..i64::from(*len)).map(|offset| low + offset).collect();
+        let span = ast::expr_span(index);
+        let checked = self.checked_runtime_index_with_bounds(
+            index,
+            &labels,
+            low + i64::from(*len) - 1,
+            *low,
+        )?;
+        let position = self.source_binary(
+            BinOp::Sub,
+            &checked,
+            &self.source_index_label(*low, span),
+            span,
+        );
+        let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
+        let value = self.lower_expr(base);
+        let shifted = self.source_binary(BinOp::Shr, &value, &position, span);
+        Some(self.source_slice(&shifted, 0, 0, span))
+    }
+
     pub(super) fn storage_slice_bounds(
         &self,
         base: &ast::Expr,
         index: &ast::Expr,
     ) -> Option<(u32, u32)> {
         let named = expr_path(base).and_then(|path| {
+            // An unpacked array's elements are signals of their own, not
+            // bits of one: `arr[0..1]` is no bit slice (#314).
+            let unpacked = |layout: &SourceLayout| {
+                matches!(
+                    layout.kind,
+                    LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                )
+            };
+            if self.persisted_layout(&path).is_some_and(unpacked)
+                || self
+                    .block_local_binding(base)
+                    .is_some_and(|binding| matches!(binding.value, Val::Fields(_)))
+            {
+                return None;
+            }
             let range = self
                 .block_local_binding(base)
                 .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))

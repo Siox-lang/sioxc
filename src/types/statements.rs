@@ -155,7 +155,7 @@ impl<'a> Checker<'a> {
         names: &HashMap<String, Ty>,
     ) -> bool {
         match statement {
-            Stmt::Use(_) => false,
+            Stmt::Use(_) | Stmt::Process(_) => false,
             Stmt::Return { .. } => true,
             Stmt::If(if_) => {
                 self.block_guarantees_return(&if_.then, names)
@@ -175,7 +175,11 @@ impl<'a> Checker<'a> {
                         .all(|arm| self.block_guarantees_return(&arm.body, names))
                     && self.match_is_exhaustive(&match_.scrutinee, &match_.arms, names)
             }
-            Stmt::Let(_) | Stmt::Assign { .. } | Stmt::For { .. } | Stmt::Expr(_) => false,
+            Stmt::Let(_)
+            | Stmt::Assign { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::Expr(_) => false,
         }
     }
 
@@ -370,9 +374,25 @@ impl<'a> Checker<'a> {
         self.type_cache.borrow_mut().clear();
         match s {
             Stmt::Use(_) => {}
+            // A process a generate block builds, once per iteration.
+            Stmt::Process(process) => {
+                if self.in_testbench.get() {
+                    self.error(
+                        codes::UNSUPPORTED_EXPR,
+                        process.span,
+                        "a process inside a generate block is not supported in a testbench yet"
+                            .to_string(),
+                    );
+                }
+                let bounds = self.array_bounds.borrow().clone();
+                self.check_process_block(&process.body, dirs, ranged, sym, &bounds);
+            }
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
+                if l.is_static {
+                    self.check_static_let(l);
+                }
                 // A local's type has the same layout rules as a port's: a
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
@@ -496,6 +516,30 @@ impl<'a> Checker<'a> {
                     expected_return,
                 );
             }
+            Stmt::While { cond, body, span } => {
+                // A loop of run-time length: hardware loops unroll at
+                // elaboration, so only a testbench (or a function it calls)
+                // can run one.
+                if self.in_fn_body.get() {
+                    if let Some(current) = self.current_fn.get() {
+                        self.testbench_only_fns
+                            .borrow_mut()
+                            .insert(current, "while".to_string());
+                    }
+                } else if !self.in_testbench.get() {
+                    self.error_with_help(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        "`while` is only available in a testbench".to_string(),
+                        "hardware loops unroll at elaboration: use `for i in 0..N` with constant \
+                         bounds, or move the loop into a `#[test]` entity"
+                            .to_string(),
+                    );
+                }
+                self.check_condition(cond, sym);
+                self.check_expr(cond, sym);
+                self.check_stmt_sequence(&body.stmts, dirs, sym, ranged, expected_return);
+            }
             Stmt::Expr(e) => {
                 self.check_no_effect(e);
                 if matches!(
@@ -534,7 +578,7 @@ impl<'a> Checker<'a> {
                     match (expected_return, value) {
                         (Some(expected), Some(value))
                             if !matches!(expected, Ty::Error)
-                                && !self.assignable(expected, value, sym) =>
+                                && !self.site_assignable(expected, value, sym) =>
                         {
                             let actual = self.type_of(value, sym);
                             self.error_with_help(
@@ -601,6 +645,93 @@ impl<'a> Checker<'a> {
             "this statement has no effect".to_string(),
             help.to_string(),
         );
+    }
+
+    /// One copy per specialization is not built yet; a shared copy would mix
+    /// specializations of different widths.
+    pub(super) fn reject_generic_static(&mut self, l: &LetDecl) {
+        self.error_with_help(
+            codes::UNSUPPORTED_EXPR,
+            l.span,
+            "`static let` in a generic function is not supported yet".to_string(),
+            "each specialization needs its own copy; move the state into a non-generic \
+             function or a process"
+                .to_string(),
+        );
+    }
+
+    /// A `static let` keeps its value between activations and calls, so its
+    /// initializer runs once and must be a constant. One copy per function
+    /// is not yet split per generic specialization, and a hardware function's
+    /// register (one for the whole design) is not built yet: both are
+    /// reported rather than miscompiled. A hardware process's becomes its
+    /// register before resolution (`syntax::macros::hardware_statics`).
+    pub(super) fn check_static_let(&mut self, l: &LetDecl) {
+        if self.in_fn_body.get() {
+            if !self.type_params.borrow().is_empty() {
+                self.reject_generic_static(l);
+            }
+            // Until hardware lowering builds its register, a hardware call
+            // reports `f reaches static let`.
+            if let Some(current) = self.current_fn.get() {
+                self.testbench_only_fns
+                    .borrow_mut()
+                    .insert(current, "static let".to_string());
+            }
+        } else if !self.in_testbench.get() {
+            self.error_with_help(
+                codes::UNSUPPORTED_EXPR,
+                l.span,
+                "`static let` in a process inside a generate block is not supported yet"
+                    .to_string(),
+                "keep the state in an entity-body `let` written from a clocked process".to_string(),
+            );
+        }
+        let Some(value) = &l.value else {
+            return;
+        };
+        let mut offending = None;
+        let resolved = self.resolved;
+        crate::syntax::walk::walk_expr(&mut value.clone(), &mut |e| {
+            if offending.is_some() {
+                return false;
+            }
+            match e {
+                Expr::Path(path) => {
+                    if resolved
+                        .resolved(path.span)
+                        .and_then(|id| resolved.kind_of(id))
+                        == Some(DefKind::Local)
+                    {
+                        offending = Some(path.span);
+                    }
+                }
+                Expr::Call { callee, span, .. } => {
+                    if let Expr::Path(path) = callee.as_ref() {
+                        if let [segment] = path.segments.as_slice() {
+                            if matches!(
+                                segment.text.as_str(),
+                                "rand" | "randint" | "uniform" | "read" | "exists" | "seed"
+                            ) {
+                                offending = Some(*span);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            true
+        });
+        if let Some(span) = offending {
+            self.error_with_help(
+                codes::NON_CONSTANT_INITIALIZER,
+                span,
+                "a `static let` initializer must be a constant".to_string(),
+                "it runs once, before the first activation or call: use a literal or a \
+                 `const`, and assign the run-time value in the body"
+                    .to_string(),
+            );
+        }
     }
 
     /// `await`, `assert!`, `print!` and `warn!` drive and observe a simulation;

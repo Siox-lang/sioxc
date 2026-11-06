@@ -3,6 +3,130 @@
 use super::*;
 
 #[test]
+fn into_conversions_preserve_nominal_owner_identity() {
+    let provider = "module left;
+        pub struct Token { pub value: integer }
+        pub struct Target { pub value: integer }
+        pub type Input = Token;
+        pub type Output = Target;
+        impl Into<Target> for Token {
+            fn into() -> Target { return Target { .value = self.value + 11 }; }
+        }";
+    let other = "module right;
+        pub struct Token { pub value: integer }
+        pub struct Target { pub value: integer }";
+    for reversed in [false, true] {
+        for (name, parameter, result, expected_errors) in [
+            ("direct", "left::Token", "left::Target", 0),
+            ("alias", "left::Input", "left::Output", 0),
+            ("source", "right::Token", "left::Target", 1),
+            ("target", "left::Token", "right::Target", 1),
+            ("both", "right::Token", "right::Target", 1),
+        ] {
+            let caller = format!(
+                "module caller; fn convert(value: {parameter}) -> {result} {{ return value; }}"
+            );
+            let mut sources = vec![
+                (provider, FileId(0)),
+                (other, FileId(1)),
+                (caller.as_str(), FileId(2)),
+            ];
+            if reversed {
+                sources.reverse();
+            }
+            let sink = check_modules(&sources);
+            assert_eq!(
+                sink.error_count(),
+                expected_errors,
+                "{name}, reversed={reversed}: {:?}",
+                sink.diagnostics()
+            );
+            assert!(
+                sink.diagnostics()
+                    .iter()
+                    .all(
+                        |diagnostic| diagnostic.severity != crate::diag::Severity::Error
+                            || diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    ),
+                "only the invalid conversion should fail: {:?}",
+                sink.diagnostics()
+            );
+        }
+    }
+}
+
+#[test]
+fn into_array_contracts_keep_element_identity_and_declared_widths() {
+    let provider = "module left;
+        impl Into<Word> for Cell[] { fn into() -> Word { return 0; } }
+        impl Into<Fixed[8]> for Token { fn into() -> Fixed[8] { return 0; } }
+        pub enum Cell { Low, High }
+        pub struct Token { pub value: integer }
+        pub struct Word(Cell[]);
+        pub struct Fixed(Cell[]);";
+    let other = "module right; pub enum Cell { Low, High } pub struct Word(Cell[]);";
+    for reversed in [false, true] {
+        for (name, parameter, result, expected_errors) in [
+            ("unconstrained", "left::Cell[3]", "left::Word[3]", 0),
+            ("constrained", "left::Token", "left::Fixed[8]", 0),
+            ("element", "right::Cell[3]", "left::Word[3]", 1),
+            ("family", "left::Cell[3]", "right::Word[3]", 1),
+            ("width", "left::Token", "left::Fixed[3]", 1),
+        ] {
+            let caller = format!(
+                "module caller; fn convert(value: {parameter}) -> {result} {{ return value; }}"
+            );
+            let mut sources = vec![
+                (provider, FileId(0)),
+                (other, FileId(1)),
+                (caller.as_str(), FileId(2)),
+            ];
+            if reversed {
+                sources.reverse();
+            }
+            let sink = check_modules(&sources);
+            assert_eq!(
+                sink.error_count(),
+                expected_errors,
+                "{name}, reversed={reversed}: {:?}",
+                sink.diagnostics()
+            );
+        }
+    }
+}
+
+#[test]
+fn entity_return_rules_follow_alias_identity_without_capturing_type_parameters() {
+    let entities = "module devices;
+        pub entity Child {} pub type Handle = Child;";
+    let unrelated = "module data; pub struct Child(integer);";
+    let consumer = "module factory; use devices::Handle; use Data = data::Child;
+        entity T {}
+        trait Factory<T> { static fn create(value: T) -> T; }
+        trait HardwareFactory { static fn create() -> Handle; }
+        trait DataFactory { static fn create() -> Data; }";
+    for sources in [
+        [entities, unrelated, consumer],
+        [consumer, unrelated, entities],
+    ] {
+        let sources: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| (*source, FileId(index as u32)))
+            .collect();
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].code, Some(codes::INSTANCE_PLACEMENT));
+        assert!(errors[0].message.contains("cannot return an entity"));
+    }
+}
+
+#[test]
 fn entity_ports_and_private_members_follow_resolved_imports_in_both_module_orders() {
     let left = "module left; pub entity Cell { value: integer out }
         impl Cell { let hidden: integer = 7; value = hidden; }";
@@ -94,7 +218,7 @@ fn a_bus_port_accepts_real_fields_and_struct_methods() {
         "module m;\n\
              struct S { a: Bit, b: Bit }\n\
              view V for S { a out, b in }\n\
-             impl S { pub fn helper(self) -> Bit { return self.a; } }\n\
+             impl S { pub fn helper() -> Bit { return self.a; } }\n\
              entity E { bus: S V, q: Bit out, r: Bit out }\n\
              impl E { q = bus.a; r = bus.helper(); }\n",
     );
@@ -133,16 +257,16 @@ fn typed_records_expression_types() {
 fn views_overload_by_backing_struct_in_trait_impls() {
     let errors = check_src(
         "module m;\n\
-             trait Send<T> { fn send(self, value: T); }\n\
+             trait Send<T> { fn send(value: T); }\n\
              struct Stream { data: Bit, ready: Bit }\n\
              struct Queue { data: Bit, full: Bit }\n\
              view Source for Stream { data out, ready in }\n\
              view Source for Queue { data out, full in }\n\
              impl Send<Bit> for Stream Source {\n\
-               fn send(self, value: Bit) { self.data = value; }\n\
+               fn send(value: Bit) { self.data = value; }\n\
              }\n\
              impl Send<Bit> for Queue Source {\n\
-               fn send(self, value: Bit) { self.data = value; }\n\
+               fn send(value: Bit) { self.data = value; }\n\
              }\n\
              entity StreamProducer { bus: Stream Source }\n\
              entity QueueProducer { bus: Queue Source }\n",
@@ -344,8 +468,8 @@ fn nominal_array_newtype_preserves_its_declared_element_type() {
 /// `self` in a method signature is the impl target.
 fn self_in_method_signatures_is_the_impl_target() {
     let methods = "impl Left {\n\
-                         pub fn choose(self, rhs: Self) -> Self { return rhs; }\n\
-                         pub fn identity(value: Self) -> Self { return value; }\n\
+                         pub fn choose(rhs: Self) -> Self { return rhs; }\n\
+                         pub static fn identity(value: Self) -> Self { return value; }\n\
                        }\n";
     let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
     assert_eq!(
@@ -372,10 +496,10 @@ fn self_in_index_contracts_is_the_impl_target() {
     let contracts = "module m;\n\
              struct Box { pub value: integer }\n\
              impl Index<Self, Self> for Box {\n\
-               fn index(self, index: Self) -> Self { return index; }\n\
+               fn index(index: Self) -> Self { return index; }\n\
              }\n\
              impl IndexAssign<Self, Self> for Box {\n\
-               fn index_assign(self, index: Self, value: Self) {}\n\
+               fn index_assign(index: Self, value: Self) {}\n\
              }\n";
     let errors = check_src(&format!(
         "{}{}",
@@ -576,7 +700,7 @@ fn struct_literal_values_use_their_field_types() {
 #[test]
 fn unknown_field_and_method_are_reported() {
     let st =
-            "module m;\nstruct P { pub a: Bit }\nimpl P { pub fn get(self) -> Bit { return self.a; } }\n\
+        "module m;\nstruct P { pub a: Bit }\nimpl P { pub fn get() -> Bit { return self.a; } }\n\
                   entity E { y: Bit out }\nimpl E { let p: P; y = ";
     assert_eq!(
         check_src(&format!("{st}p.nosuch; }}\n")),
@@ -610,24 +734,24 @@ fn unknown_field_and_method_are_reported() {
 fn trait_impl_must_provide_the_required_methods() {
     let errors = |source: &str| check_modules(&[(source, FileId(0))]).error_count();
     let base =
-        "module m;\ntrait Tr { fn f(self) -> integer; fn g(self) -> integer; }\nstruct S { x: integer }\n";
+        "module m;\ntrait Tr { fn f() -> integer; fn g() -> integer; }\nstruct S { x: integer }\n";
     assert_eq!(
         errors(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> integer {{ return self.x; }} }}\n"
+            "{base}impl Tr for S {{ fn f() -> integer {{ return self.x; }} }}\n"
         )),
         1,
         "`g` is missing"
     );
     assert_eq!(
         errors(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> integer {{ return self.x; }} \
-                 fn g(self) -> integer {{ return self.x; }} }}\n"
+            "{base}impl Tr for S {{ fn f() -> integer {{ return self.x; }} \
+                 fn g() -> integer {{ return self.x; }} }}\n"
         )),
         0,
         "complete"
     );
     // A defaulted method is optional.
-    let defaulted = "module m;\ntrait D { fn f(self) -> integer { return 0; } }\n\
+    let defaulted = "module m;\ntrait D { fn f() -> integer { return 0; } }\n\
                          struct S { x: integer }\nimpl D for S {}\n";
     assert_eq!(errors(defaulted), 0);
 }
@@ -762,7 +886,7 @@ fn process_is_only_valid_on_an_inherent_entity_impl() {
         "a data type cannot own a process"
     );
     assert_eq!(
-            check_src("module m;\ntrait T { fn f(self); }\nentity E {}\nimpl T for E { fn f(self) {} drive: process {} }\n"),
+            check_src("module m;\ntrait T { fn f(); }\nentity E {}\nimpl T for E { fn f() {} drive: process {} }\n"),
             1,
             "a trait impl cannot add a process"
         );

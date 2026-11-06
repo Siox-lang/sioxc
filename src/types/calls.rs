@@ -51,6 +51,104 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// `unsigned[4](pkt)`, `integer(arr)`: a vector family or kernel type
+    /// built from a struct or an unpacked array needs a `From` for that pair,
+    /// as a struct or enum target does; without one it passed the checker
+    /// and had no hardware form, or reread the bytes in a test (#327).
+    /// `unsigned(v)` of a `Logic[]` stays: std declares it.
+    pub(super) fn check_composite_conversion(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let [argument] = args else { return };
+        let path = match callee {
+            Expr::Path(path) => path,
+            Expr::Index { base, .. } => match base.as_ref() {
+                Expr::Path(path) => path,
+                _ => return,
+            },
+            _ => return,
+        };
+        let [head] = path.segments.as_slice() else {
+            return;
+        };
+        let target = head.text.as_str();
+        let kernel = matches!(target, "integer" | "natural" | "real" | "Char");
+        let family = self
+            .path_key(path)
+            .is_some_and(|key| self.is_array_family(&key));
+        if !kernel && !family {
+            return;
+        }
+        if let Expr::Path(path) = callee {
+            if self.function_id(path).is_some() {
+                return;
+            }
+        }
+        // A named value only: a literal reads through its target (`B("0110")`),
+        // and typing a computed argument here ahead of the call's own check
+        // would fix its type out of context. What this lookup records is
+        // taken back, for the same reason.
+        if !matches!(argument, Expr::Path(_)) {
+            return;
+        }
+        let key = (
+            argument as *const Expr as usize,
+            sym as *const HashMap<String, Ty> as usize,
+        );
+        let span = expr_span(argument);
+        let cached = self.type_cache.borrow().contains_key(&key);
+        let recorded = self.expr_types.borrow().contains_key(&span);
+        let source_ty = self.type_of(argument, sym);
+        if !cached {
+            self.type_cache.borrow_mut().remove(&key);
+        }
+        if !recorded {
+            self.expr_types.borrow_mut().remove(&span);
+        }
+        let short = |key: &str| key.rsplit("::").next().unwrap_or(key).to_string();
+        let source = match &source_ty {
+            Ty::Named(id) => {
+                let key = self.definition_key(*id);
+                let record = key.as_ref().is_some_and(|key| {
+                    self.structs
+                        .get(key)
+                        .is_some_and(|(_, fields)| !fields.is_empty())
+                });
+                if !record {
+                    return;
+                }
+                key
+            }
+            Ty::Array {
+                family: None, elem, ..
+            } => self.ty_head(elem),
+            _ => return,
+        };
+        let Some(source) = source else { return };
+        let routed = self
+            .conversion_sigs
+            .iter()
+            .any(|(to, from)| short(to) == target && short(from) == short(&source));
+        if routed {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            expr_span(callee),
+            format!(
+                "no conversion from `{}` to `{}`",
+                self.ty_display(&source_ty),
+                crate::syntax::pretty::expr_string(callee)
+            ),
+            "`T(x)` needs an `impl From<S> for T`; build the value from the struct's fields \
+             or the array's elements"
+                .to_string(),
+        );
+    }
+
     /// Whether `target(x)` is defined for an `x` of type `source`: an
     /// `impl From<source> for target`, or a total nominal derivation.
     pub(super) fn conversion_exists(&self, target: &Ty, source: &Ty) -> bool {
@@ -537,7 +635,8 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.associated_conversion_ty(p).is_some())
+                || (matches!(name.text.as_str(), "default" | "new")
+                    && self.associated_conversion_ty(p).is_some())
             {
                 return;
             }
@@ -621,7 +720,7 @@ impl<'a> Checker<'a> {
             if self.report_bitless_concat(&want, arg, sym) {
                 continue;
             }
-            if want == Ty::Error || self.assignable(&want, arg, sym) {
+            if want == Ty::Error || self.site_assignable(&want, arg, sym) {
                 continue;
             }
             let got = self.type_of(arg, sym);
@@ -664,7 +763,8 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.associated_conversion_ty(path).is_some())
+                || (matches!(name.text.as_str(), "default" | "new")
+                    && self.associated_conversion_ty(path).is_some())
             {
                 return;
             }
@@ -780,7 +880,7 @@ impl<'a> Checker<'a> {
 
         let exact = match function {
             "rand" | "uniform" | "stop" | "finish" => Some(0),
-            "seed" | "exists" | "read" | "await" => Some(1),
+            "seed" | "exists" | "read" => Some(1),
             "randint" | "resize" => Some(2),
             _ => None,
         };
@@ -883,7 +983,7 @@ impl<'a> Checker<'a> {
                         codes::TYPE_MISMATCH,
                         expr_span(&args[0]),
                         "`write!` writes to a `Formatter`".to_string(),
-                        "use it in `impl Display for T { fn fmt(self, f: Formatter) { write!(f, ..); } }`, \
+                        "use it in `impl Display for T { fn fmt(f: Formatter) { write!(f, ..); } }`, \
                          or print with `print!`"
                             .to_string(),
                     );
@@ -902,16 +1002,36 @@ impl<'a> Checker<'a> {
                 let Some(argument) = args.first() else {
                     return;
                 };
+                // `await <condition> for <time>`: the timeout is a time and
+                // the awaited thing an edge or condition, not a time.
+                if let Some(timeout) = args.get(1) {
+                    if !self.await_operand_is_time(timeout, sym) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            expr_span(timeout),
+                            "the timeout after `for` must be a time".to_string(),
+                            "write a duration with its unit: `await done == '1' for 8us;`"
+                                .to_string(),
+                        );
+                    }
+                    if self.await_operand_is_time(argument, sym) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            expr_span(argument),
+                            "`await … for` waits for a condition or an edge, not a time"
+                                .to_string(),
+                            "a plain delay is `await 8us;`".to_string(),
+                        );
+                        return;
+                    }
+                }
                 // A suffixed literal (`5ns`) is a time; lowering checks its
                 // range.
                 if matches!(argument, Expr::SuffixLit { .. }) {
                     return;
                 }
                 let ty = self.type_of(argument, sym);
-                let time = self
-                    .type_kind_name(&ty)
-                    .is_some_and(|name| name.rsplit("::").next() == Some("time"));
-                if time {
+                if self.await_operand_is_time(argument, sym) {
                 } else if matches!(ty, Ty::Integer | Ty::Real) {
                     self.error_with_help(
                         codes::TYPE_MISMATCH,
@@ -941,6 +1061,17 @@ impl<'a> Checker<'a> {
             }
             _ => {}
         }
+    }
+
+    /// Whether an `await` operand is a time: a suffixed literal (`5ns`) or a
+    /// value of `time`.
+    fn await_operand_is_time(&mut self, operand: &Expr, sym: &HashMap<String, Ty>) -> bool {
+        if matches!(operand, Expr::SuffixLit { .. }) {
+            return true;
+        }
+        let ty = self.type_of(operand, sym);
+        self.type_kind_name(&ty)
+            .is_some_and(|name| name.rsplit("::").next() == Some("time"))
     }
 
     /// Whether a bare call name is something the language declares somewhere:
@@ -1080,6 +1211,17 @@ impl<'a> Checker<'a> {
         else {
             return;
         };
+        if l.is_static {
+            self.error_with_help(
+                codes::INSTANCE_PLACEMENT,
+                l.span,
+                "a `static let` cannot hold an entity".to_string(),
+                "an instance is hardware, built once where it is declared: instantiate it at \
+                 the top of an entity body and wire it through ports"
+                    .to_string(),
+            );
+            return;
+        }
         let context = if self.in_fn_body.get() {
             "a function"
         } else if self.in_match_arm.get() {

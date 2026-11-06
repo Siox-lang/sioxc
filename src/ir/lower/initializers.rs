@@ -125,11 +125,18 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         span: crate::diag::Span,
     ) {
+        // ...or part of one (`= TABLE[1..2]`, `= TABLE[2..]`), as a `const`
+        // already folds it (#357).
+        let slice = || match self.const_table_index(value, &self.cur_env) {
+            Some(Ok(values)) => Some(values),
+            _ => None,
+        };
         if let Some(values) = self
             .free_fns
             .constant_expr_key(value)
             .and_then(|key| self.const_arrays.get(&key))
             .cloned()
+            .or_else(slice)
         {
             let indices = self.local_array.get(prefix).cloned().unwrap_or_default();
             for (folded, index) in values.into_iter().zip(indices) {
@@ -389,9 +396,22 @@ impl<'a> Lowering<'a> {
     /// (`let p: Pair = K`). `false` when `value` names no struct constant, so
     /// the caller can fall through to its diagnostic.
     pub(super) fn seed_from_struct_const(&mut self, prefix: &str, value: &ast::Expr) -> bool {
-        let Some(fields) = expr_path(value).and_then(|name| self.const_struct_value(&name)) else {
+        let Some(fields) = self
+            .free_fns
+            .constant_expr_key(value)
+            .and_then(|key| self.const_struct_value(&key))
+            .or_else(|| expr_path(value).and_then(|name| self.const_struct_value(&name)))
+        else {
             return false;
         };
+        // A power-on value is words; a constant computed by a call is folded
+        // only as a value (ponytail: no Expr evaluator yet).
+        if !fields
+            .iter()
+            .all(|(_, value)| matches!(value, Expr::Const(_)))
+        {
+            return false;
+        }
         for (field, folded) in fields {
             let Expr::Const(word) = folded else { continue };
             let Some(&id) = self.locals.get(&format!("{prefix}.{field}")) else {
@@ -473,13 +493,18 @@ impl<'a> Lowering<'a> {
     /// `fold_const` left in the constant table. `None` when `name` names no
     /// struct constant.
     pub(super) fn const_struct_value(&self, name: &str) -> Option<Vec<(String, Expr)>> {
-        let prefix = format!("{name}.");
+        // `K.a` is field `a`; `T[0].x` is leaf `[0].x` of `T`.
         let mut fields: Vec<(String, Expr)> = self
             .const_values
             .iter()
             .filter_map(|(key, value)| {
-                key.strip_prefix(&prefix)
-                    .map(|field| (field.to_string(), value.clone()))
+                let rest = key.strip_prefix(name)?;
+                let leaf = match rest.strip_prefix('.') {
+                    Some(field) => field,
+                    None if rest.starts_with('[') => rest,
+                    None => return None,
+                };
+                Some((leaf.to_string(), value.clone()))
             })
             .collect();
         if fields.is_empty() {
@@ -647,6 +672,14 @@ impl<'a> Lowering<'a> {
                 return Some(words);
             }
         }
+        // An element of a constant table (`= TABLE[1]`, #357).
+        if let Some(Err(element)) = self.const_table_index(expression, &self.cur_env) {
+            match element {
+                Expr::Const(value) => return Some(vec![value]),
+                Expr::WideConst(words) => return Some(words),
+                _ => {}
+            }
+        }
         match self.lower_const_value(expression, &self.cur_env) {
             Some(Expr::WideConst(words)) => Some(words),
             Some(Expr::Const(value)) => Some(vec![value]),
@@ -719,19 +752,19 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Fold each `impl New for T { fn new() -> T { return <const>; } }` to the
+    /// Fold each `impl Default for T { fn default() -> T { return <const>; } }` to the
     /// type's uninitialized default value. Runs after `impls`/`enum_variants`
     /// are collected.
     pub(super) fn compute_new_defaults(&self) -> HashMap<String, u64> {
         let mut out = HashMap::new();
-        // Trait impls land in `op_impls` keyed by (trait, type); `impl New for T`
-        // has a `new()` whose constant body is `T`'s uninitialized default.
+        // Trait impls land in `op_impls` keyed by (trait, type); `impl Default for T`
+        // has a `default()` whose constant body is `T`'s uninitialized default.
         for (tr, ty, fns) in self.op_impls.iter() {
-            if tr != "New" {
+            if tr != "Default" {
                 continue;
             }
             for (f, _) in fns {
-                if f.name.text != "new" {
+                if f.name.text != "default" {
                     continue;
                 }
                 if let Some(body) = &f.body {

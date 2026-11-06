@@ -46,7 +46,7 @@ impl<'a> Checker<'a> {
                         elem: Box::new(v),
                         len: width,
                         family: None,
-                        low: 0,
+                        low,
                     },
                     // A sized index on an *unconstrained* array fills its
                     // hole rather than nesting: `string[5]` is `Char[5]`, not
@@ -68,7 +68,7 @@ impl<'a> Checker<'a> {
                         elem: Box::new(other),
                         len: width,
                         family: None,
-                        low: 0,
+                        low,
                     },
                 }
             }

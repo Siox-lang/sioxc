@@ -38,7 +38,7 @@ new active diagnostics. E-P028 no longer rejects multiple test processes.
 | [E-P019](E-P019.md) | Statement without an effect |
 | [E-P020](E-P020.md) | Entity instance in a nonstructural location |
 | [E-P021](E-P021.md) | Nonconstant signal initializer |
-| [E-P022](E-P022.md) | Reference to an omitted instance |
+| [E-P022](E-P022.md) | Retired omitted-instance restriction |
 | [E-P023](E-P023.md) | Compile-time file input failed |
 | [E-P024](E-P024.md) | Private member access |
 | [E-P025](E-P025.md) | Private type in a public interface |
@@ -56,6 +56,7 @@ new active diagnostics. E-P028 no longer rejects multiple test processes.
 | [E-P037](E-P037.md) | Invalid type attribute |
 | [E-P038](E-P038.md) | Unsupported recursive call frame |
 | [E-P039](E-P039.md) | Match expression has no value for some cases |
+| [E-P040](E-P040.md) | Unsupported derived implementation |
 | [W-P002](W-P002.md) | Possible combinational latch |
 | [W-P003](W-P003.md) | Unused internal signal |
 | [W-P004](W-P004.md) | Unused generic parameter |
@@ -73,3 +74,5 @@ new active diagnostics. E-P028 no longer rejects multiple test processes.
 | [W-P017](W-P017.md) | Unknown lint name |
 | [W-P018](W-P018.md) | Match ranges share an endpoint |
 | [W-P019](W-P019.md) | Runtime hardware-loop bound |
+| [W-P020](W-P020.md) | Default constructor was renamed |
+| [W-P021](W-P021.md) | Instance-array slot is unwired |

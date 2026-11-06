@@ -222,6 +222,11 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, i64>,
         expanding: &mut HashSet<String>,
     ) -> SourceLayout {
+        // `std::ffi::c_float` is a `real` by type; the layout keeps its name
+        // so a C call can store it as a `float`.
+        let c_float = crate::ir::CScalar::of(ty, self.resolved, |path| {
+            self.aliases.get(&self.free_fns.type_alias_path_key(path)?)
+        }) == Some(crate::ir::CScalar::Float);
         let ty = self.normalize_layout_type(ty);
         let span = source_type_span(&ty);
         let rendered = crate::syntax::pretty::type_str(&ty);
@@ -407,9 +412,13 @@ impl<'a> Lowering<'a> {
                 kind: LayoutKind::Scalar {
                     width,
                     domain,
-                    nominal: head.filter(|name| {
-                        !matches!(name.as_str(), "integer" | "natural" | "real" | "Char")
-                    }),
+                    nominal: if c_float {
+                        Some("std::ffi::c_float".to_string())
+                    } else {
+                        head.filter(|name| {
+                            !matches!(name.as_str(), "integer" | "natural" | "real" | "Char")
+                        })
+                    },
                     value_range: None,
                 },
             },
@@ -432,9 +441,7 @@ impl<'a> Lowering<'a> {
             subst_type_params(ty, &self.cur_type_env)
         };
         match &substituted {
-            ast::Type::Path(path) if path.segments.len() == 1 => {
-                self.resolve_alias(&substituted).clone()
-            }
+            ast::Type::Path(_) => self.resolve_alias(&substituted).clone(),
             ast::Type::Indexed {
                 base,
                 index: Some(index),

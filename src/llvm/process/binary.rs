@@ -822,6 +822,9 @@ pub(super) fn dynamic_index_position<'ctx>(
     if count == 0 {
         return None;
     }
+    // A signed index sign-extends: `arr[i]` with `i: signed[4] = -2` on
+    // `T[-2..0]` read the element two past it (#345).
+    let signed = process_value_is_signed(design, index);
     let index = process_value_at(
         context,
         module,
@@ -829,7 +832,7 @@ pub(super) fn dynamic_index_position<'ctx>(
         design,
         index,
         arithmetic_width,
-        false,
+        signed,
         active,
         index_sites,
         cache,

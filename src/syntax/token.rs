@@ -89,6 +89,10 @@ pub enum TokenKind {
     Match,
     /// The `for` keyword.
     For,
+    /// The `while` keyword.
+    While,
+    /// The `static` keyword: `static fn` (no receiver), `static let`.
+    Static,
     /// The `return` keyword.
     Return,
     /// The `extern` keyword.
@@ -235,6 +239,8 @@ impl TokenKind {
             TokenKind::Else => "`else`",
             TokenKind::Match => "`match`",
             TokenKind::For => "`for`",
+            TokenKind::While => "`while`",
+            TokenKind::Static => "`static`",
             TokenKind::Return => "`return`",
             TokenKind::Extern => "`extern`",
             TokenKind::SelfKw => "`self`",

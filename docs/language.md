@@ -31,6 +31,18 @@ precise reference.
   (`let dut: Sub; dut.a = x; y = dut.y;`). A struct literal also supports
   **spread-update** — `{ ..base, .x = v }` takes every field from `base` and
   overrides the listed ones.
+- **Instance arrays.** `let stage: Sub[N];` declares and builds `N`
+  instances, `stage[0]` to `stage[N - 1]`. `stage[i] = Sub { .a = x }`, or
+  name-less `stage[i] = { .a = x }` (the element type being known), is sugar
+  that connects that slot's ports — an `in` port to its value, an `out` port to
+  the signal it drives, an `inout` to its net — as do port writes
+  (`stage[i].a = x; y = stage[i].y;`); `stage[i] = {}` connects nothing. A
+  slot nothing wires still exists and simulates on its default inputs, which
+  is a constant in the waveform: in an array wired element by element that is
+  the warning `unwired_instance` (W-P021), otherwise each unconnected input's
+  `unconnected_input` (W-P012), as VHDL's `open` ports. In a testbench, a `for`
+  over constant bounds that touches an instance array is a generate loop like
+  a design's.
 - **Generate constructs.** A `for i in a..b { .. }` loop unrolls over a static
   range (instances *and* per-iteration drivers), and a generate-`if`/`else`
   with a compile-time-constant condition selects which branch is built. The two
@@ -41,10 +53,10 @@ precise reference.
   iterations. `for i in 0..(N - 1)` with `N = 0` is therefore `0..-1` — two
   iterations counting down, not none. An index that lands outside the array it
   subscripts is `E-P003`, whether it was written as a literal or arrived by
-  unrolling or parameter substitution. A slot may be inside a declared entity
-  array yet omitted by a generate condition; referencing one of its ports is
-  `E-P022` (“instance was not elaborated”), while leaving that slot unused is
-  legal.
+  unrolling or parameter substitution. A generate condition may omit wiring
+  for a slot, but every declared instance-array slot still exists. Reading its
+  ports observes its default-input behavior; a reference outside the declared
+  array bounds is an error.
 - **Generate labels.** A structural `for` or `if` may carry a VHDL-style label,
   which makes it a scope in the elaborated hierarchy. `stages: for k in 0..2
   { let s: Stage = { .. }; }` has one child per iteration, keyed by the loop
@@ -61,6 +73,9 @@ precise reference.
   namespace with `let`s, processes and functions (`E-P002` on a duplicate).
   Inside a process or function, `for` and `if` are control flow and take no
   label.
+- **Generated processes.** A hardware generate `for` or `if` may contain a
+  `process`. Each selected iteration elaborates its own concurrent process;
+  generate control remains outside the sequential process body.
 - **Where an entity may be instantiated.** Only at the root layer of another
   entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
   a signal), not in a `match` arm, not in a function. Those are `E-P020`.
@@ -114,7 +129,7 @@ precise reference.
 - **One operator trait** — `impl Add<In, Out> for T`; comparisons
   are the `Eq`/`Ord` traits, whose methods return `Bool`.
 - **Methods** — `recv.method(args)` on a value's inherent or trait impl
-  (`impl T { fn m(self, ..) }`); value-returning methods inline into an
+  (`impl T { fn m(..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
   receiver's fields.
 - **Container-relative visibility** — module items, struct fields, and
@@ -350,8 +365,8 @@ pub struct Counter {
 }
 
 impl Counter {
-    fn reset(self) { self.value = 0; }          // private to Counter impls
-    pub fn limit(self) -> unsigned[32] {        // exported type API
+    fn reset() { self.value = 0; }          // private to Counter impls
+    pub fn limit() -> unsigned[32] {        // exported type API
         return self.maximum;
     }
 }
@@ -375,13 +390,38 @@ port is rejected as redundant. Its `in`, `out`, or `inout` suffix controls
 direction, not visibility. State, constants, mode fields, and helper functions
 declared in the entity's `impl` remain private. Access such as
 `instance.hidden_state` is rejected even from the entity's module; only ports
-form the structural instance interface. Public entity functions with a `self`
-receiver are currently rejected because a call across an instance boundary has
-no implemented connectivity or synthesis semantics yet; behavior must be
-exposed through ports. An entity may expose a public **associated function**
-with no `self` parameter, called as `Entity::function(...)`. It has no instance
-scope, cannot access ports or implementation state, and lowers like any other
+form the structural instance interface, together with **entity methods**.
+A `pub fn` (with its implicit receiver) on an entity is called on a direct
+child instance, `fifo.push(x)` or `y = fifo.pop()`, and elaborates into ports:
+`push#called: Bit in`, one `push#v: T in` per parameter and `pop#ret: R out`
+on the child, with the wiring in the parent. A method's writes are
+combinational strobes, active only while it is called; when it is not called,
+every signal it writes falls back to its default. The result comes back in the
+same cycle. A method has one call site per instance (a call in a loop counts as
+several), is called on a direct child only, and cannot yet be called from a
+testbench; a function cannot return an entity. An entity may also expose a
+public **associated function**, `pub static fn`, called as
+`Entity::function(...)`. It has no instance scope,
+cannot access ports or implementation state, and lowers like any other
 namespaced function in hardware and testbench expressions.
+
+Cross-entity calls through instance-array elements, arbitration between callers,
+and clocked writes inside a method body are not implemented. These restrictions
+are distinct from calling ordinary associated functions. See the
+[entity-method boundary](proposals/entity-methods.md).
+
+**Receivers are implicit.** A member of an implementation or trait has a
+receiver, as C++'s `this`, named `self` in its body; `static fn` marks one
+without (`pub static fn at(v: integer) -> Counter`). Inside a member with a
+receiver, a struct's field is also reachable by its bare name (`value` for
+`self.value`, read or written), its newtype base's fields included; a
+parameter or local of the same name shadows it, and a `static fn` sees no
+fields. A `self` parameter under
+`static fn`, and `static` on a module-level function, are errors. The old
+written `self` parameter still means the receiver and warns to remove it. A
+member that used to be receiver-free and is not marked `static` now has a
+receiver, so a path call to it, or an impl of a trait's `static` member,
+fails with a message naming `static fn`.
 
 Trait methods similarly inherit the trait's visibility. An implementation
 therefore writes `fn`, never `pub fn`; a private trait and its methods remain
@@ -781,7 +821,7 @@ are not supported there.
 ```siox
 impl CustomOperator<"nand", Logic, Logic> for Logic {
     attr precedence = 40;              // the enclosing implementation
-    fn apply(self, rhs: Logic) -> Logic { ... }
+    fn apply(rhs: Logic) -> Logic { ... }
 }
 
 impl Top {
@@ -857,6 +897,24 @@ a test.
 - `#[inline]`, `#[inline(always)]` and `#[inline(never)]` on a function choose
   how the simulation runs its calls (below). Anywhere but on a `fn` they are
   an error, as is any other mode.
+- `#[derive(Eq, Ord)]` on a struct writes its comparison impls (below).
+
+**`#[derive]` writes the impls a user would.** Before a struct, `#[derive(Eq)]`
+writes `impl Eq<S> for S` comparing field by field, and `#[derive(Ord)]`
+writes `lt`/`le` comparing the fields lexicographically in declared order;
+`ne`, `gt` and `ge` keep the traits' defaults. A generic struct derives for
+every instance (`impl<A, B> Eq<Pair<A, B>> for Pair<A, B>`), and a newtype
+compares its value as its base. The impls belong to the struct's module, so
+coherence is never in question, and an error in one (a field whose type has no
+`==`) is shown in the written code, noted with the derive it came from. Any
+other trait, and a generic newtype for now, is `E-P040`. `Resolve` does not
+derive: a struct with fields has no `Resolve` impl, because a driven struct
+resolves leaf by leaf.
+
+There is no `#[cfg]`. The compile-time target is the value `std::target`,
+folded before reachability and target validation: it selects code within one
+pipeline, type-checks both branches and keeps one IR, where a directive that
+deletes code could let two configurations drift apart.
 
 **Inlining is a simulation choice.** A call means the same whatever the
 compiler does with it. In the native simulation each call is either expanded
@@ -897,7 +955,8 @@ the names, as rustc's lint registry does:
 | `non_exhaustive_match` | W-P007 | | `unimplemented_attr` | W-P015 |
 | `suspicious_logic_compare` | W-P008 | | `incomplete_struct_literal` | W-P016 |
 | `unknown_lints` | W-P017 | | `overlapping_range_endpoints` | W-P018 |
-| `non_constant_loop_bound` | W-P019 | | | |
+| `non_constant_loop_bound` | W-P019 | | `renamed_default` | W-P020 |
+| `unwired_instance` | W-P021 | | | |
 
 `warnings` names all of them at once.
 
@@ -950,7 +1009,7 @@ Array behavior is reusable without making nominal vectors interchangeable:
 
 ```siox
 impl<T: Resolve> Resolve for T[] {
-    fn resolve(self, rhs: T[]) -> T[] {
+    fn resolve(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i].resolve(rhs[i]); }
         return result;
@@ -958,7 +1017,7 @@ impl<T: Resolve> Resolve for T[] {
 }
 
 impl<T: And<T, T>> And<T, T> for T[] {
-    fn and(self, rhs: T[]) -> T[] {
+    fn and(rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] and rhs[i]; }
         return result;
@@ -1326,21 +1385,21 @@ Definition (`std/logic.siox`):
 
 ```siox
 trait ClockLike {
-    fn rising(self) -> Bool;
-    fn falling(self) -> Bool;
-    fn edge(self) -> Bool;
+    fn rising() -> Bool;
+    fn falling() -> Bool;
+    fn edge() -> Bool;
 }
 
 impl ClockLike for Logic {
-    fn rising(self) -> Bool {
+    fn rising() -> Bool {
         return self'event and self'old == '0' and self == '1';
     }
 
-    fn falling(self) -> Bool {
+    fn falling() -> Bool {
         return self'event and self'old == '1' and self == '0';
     }
 
-    fn edge(self) -> Bool {
+    fn edge() -> Bool {
         return self'event;
     }
 }
@@ -1407,7 +1466,9 @@ The rules are:
   constructs that create instances are also structural and stay outside.
 - Entity instantiation inside a process is `E-P020`: runtime control flow cannot
   create hardware. A process itself is only legal in an inherent entity impl
-  (`E-P027`). Function bodies are already sequential and do not use `process`.
+  (`E-P027`), at its root or inside a hardware generate `for`/`if`. Function
+  bodies are already sequential and do not use `process`. Generated processes
+  in testbenches are not supported.
 
 Event control within a process is inferred. No VHDL-style explicit sensitivity
 list is needed.
@@ -1658,7 +1719,7 @@ is the system `Bool` type: `true`/`false`, not an integer code.
 
 ```siox
 trait Boolean {
-    fn as_bool(self) -> Bool;
+    fn as_bool() -> Bool;
 }
 ```
 
@@ -1695,7 +1756,7 @@ A user type becomes usable as a condition by implementing `Boolean`:
 
 ```siox
 impl Boolean for State {
-    fn as_bool(self) -> Bool {
+    fn as_bool() -> Bool {
         match self {
             State::Idle => return false,
             _ => return true,
@@ -1763,9 +1824,42 @@ zero-extension/truncation rule above.
 **Named types convert through the `From` trait** (std::ops): `T(x)` on a
 struct/enum dispatches to `impl From<Source> for T`, selected by the
 argument's type — `Complex(10)`, or the resolved/unresolved crossing
-`Logic(u)` / `ULogic(l)` (both are std source). Conversions never fire
+`Logic(u)` / `ULogic(l)` (both are std source). A `From` never fires
 implicitly — only at a conversion expression or a numeric promotion. Kernel
 numeric conversions stay width-driven builtins.
+
+**`Into` converts implicitly where a value is stored.** `impl Into<T> for S`
+makes an `S` convert wherever it is stored as a `T`: a `let` initializer, an
+assignment, a call argument, a returned value, a struct-literal field. Its own
+`into` body is the
+conversion; it may call a `From` but needs none, and unlike Rust's `Into` it
+is not implied by one. An operator's operand is never converted, because `a +
+b` dispatches on the operands' own types, so a mix is an error whose help
+writes the conversion out:
+
+```siox
+let arr: Logic[8] = "00011000";
+let u: unsigned[8] = arr;          // Into<unsigned> for Logic[]: 24
+let f: ufixed<8, 4> = arr;         // Into<ufixed> for Logic[]: 1.5
+let back: Logic[8] = u;            // Into<Logic[]> for unsigned
+let s: unsigned[8] = u + arr;      // error: write `unsigned[8](arr)`
+```
+
+A nominal vector family and a plain array of the same elements (`unsigned[8]`,
+`Logic[8]`) are different types, joined only by an `Into`. std declares one
+both ways between `Logic[]` and each family that is a newtype over it —
+`unsigned`, `signed`, `ufixed`, `sfixed`, `float` — as a copy by position, the
+leftmost element at `'high`, the target's parameters placing any binary point
+(VHDL's `to_slv`, `to_ufixed(slv, l, r)`, `to_float(slv, e, f)`). Conversions
+between families (`ufixed` and `unsigned`, two fixed formats) scale, round or
+saturate, so they stay an explicit `T(x)`.
+
+An `Into` contract belongs to the exact source and target types, not their
+leaf names: `left::Token` and `right::Token` do not share conversions.
+Transparent aliases keep their underlying type's conversions. An unconstrained
+array contract accepts the storage site's concrete shape; a sized contract
+still requires its declared widths. Matching must not select an unrelated
+conversion merely because its module was loaded last.
 
 **Numbers promote in arithmetic.** In `a op b` for an arithmetic or
 comparison operator on two numbers of different types, both promote to the
@@ -1919,13 +2013,13 @@ The same spelling is used for ports, inherent impls, and trait impls:
 
 ```siox
 impl Stream<T> StreamSource {
-    fn can_send(self) -> Bit {
+    fn can_send() -> Bit {
         return self.ready;
     }
 }
 
 impl Source<T> for Stream<T> StreamSource {
-    fn send(self, value: T) {
+    fn send(value: T) {
         self.valid = '1';
         self.data = value;
     }
@@ -1999,8 +2093,8 @@ Example:
 
 ```siox
 trait Source<T> {
-    fn send(self, value: T);
-    fn can_send(self) -> Bit;
+    fn send(value: T);
+    fn can_send() -> Bit;
 }
 ```
 
@@ -2008,12 +2102,12 @@ Implementation:
 
 ```siox
 impl Source<T> for Stream<T> StreamSource {
-    fn send(self, value: T) {
+    fn send(value: T) {
         self.valid = '1';
         self.data = value;
     }
 
-    fn can_send(self) -> Bit {
+    fn can_send() -> Bit {
         return self.ready;
     }
 }
@@ -2026,11 +2120,11 @@ arrays use intrinsic lowering; other types fall back to these traits:
 
 ```siox
 trait Index<I, Output> {
-    fn index(self, index: I) -> Output;
+    fn index(index: I) -> Output;
 }
 
 trait IndexAssign<I, Value> {
-    fn index_assign(self, index: I, value: Value);
+    fn index_assign(index: I, value: Value);
 }
 ```
 
@@ -2130,8 +2224,8 @@ metavalue. An element type without `Match` compares its value bits.
 
 ```siox
 pub trait Match<Pattern> {
-    fn matches(self, pattern: Pattern) -> Bool;  // one element, one pattern character
-    fn unknown(self) -> Bool;                    // a value no pattern matches
+    fn matches(pattern: Pattern) -> Bool;  // one element, one pattern character
+    fn unknown() -> Bool;                    // a value no pattern matches
 }
 ```
 
@@ -2396,7 +2490,7 @@ value and is inlined at lowering, so the scale lives in std source:
 
 ```siox
 impl Suffix<"ns", integer> for time {
-    fn suffix(v: integer) -> time { return time(v * 1000000); }
+    static fn suffix(v: integer) -> time { return time(v * 1000000); }
 }
 ```
 
@@ -2460,7 +2554,7 @@ a method named after it, found by lang item; `Rhs` is the right operand's type
 
 ```siox
 impl Add<Complex, Complex> for Complex {
-    fn add(self, rhs: Complex) -> Complex {
+    fn add(rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
@@ -2481,9 +2575,14 @@ precedence inside its impl:
 ```siox
 impl CustomOperator<"xor", Logic, Logic> for Logic {
     attr precedence = 35;
-    fn apply(self, rhs: Logic) -> Logic { … }
+    fn apply(rhs: Logic) -> Logic { … }
 }
 ```
+
+A user operator spelled with several punctuation characters (`++`, `**`) is
+read whole, ahead of the standard operator its first character spells, so
+`a ++ b` is one operator and not `a + (+b)`. `->`, `=>` and `//` (a comment)
+are grammar, never operators.
 
 A standard symbol in `CustomOperator` is an error whose help names its trait.
 `Operator`, the single symbol-parameterized trait these replaced, is gone; a
@@ -2524,15 +2623,15 @@ method of a `core::cmp` trait (in the prelude), returning `Bool`:
 
 ```siox
 pub trait Eq<Rhs> {
-    fn eq(self, rhs: Rhs) -> Bool;                                  // ==
-    fn ne(self, rhs: Rhs) -> Bool { return not (self == rhs); }     // !=
+    fn eq(rhs: Rhs) -> Bool;                                  // ==
+    fn ne(rhs: Rhs) -> Bool { return not (self == rhs); }     // !=
 }
 
 pub trait Ord<Rhs> {
-    fn lt(self, rhs: Rhs) -> Bool;                                  // <
-    fn le(self, rhs: Rhs) -> Bool;                                  // <=
-    fn gt(self, rhs: Rhs) -> Bool { return rhs < self; }            // >
-    fn ge(self, rhs: Rhs) -> Bool { return rhs <= self; }           // >=
+    fn lt(rhs: Rhs) -> Bool;                                  // <
+    fn le(rhs: Rhs) -> Bool;                                  // <=
+    fn gt(rhs: Rhs) -> Bool { return rhs < self; }            // >
+    fn ge(rhs: Rhs) -> Bool { return rhs <= self; }           // >=
 }
 ```
 
@@ -2548,16 +2647,16 @@ total order, so the partial/total split would be names without behaviour.
 
 ```siox
 impl Eq<Version> for Version {
-    fn eq(self, rhs: Version) -> Bool {
+    fn eq(rhs: Version) -> Bool {
         return self.major == rhs.major and self.minor == rhs.minor;
     }
 }
 
 impl Ord<Version> for Version {
-    fn lt(self, rhs: Version) -> Bool {
+    fn lt(rhs: Version) -> Bool {
         return self.major < rhs.major or (self.major == rhs.major and self.minor < rhs.minor);
     }
-    fn le(self, rhs: Version) -> Bool { return not rhs.lt(self); }
+    fn le(rhs: Version) -> Bool { return not rhs.lt(self); }
 }
 // v1 < v2, v1 >= v2, v1 == v2, ... all work.
 ```
@@ -2620,15 +2719,15 @@ impls on `integer` catch literal left operands:
 
 ```siox
 impl Add<Complex, Complex> for Complex {
-    fn add(self, rhs: Complex) -> Complex { ... }
+    fn add(rhs: Complex) -> Complex { ... }
 }
 
 impl Add<integer, Complex> for Complex {
-    fn add(self, rhs: integer) -> Complex { ... }   // z + 3
+    fn add(rhs: integer) -> Complex { ... }   // z + 3
 }
 
 impl Add<Complex, Complex> for integer {
-    fn add(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
+    fn add(rhs: Complex) -> Complex { ... }   // 10 + 5i
 }
 ```
 
@@ -2705,9 +2804,9 @@ The native binary resolves symbols at link time (the math library is linked by
 default). Only the `"C"` ABI is open to programs; `"intrinsic"` is `core`'s,
 for the compiler's built-in `real` math (`std::math`'s `sqrt`, `sin`, …).
 
-The implemented boundary is scalar: a packed numeric must be 1 through 64
-bits, and a function returns `real`, `integer`, one such packed value, or
-nothing. A function with no return type is C `void`: a statement in a
+Kernel scalars and packed numerics up to 64 bits cross as C scalar values;
+fixed aggregates and wider packed values use the representations below.
+A function with no return type is C `void`: a statement in a
 testbench (or a function one calls), run in order, and an error wherever
 hardware would reach it. A struct or fixed array of C scalars is passed by
 pointer to a C-laid-out copy, which a process-local variable argument receives
@@ -2817,20 +2916,20 @@ function:
 
 ```siox
 impl From<real> for float {
-    fn from(value: real) -> float { return float_word(value, Self'high, 0 - Self'low); }
+    static fn from(value: real) -> float { return float_word(value, Self'high, 0 - Self'low); }
 }
 
 let x: float<32, 23> = float<32, 23>(1.5);   // IEEE binary32 1.5
 ```
 ---
 
-### 3.29 Uninitialized values (`new`)
+### 3.29 Uninitialized values (`default`)
 
 Every signal always holds a value — there is no "no value" state. A declaration
-without an initializer takes its type's **default**, written `T::new()`:
+without an initializer takes its type's **default**, written `T::default()`:
 
 ```siox
-let p: Phase;          // == Phase::new(): the default Phase
+let p: Phase;          // == Phase::default(): the default Phase
 let n: unsigned[8];        // == 0
 ```
 
@@ -2847,21 +2946,24 @@ let lo, hi: integer;           // both the default, 0
 Extracting a tuple will be parenthesized, `let (q, r) = divmod(a, b);` (the
 tuples proposal), so the two forms never share a spelling.
 
-`new` is siox's default constructor — a `New` trait, `fn new() -> Self`. It is
-written either as `T::new()` (the underlying trait method) or, equivalently, as
+`default` is siox's default constructor — the `Default` trait, `static fn default() ->
+Self`, as rustc's. It is written either as `T::default()` (the trait method) or,
+equivalently, as
 **`T()`** — the zero-argument member of the same `T(...)` construction family
 whose one-argument form `T(x)` is the conversion of §3.28. `T(...)` reads as
 "construct a `T`", dispatched by its arguments: `T()` builds the default from
-nothing (`New::new()`), `T(x)` transforms an existing value. This is still a
+nothing (`Default::default()`), `T(x)` transforms an existing value. This is still a
 *function* acting to produce data — the type name in call position names the
 constructor, it does not invoke the inert data — consistent with every other
-trait (`From::from`, `Add::add`, `Boolean::as_bool`). A parameterized
-`new(args)` (when a type provides one) is ordinary explicit construction.
+trait (`From::from`, `Add::add`, `Boolean::as_bool`). `new` is an ordinary
+name: `S::new(42)` is a constructor the type declares, the Rust convention.
+`T::new()` on a type that declares no `new` was the default's old spelling; it
+still builds the default, with the warning `renamed_default` (W-P020).
 
 ```siox
 let p: Phase;                        // implicit: the default Phase
 let p2: Phase = Phase();             // explicit: the same default, written out
-let p3: Phase = Phase::new();        // and the trait spelling of it
+let p3: Phase = Phase::default();    // and the trait spelling of it
 let n: unsigned[8] = unsigned[8]();  // == 0
 ```
 
@@ -2876,21 +2978,21 @@ let n: unsigned[8] = unsigned[8]();  // == 0
 
 This is one rule, not two: "`0` for numerics" *falls out* of "first value for
 enums", because a numeric's bits are `Logic` whose first value is `'0'`. A type
-**overrides** the structural default with `impl New for T { fn new() -> T { … } }`
+**overrides** the structural default with `impl Default for T { static fn default() -> T { … } }`
 (the body must be a constant). The std library uses this for the IEEE 1076-2019
-defaults: `impl New for Bit` → `'0'`, and `impl New for Logic`/`ULogic` → `'U'`
+defaults: `impl Default for Bit` → `'0'`, and `impl Default for Logic`/`ULogic` → `'U'`
 (uninitialized), so an undriven `Logic` signal powers on to `'U'` rather than a
 plausible `'0'`. Applies to hardware signals and testbench locals alike.
 
 **Uninitialized is not undriven.** The default is what a signal *starts* at;
 whether anything ever drives over it is separate. A signal with no driver simply
-keeps its `new()` value forever — deterministic, never an undefined `'X'` (an
+keeps its `default()` value forever — deterministic, never an undefined `'X'` (an
 undriven signal is a *warning*, §3.15/diagnostics, not an error). `'X'`/`'Z'`
 arise only from genuine unknowns, never from the mere absence of a driver.
 
 A type-level default is a **simulation** power-on value, not a synthesizable
 reset — real hardware powers up indeterminate, and a defined reset value comes
-from reset logic (§3.15). `new()` gives waveforms and testbenches a clean,
+from reset logic (§3.15). `default()` gives waveforms and testbenches a clean,
 valid starting value; it does not substitute for a reset.
 
 ---
@@ -3549,11 +3651,15 @@ impure, or procedures:
 print!("n = {} and sqrt({}) = {}", n, x, y);  // macro: {} expands per argument kind
 assert!(cond, "message");                     // macro: captures the source location
 
-stop();                                       // function: halt (test passes so far)
+stop();                                       // function: end the whole current test
 finish();                                     // function: end the simulation cleanly
 seed(42);                                     // functions: deterministic RNG
 let r: unsigned[8] = randint(10, 20);             //   (runtime-provided, std::rand)
 ```
+
+`stop()` ends the current test, including its other processes; it does not
+merely return from the calling process. Assertions already recorded still
+determine whether that test passed.
 
 `print!` auto-newlines (like `$display`); real values print as floats, `Char`
 as the Unicode character, strings as Unicode text, and everything else as
@@ -3601,7 +3707,7 @@ prelude, with `Formatter` and `write!`):
 
 ```siox
 impl Display for Complex {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{} + {}i", self.re, self.im);
     }
 }
@@ -3745,6 +3851,50 @@ elaboration-time fact for declared arrays and a runtime value for an
 unconstrained string returned by `read<string>`. Other scalar values are not
 iterable.
 
+`while cond { … }` repeats while its condition holds, tested before each pass
+and read through `Boolean` as an `if` is. Its length is decided at run time,
+so it belongs to testbenches and the functions they call: a `while` in an
+entity body is an error, and so is a hardware call to a function that
+contains one (hardware loops unroll at elaboration; use a `for` with constant
+bounds). There is no `break`, `continue` or `loop`; a condition variable ends
+a loop early.
+
+```siox
+let edges: integer = 0;
+while edges != 6 {           // poll the design, counting clock edges
+    await clk.rising();
+    edges = edges + 1;
+}
+```
+
+
+`static let` declares a local that keeps its value between activations and
+calls, with variable semantics: a write takes effect at once. It stands
+directly in a process or function body (not inside an `if`, loop or
+`match`), its initializer is a constant run once, and it cannot hold an
+entity; in an entity body it is an error, since every body `let` is already
+declared once. In a function there is **one copy per function**, as C's
+`static`: every call shares it, from any process, and each test starts from
+the initializer again.
+
+```siox
+fn next_id() -> integer {
+    static let n: integer = 0;
+    n = n + 1;
+    return n;              // 1, then 2, then 3, ...
+}
+```
+
+In a testbench process it acts as an ordinary local, since the body runs once.
+In a hardware process at impl scope it owns a register, initialized once.
+Clocked local reads and writes retain variable semantics during the activation;
+the register carries the final value into the next activation. Reset branches
+follow the process's reset logic.
+Each process owns its own storage. A generic function's `static let` is not
+supported yet. Hardware reset-branch and split-implementation name-collision
+cases still have reported implementation gaps; this syntax does not promise
+those cases are accepted by the current compiler.
+
 A numeric range `left..right` in a `for` is **inclusive and directional**, exactly
 like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`
 and `2..0` visits `2, 1, 0` — reversing the endpoints reverses the traversal
@@ -3766,10 +3916,17 @@ on the scheduler those clocks run on:
 await 10ns;                 // advance simulation time
 await clk.rising();          // wait for the next rising edge (also clk.falling(), 'event)
 await count == 7;           // wait until a condition holds
+await done == '1' for 8us;  // the condition, or 8 µs, whichever comes first
 ```
 
 `await`'s three forms are: a **duration** (advance time), an **edge**
-(`clk.rising()`/`clk.falling()`/`'event`), and a **condition** (any boolean). Edge
+(`clk.rising()`/`clk.falling()`/`'event`), and a **condition** (any boolean).
+An edge or condition may take a timeout, `for <time>`, as VHDL's
+`wait until … for …`: the wait ends when the trigger fires or the time has
+passed, whichever is first, and the statements after it re-read the condition
+to tell which (`assert!(done == '1', "no response within 8 µs");`). The
+timeout must be a time, and a plain delay is not given one (`await 5ns for
+10ns` is an error). Edge
 and condition forms are driven by the background clocks — the scheduler steps
 the clocks until the trigger fires. The scheduler is compiled into the native
 test binary. (`wait`/`tick` remain for straight-line, self-clocked stimulus.)

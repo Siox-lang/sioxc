@@ -81,6 +81,14 @@ impl SourceMap {
         id
     }
 
+    /// Replace a file's text: a generated file whose spans were allocated
+    /// while its text was being written.
+    pub fn replace_text(&mut self, id: FileId, text: impl Into<String>) {
+        if let Some(file) = self.files.get_mut(id.0 as usize) {
+            file.text = text.into();
+        }
+    }
+
     /// The file `id` refers to, or `None` if it was never registered.
     pub fn get(&self, id: FileId) -> Option<&SourceFile> {
         self.files.get(id.0 as usize)
@@ -517,9 +525,9 @@ pub mod codes {
     /// signal cannot be folded and was dropped, leaving the signal at its
     /// type's default with no word said.
     pub const NON_CONSTANT_INITIALIZER: &str = "E-P021";
-    /// An in-range element of an instance array was omitted by concrete
-    /// generate elaboration, but its ports are referenced as though the child
-    /// existed. This differs from E-P003: the index is inside the declaration.
+    /// Retired: instance-array declarations now create every declared slot.
+    /// Unwired slots use defaults (W-P021); invalid indices remain E-P003.
+    /// Keep the diagnostic code reserved rather than reusing its meaning.
     pub const INSTANCE_NOT_ELABORATED: &str = "E-P022";
     /// A file requested by a compile-time `read<T>` initializer
     /// could not be opened, or its contents do not fit the declared target.
@@ -564,6 +572,9 @@ pub mod codes {
     /// A macro invocation that cannot expand: no form matches its arguments,
     /// its body names no parameter, or expansions nest too deep.
     pub const MACRO_EXPANSION: &str = "E-P035";
+    /// A `#[derive(..)]` that cannot be expanded: a trait other than `Eq` or
+    /// `Ord`, or a generic newtype struct.
+    pub const INVALID_DERIVE: &str = "E-P040";
     /// A misused compiler hook: `attr lang` bound outside `core`/`std`,
     /// naming nothing, or one role bound twice; or `extern "intrinsic"`
     /// outside `core`.
@@ -633,6 +644,13 @@ pub mod codes {
     /// A loop in hardware whose bound is not a constant: it simulates as a
     /// procedural process, but has no RTL form.
     pub const NON_CONSTANT_LOOP_BOUND: &str = "W-P019";
+    /// `T::new()` on a type that declares no `new`: the default constructor
+    /// was renamed `T::default()`. It still builds the default, for now.
+    pub const RENAMED_DEFAULT: &str = "W-P020";
+    /// A slot of an instance array wired element by element that no
+    /// construction and no port write reaches: it is built, and simulates on
+    /// its default inputs.
+    pub const UNWIRED_INSTANCE: &str = "W-P021";
     }
 }
 

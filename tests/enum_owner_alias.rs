@@ -12,14 +12,14 @@ fn run(name: &str, body: &str) {
         type Alias = Mode;
         const HIGH: Alias = Alias::High;
         impl Mode {{
-            pub fn new(value: integer) -> Self {{
+            pub static fn new(value: integer) -> Self {{
                 if value == 0 {{ return Mode::Low; }}
                 return Mode::High;
             }}
-            pub fn forwarded(value: integer) -> Self {{ return Self::new(value); }}
+            pub static fn forwarded(value: integer) -> Self {{ return Self::new(value); }}
         }}
         enum Zero {{ Low = 23, High = 31 }}
-        impl Zero {{ pub fn new() -> Self {{ return Zero::High; }} }}
+        impl Zero {{ pub static fn new() -> Self {{ return Zero::High; }} }}
         entity Dut {{ value: integer out }}
         impl Dut {{ value = integer(Zero::new()); }}
         #[test] entity Probe {{}}

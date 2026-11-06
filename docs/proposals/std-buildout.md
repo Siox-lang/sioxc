@@ -21,11 +21,13 @@ reference, not in a completed migration plan.
 1. **Fixed point.** Done: division, the nearest/saturating resizing
    constructor and `resize` with explicit wrap/truncate styles (std.md). Keep
    `ufixed<W, F>`/`sfixed<W, F>` semantics source-owned.
-2. **Floating point.** Add division, square root, subnormal support, additional
-   rounding modes and conversions to/from fixed point. Specify exceptional
-   values and rounding per operation; do not silently change existing
-   flush-to-zero behavior. Preserve source-defined operators, shared layouts
-   and the common hardware/procedural pipeline.
+2. **Floating point.** Done: division, square root and conversions to and
+   from fixed point (`From<ufixed>`/`From<sfixed>` for `float` and back).
+   Remaining: subnormal support (inputs are flushed to zero today) and
+   additional rounding modes. Specify exceptional values and rounding per
+   operation; do not silently change existing flush-to-zero behavior. Preserve
+   source-defined operators, shared layouts and the common hardware/procedural
+   pipeline.
 3. **Linear algebra (optional).** Generic `Vector<T, N>` and
    `Matrix<T, R, C>` over types with the required operator traits. Start with
    demonstrated uses for element-wise operations, dot/matrix products and
@@ -51,4 +53,5 @@ Memories, FIFOs, streams, bus protocols, scoreboards and vendor primitives belon
 to IP/project libraries, not std. Vendor-specific metadata belongs to vendor
 packages. Foreign HDL package loading and synthesis-facing output remain Phase 3
 project/backend work. A verification framework should not grow inside the
-compiler as a substitute for the isolated cocotb integration.
+compiler as a substitute for the isolated cocotb integration, which is itself
+deferred (see [vpi-vhpi](vpi-vhpi.md)).

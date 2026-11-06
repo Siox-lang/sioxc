@@ -52,9 +52,83 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// A value stored where an `impl Into` converts it: the impl's `into`,
+    /// inlined on it (conversions proposal). The value's span is held while
+    /// the body runs, so the receiver itself lowers unconverted.
+    pub(super) fn converted_value(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Option<Val> {
+        let span = ast::expr_span(e);
+        let conversion = self.conversions.get(&span)?;
+        if !self.widening.borrow_mut().insert(span) {
+            return None;
+        }
+        let value = self
+            .free_fns
+            .get_into(conversion.function)
+            .and_then(|function| {
+                // A plain array target (`Logic[8]`) is sized by the site,
+                // the `into` that builds it by its receiver.
+                let result = match (&conversion.target, conversion.target_key.strip_suffix("[]")) {
+                    (crate::types::Ty::Array { len, .. }, Some(element)) if *len > 0 => {
+                        let element = self.free_fns.canonical_type_key(element);
+                        let element = self.named_source_layout(&element, span)?;
+                        Some(SourceLayout {
+                            span,
+                            kind: LayoutKind::Array {
+                                range: Some(crate::ir::LayoutRange {
+                                    left: 0,
+                                    right: i64::from(*len) - 1,
+                                }),
+                                element: Box::new(element),
+                            },
+                        })
+                    }
+                    // A vector family (`unsigned[8]`, `ufixed<8, 4>`) at
+                    // its declared width and labels.
+                    (
+                        crate::types::Ty::Array {
+                            len,
+                            family: Some(family),
+                            low,
+                            ..
+                        },
+                        None,
+                    ) if *len > 0 => {
+                        let family = self.free_fns.canonical_type_key(family);
+                        Some(SourceLayout {
+                            span,
+                            kind: LayoutKind::Packed {
+                                width: *len,
+                                range: Some(crate::ir::LayoutRange {
+                                    left: low + i64::from(*len) - 1,
+                                    right: *low,
+                                }),
+                                element_enum: self.array_element_enum(&family),
+                                family,
+                            },
+                        })
+                    }
+                    _ => None,
+                };
+                let source = if let Some(element) = conversion.source_key.strip_suffix("[]") {
+                    format!("{}[]", self.free_fns.canonical_type_key(element))
+                } else {
+                    self.free_fns.canonical_type_key(&conversion.source_key)
+                };
+                self.inline_method(function, &source, "into", e, e, &[], env, result)
+            });
+        self.widening.borrow_mut().remove(&span);
+        value
+    }
+
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(value) = self.converted_value(e, env) {
+            return value;
+        }
+        if let Some(full) = self.full_range_slice(e) {
+            return self.lower_val_env(&full, env);
+        }
         if let Some(value) = self.promoted_operand(e, env) {
             return Val::Scalar(value);
         }
@@ -62,6 +136,9 @@ impl<'a> Lowering<'a> {
             return value;
         }
         if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
+            if let Some(value) = self.block_local_slice(e) {
+                return value;
+            }
             if let Some(value) = self.source_env_access(e, env) {
                 return value;
             }
@@ -70,6 +147,22 @@ impl<'a> Lowering<'a> {
             }
             if let Some(value) = self.source_signal_aggregate_access(e, env) {
                 return value;
+            }
+            // A composite part of a constant read whole: a table's row
+            // (`M[0]`) or struct element (`P[0]`), a struct field of a struct.
+            if let Some(key) = self.free_fns.constant_expr_key(e) {
+                if let Some(values) = self.const_arrays.get(&key) {
+                    return Val::Fields(
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(index, value)| (format!("[{index}]"), value.clone()))
+                            .collect(),
+                    );
+                }
+                if let Some(fields) = self.const_struct_value(&key) {
+                    return Val::Fields(fields);
+                }
             }
             // An element of a call's result, read against these bindings: a
             // function's `split3(x)[k]` lowered its `k` without them.
@@ -164,6 +257,23 @@ impl<'a> Lowering<'a> {
                     },
                 }
             }
+            // `pkg::ORIGIN`: a struct constant named through its module reads
+            // as the imported name does (#336).
+            ast::Expr::Path(p)
+                if p.segments.len() > 1
+                    && self
+                        .free_fns
+                        .constant_path_key(p)
+                        .and_then(|key| self.const_struct_value(&key))
+                        .is_some() =>
+            {
+                Val::Fields(
+                    self.free_fns
+                        .constant_path_key(p)
+                        .and_then(|key| self.const_struct_value(&key))
+                        .unwrap_or_default(),
+                )
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
                 if let Some(v) = env.get(name) {
@@ -179,7 +289,12 @@ impl<'a> Lowering<'a> {
                 // the constant table under dotted paths, so it has no signal
                 // and no scalar form — as a value it is the fields themselves,
                 // which is what an assignment expands per leaf.
-                if let Some(fields) = self.const_struct_value(name) {
+                let key = self.free_fns.constant_path_key(p);
+                if let Some(fields) = key
+                    .as_deref()
+                    .and_then(|key| self.const_struct_value(key))
+                    .or_else(|| self.const_struct_value(name))
+                {
                     return Val::Fields(fields);
                 }
                 Val::Scalar(self.lower_expr(e))
@@ -407,13 +522,16 @@ impl<'a> Lowering<'a> {
         let ast::Expr::SuffixLit { text, suffix, .. } = e else {
             return None;
         };
-        let (_, f) = self.suffix_impls.get(&suffix.text)?;
+        let f = *self.suffix_impls.get(&suffix.text)?;
         f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 // A `real` parameter takes the literal's float value.
-                let is_real = p.ty.as_ref().and_then(type_head_name) == Some("real");
+                let is_real =
+                    p.ty.as_ref()
+                        .and_then(|ty| self.free_fns.declarations().scalar_type_id(ty))
+                        .is_some_and(|id| Some(id) == self.free_fns.resolved().builtin("real"));
                 let v = if is_real {
                     Expr::Real(text.replace('_', "").parse().unwrap_or(0.0))
                 } else {
@@ -473,7 +591,12 @@ impl<'a> Lowering<'a> {
 
     /// The aggregate value of a struct- or array-typed signal, as its leaves.
     pub(super) fn aggregate_signal_val(&self, name: &str) -> Option<Val> {
-        if !self.local_struct_repr.contains_key(name) && !self.local_array.contains_key(name) {
+        let registered =
+            self.local_struct_repr.contains_key(name) || self.local_array.contains_key(name);
+        // A child's aggregate port (`c.p_out`) is registered nowhere, only
+        // its leaves are; they are its value (#285).
+        let nested = name.contains('.') || name.contains('[');
+        if !registered && !nested {
             return None;
         }
         let field_prefix = format!("{name}.");
@@ -495,7 +618,7 @@ impl<'a> Lowering<'a> {
             })
             .collect();
         if fields.is_empty() {
-            return self.struct_local_val(name);
+            return registered.then(|| self.struct_local_val(name)).flatten();
         }
         fields.sort_by(|left, right| left.0.cmp(&right.0));
         Some(Val::Fields(fields))
@@ -556,7 +679,29 @@ impl<'a> Lowering<'a> {
                 _ => break,
             }
         }
-        if std::ptr::eq(base, e) || !matches!(base, ast::Expr::Call { .. }) {
+        // A call's result, an array literal's elements (`[a, b][i]`, #318), a
+        // string literal's characters (`"hello"[i]`, #325), or an aggregate
+        // an operator or branch computes (`(-c).re`, `(c1 + c2).re`,
+        // `(if s { c1 } else { c2 }).re`, #338). A packed one is a bit read.
+        let aggregate = || {
+            matches!(
+                self.expr_types.get(&ast::expr_span(base)),
+                Some(
+                    crate::types::Ty::Named(_)
+                        | crate::types::Ty::Tuple(_)
+                        | crate::types::Ty::Array { family: None, .. }
+                )
+            )
+        };
+        let computed = match base {
+            ast::Expr::Call { .. } | ast::Expr::Array { .. } | ast::Expr::StrLit { .. } => true,
+            ast::Expr::Unary { .. }
+            | ast::Expr::Binary { .. }
+            | ast::Expr::IfExpr { .. }
+            | ast::Expr::Match { .. } => aggregate(),
+            _ => false,
+        };
+        if std::ptr::eq(base, e) || !computed {
             return None;
         }
         // Fields and elements (`split3(x)[1]`, `mk(x).v[1]`, `table(x)[sel]`):
@@ -564,6 +709,9 @@ impl<'a> Lowering<'a> {
         // outermost step only, selects among them as a signal array's does.
         // Indexed, a call result had no hardware form at all.
         let mut runtime = None;
+        // A constant slice as the outermost step (`get_arr()[0..1]`): its
+        // elements, numbered from 0 as an argument's are (#289).
+        let mut slice = None;
         let mut segments = Vec::new();
         let mut walk = e;
         while !std::ptr::eq(walk, base) {
@@ -577,10 +725,18 @@ impl<'a> Lowering<'a> {
                 ast::Expr::Index {
                     base: inner, index, ..
                 } => {
-                    if matches!(
-                        index.as_ref(),
-                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                    ) {
+                    if let ast::Expr::Range { lo, hi, .. } = index.as_ref() {
+                        if !std::ptr::eq(walk, e) {
+                            return None;
+                        }
+                        slice = Some((
+                            self.eval_const(lo, &self.cur_env)?,
+                            self.eval_const(hi, &self.cur_env)?,
+                        ));
+                        walk = inner;
+                        continue;
+                    }
+                    if matches!(index.as_ref(), ast::Expr::PartialRange { .. }) {
                         return None;
                     }
                     match self.eval_const(index, &self.cur_env) {
@@ -605,7 +761,27 @@ impl<'a> Lowering<'a> {
         segments.reverse();
         let joined = segments.concat();
         let path = joined.strip_prefix('.').unwrap_or(&joined).to_string();
-        let Val::Fields(fields) = self.lower_val_env(base, env) else {
+        let value = match base {
+            ast::Expr::StrLit { text, .. } => Val::Fields(
+                text.chars()
+                    .enumerate()
+                    .map(|(position, ch)| (format!("[{position}]"), Expr::Const(ch as u64)))
+                    .collect(),
+            ),
+            ast::Expr::Array { elems, .. } => {
+                let mut fields = Vec::new();
+                for (position, element) in elems.iter().enumerate() {
+                    Self::prefix_block_value(
+                        &format!("[{position}]"),
+                        self.lower_val_env(element, env),
+                        &mut fields,
+                    );
+                }
+                Val::Fields(fields)
+            }
+            _ => self.lower_val_env(base, env),
+        };
+        let Val::Fields(fields) = value else {
             return None;
         };
         if let Some(index) = runtime {
@@ -638,6 +814,21 @@ impl<'a> Lowering<'a> {
                 result = self.source_select(&condition, value, &result, span);
             }
             return Some(Val::Scalar(result));
+        }
+        if let Some((left, right)) = slice {
+            let mut elements = Vec::new();
+            for (position, label) in loop_range(left, right).into_iter().enumerate() {
+                let element = format!("{path}[{label}]");
+                for (name, value) in &fields {
+                    let Some(rest) = name.strip_prefix(&element) else {
+                        continue;
+                    };
+                    if rest.is_empty() || rest.starts_with('.') || rest.starts_with('[') {
+                        elements.push((format!("[{position}]{rest}"), value.clone()));
+                    }
+                }
+            }
+            return (!elements.is_empty()).then_some(Val::Fields(elements));
         }
         if let Some((_, value)) = fields.iter().find(|(name, _)| *name == path) {
             return Some(Val::Scalar(value.clone()));
@@ -726,6 +917,15 @@ impl<'a> Lowering<'a> {
             if let Some(sig) = self.base_signal(base) {
                 return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
             }
+            // A computed vector (`(a clip b)'length`, `(a + b)'length`) is as
+            // long as the checker typed it.
+            if let Some(crate::types::Ty::Array { len, .. }) =
+                self.expr_types.get(&ast::expr_span(base))
+            {
+                if *len > 0 {
+                    return Expr::Const(u64::from(*len));
+                }
+            }
             return Expr::Unknown;
         }
         // Range bounds from the declared index range (VHDL `'left`/`'right`/
@@ -750,6 +950,9 @@ impl<'a> Lowering<'a> {
             if let Some((l, r)) = local_declared
                 .or_else(|| expr_path(base).and_then(|path| self.persisted_range(&path)))
                 .or_else(signal_range)
+                // A computed one has its operator's range: `(a clip b)'left`
+                // reads the impl's declared result, `(a + b)'left` `a`'s.
+                .or_else(|| self.operand_range(base, &HashMap::new()))
             {
                 let v = match attr {
                     "left" => l,

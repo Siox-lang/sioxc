@@ -469,6 +469,279 @@ fn empty_selected_branches_and_early_returns_are_control_flow_not_errors() {
 }
 
 #[test]
+fn resolved_matches_keep_enum_owners_imports_and_source_defined_order() {
+    let sources = [
+        "module model;
+         use core::ops::Order;
+         use core::primitive::Decision;
+         enum State { Idle = 90, Busy = 4, Done = 17, Outside = 40, Unordered = 53 }
+         type Alias = State;
+         enum Glyph { 'a' = 13, 'b' = 7 }
+         type Letter = Glyph;
+         fn letter(value: Letter) -> integer {
+             return match value { 'a' => 1, 'b' => 2, _ => 3 };
+         }
+         fn rank(value: State) -> integer {
+             return match value {
+                 State::Idle => 0, State::Busy => 1,
+                 State::Done => 2, State::Outside => 3, State::Unordered => 4
+             };
+         }
+         impl Order<State> for State {
+             fn le(self, rhs: State) -> Decision {
+                 if rank(self) == 4 { return false; }
+                 if rank(rhs) == 4 { return false; }
+                 return rank(self) <= rank(rhs);
+             }
+         }
+         fn classify(value: Alias) -> integer {
+             return match value { (Alias::Idle)..(Alias::Done) => 9, _ => 3 };
+         }
+         fn local_import(value: State, Done: integer) -> integer {
+             use Selected = model::Alias;
+             match value {
+                 Selected::Busy | Selected::Done => { return 12; }
+                 _ => { }
+             }
+             return 7;
+         }
+         const INSIDE: integer = classify(State::Busy);
+         const OUTSIDE: integer = classify(State::Outside);
+         const IMPORTED: integer = local_import(State::Done, 99);
+         const OTHER: integer = local_import(State::Idle, 99);
+         fn unordered_bound(value: State) -> integer {
+             return match value { (State::Unordered)..(State::Done) => 9, _ => 3 };
+         }
+         const UNORDERED: integer = classify(State::Unordered);
+         const UNORDERED_BOUND: integer = unordered_bound(State::Busy);
+         const LETTER: integer = letter('b');",
+        "module core::primitive;
+         pub enum Decision { false = 5, true = 17 }
+         attr lang for Decision = \"bool\";",
+        "module core::ops;
+         use core::primitive::Decision;
+         pub trait Order<Rhs> { fn le(self, rhs: Rhs) -> Decision; }
+         attr lang for Order = \"ord\";",
+    ];
+    let mut sink = DiagnosticSink::default();
+    let mut modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| parse_module(FileId(index as u32), source, &mut sink))
+        .collect();
+    crate::syntax::imports::desugar(&mut modules, &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let enums = crate::types::enum_values::EnumValues::collect(&declarations);
+    let source = Source::new(&declarations).with_enums(&enums);
+    for (name, expected) in [
+        ("INSIDE", 9),
+        ("OUTSIDE", 3),
+        ("IMPORTED", 12),
+        ("OTHER", 7),
+        ("UNORDERED", 3),
+        ("UNORDERED_BOUND", 3),
+        ("LETTER", 2),
+    ] {
+        let value = modules[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Const(constant) if constant.name.text == name => Some(&constant.value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(evaluate(value, &source, 0), Ok(expected), "{name}");
+    }
+    for (name, expected) in [
+        ("classify", RangeOrder::Forward),
+        ("unordered_bound", RangeOrder::Unordered),
+    ] {
+        let function = modules[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Fn(function) if function.name.text == name => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        let Stmt::Return {
+            value: Some(Expr::Match { arms, .. }),
+            ..
+        } = &function.body.as_ref().unwrap().stmts[0]
+        else {
+            panic!("expected range match");
+        };
+        let Pattern::Bounds {
+            lo: Some(left),
+            hi: Some(right),
+            ..
+        } = &arms[0].pattern
+        else {
+            panic!("expected bounds");
+        };
+        assert_eq!(
+            evaluate_range_order(left, right, &source, None, 0),
+            Ok(expected)
+        );
+        if expected == RangeOrder::Forward {
+            assert_eq!(
+                evaluate_range_order(right, left, &source, None, 0),
+                Ok(RangeOrder::Reversed)
+            );
+        }
+    }
+    let (owner, _) = declarations
+        .enumerations()
+        .find(|(_, declaration)| declaration.name.text == "Glyph")
+        .unwrap();
+    let function = modules[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.name.text == "letter" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        evaluate_function(
+            function,
+            vec![Value::Enum {
+                owner,
+                discriminant: 7
+            }],
+            &source,
+            0,
+        ),
+        Ok(Value::Integer(2)),
+        "stored enum values and symbolic members match the same character pattern"
+    );
+}
+
+#[test]
+fn scalar_matches_select_only_the_first_matching_arm() {
+    let mut env = Functions::new("");
+    env.globals.insert("DEPTH".into(), 6);
+    for (source, expected) in [
+        ("match 4 { 9..3 => 7, 4 => 99, _ => 1 / 0 }", 7),
+        ("match 4 { 0 | 2 | 4 => 8, _ => UNKNOWN }", 8),
+        ("match 4 { 0..DEPTH - 1 => 9, _ => UNKNOWN }", 9),
+        ("match 4 { DEPTH..(DEPTH - 4) => 10, _ => 0 }", 10),
+        ("match 4 { ..3 => UNKNOWN, 4.. => 11 }", 11),
+        ("match 'λ' { 'a' => UNKNOWN, 'λ' => 12, _ => 0 }", 12),
+        ("match 'λ' { ('α')..('ω') => 13, _ => 0 }", 13),
+    ] {
+        assert_eq!(env.eval(source), Ok(expected), "{source}");
+    }
+}
+
+#[test]
+fn range_direction_keeps_exact_native_integer_endpoints() {
+    let mut env = Functions::new("");
+    env.domain = IntegerDomain::NativeWord;
+    let high = expression("9223372036854775807");
+    let lower = expression("9223372036854775806");
+    assert_eq!(
+        evaluate_range_order(&high, &lower, &env, None, 0),
+        Ok(RangeOrder::Reversed)
+    );
+    assert_eq!(
+        evaluate_range_order(&lower, &high, &env, None, 0),
+        Ok(RangeOrder::Forward)
+    );
+    let missing = expression("MISSING");
+    assert_eq!(
+        evaluate_range_order(&high, &missing, &env, None, 0)
+            .unwrap_err()
+            .reason,
+        Reason::UnknownConstant
+    );
+}
+
+#[test]
+fn failed_match_conditions_and_selected_values_never_fall_through() {
+    let env = Functions::new("");
+    for (source, reason) in [
+        ("match UNKNOWN { _ => 7 }", Reason::UnknownConstant),
+        (
+            "match 2 { 0..UNKNOWN => 3, _ => 7 }",
+            Reason::UnknownConstant,
+        ),
+        ("match 2 { 2 => 1 / 0, _ => 7 }", Reason::DivisionByZero),
+        ("match 2 { 1 => 3 }", Reason::Unsupported),
+    ] {
+        let error = env.eval(source).unwrap_err();
+        assert_eq!(error.reason, reason, "{source}: {error:?}");
+        assert!(error.span.end > error.span.start);
+    }
+}
+
+#[test]
+fn match_statements_preserve_scope_mutations_and_early_returns() {
+    let env = Functions::new(
+        "fn select(n: integer) -> integer {
+            let result: integer = 2;
+            match n {
+                0 => { let temporary: integer = 3; result = result + temporary; }
+                1 => { return 11; }
+                2 => { }
+            }
+            return result;
+        }
+        fn shadow(n: integer) -> integer {
+            let value: integer = 8;
+            match n {
+                0 => { let value: integer = 99; }
+                _ => { unsupported(); }
+            }
+            return value;
+        }
+        fn fail(n: integer) -> integer {
+            match n { 0 => { return UNKNOWN; } _ => { } }
+            return 7;
+        }",
+    );
+    for (source, expected) in [
+        ("select(0)", 5),
+        ("select(1)", 11),
+        ("select(2)", 2),
+        ("select(3)", 2),
+        ("shadow(0)", 8),
+        ("fail(1)", 7),
+    ] {
+        assert_eq!(env.eval(source), Ok(expected), "{source}");
+    }
+    assert_eq!(
+        env.eval("fail(0)").unwrap_err().reason,
+        Reason::UnknownConstant
+    );
+    assert_eq!(
+        env.eval("shadow(1)").unwrap_err().reason,
+        Reason::Unsupported
+    );
+}
+
+#[test]
+fn discarded_pure_expressions_are_evaluated_not_skipped() {
+    let env = Functions::new(
+        "fn divide(n: integer) -> integer { return 8 / n; }
+         fn discard(n: integer) -> integer { divide(n); return 7; }
+         fn foreign(n: integer) -> integer;
+         fn effect() -> integer { foreign(1); return 7; }",
+    );
+    assert_eq!(env.eval("discard(2)"), Ok(7));
+    assert_eq!(
+        env.eval("discard(0)").unwrap_err().reason,
+        Reason::DivisionByZero
+    );
+    assert_eq!(
+        env.eval("effect()").unwrap_err().reason,
+        Reason::Unsupported
+    );
+}
+
+#[test]
 fn only_the_selected_expression_and_else_if_branch_is_evaluated() {
     let env = Functions::new(
         "fn select(n: integer) -> integer {
@@ -512,6 +785,10 @@ fn argument_arity_and_recursion_are_bounded_without_executing_foreign_code() {
 fn function_frames_are_restored_after_errors() {
     let env = Functions::new(
         "fn fail(n: integer) -> integer { let local: integer = n; return local / 0; }
+        fn match_fail(n: integer) -> integer {
+            match n { 0 => { let local: integer = 7; return local / 0; } }
+            return 8;
+        }
         fn identity(n: integer) -> integer { return n; }",
     );
     let mut interpreter = Interpreter {
@@ -522,6 +799,14 @@ fn function_frames_are_restored_after_errors() {
     assert_eq!(
         interpreter
             .expression(&expression("fail(3)"), None, 0)
+            .unwrap_err()
+            .reason,
+        Reason::DivisionByZero
+    );
+    assert!(interpreter.locals.is_empty());
+    assert_eq!(
+        interpreter
+            .expression(&expression("match_fail(0)"), None, 0)
             .unwrap_err()
             .reason,
         Reason::DivisionByZero

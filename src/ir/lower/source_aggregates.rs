@@ -12,6 +12,9 @@ impl Lowering<'_> {
         env: &HashMap<String, Val>,
         layout: &SourceLayout,
     ) -> Val {
+        if let Some(slice) = self.block_local_slice(expression) {
+            return slice;
+        }
         if let LayoutKind::Array {
             range: Some(range), ..
         } = &layout.kind
@@ -210,7 +213,11 @@ impl Lowering<'_> {
                     layout.kind,
                     LayoutKind::Array { .. } | LayoutKind::Struct { .. }
                 ) {
-                    let value = match self.source_operand_layout(expression, env) {
+                    let converted = self.conversions.contains_key(&ast::expr_span(expression));
+                    let value = match self
+                        .source_operand_layout(expression, env)
+                        .filter(|source| !converted && !has_open_parameter(source))
+                    {
                         Some(source) => reindex_aggregate_value(value, &source, layout)
                             .unwrap_or(Val::Scalar(Expr::Unknown)),
                         None => value,
@@ -233,6 +240,46 @@ impl Lowering<'_> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Vec<(SignalId, Expr)>> {
+        if let Some(full) = self.full_range_slice(value) {
+            return self.aggregate_assign_leaves(target, &full);
+        }
+        // `dout[0..1] = din`: a constant slice of an unpacked array as the
+        // target, filled position by position from the value (#319).
+        if let ast::Expr::Index { base, index, .. } = target {
+            if matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) {
+                let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+                let base_layout = self.persisted_layout(&path)?;
+                if matches!(base_layout.kind, LayoutKind::Array { .. }) {
+                    let labels = self.slice_labels(base_layout, index)?;
+                    let slice_layout = self.array_step_layout(base_layout, index)?;
+                    let env = HashMap::new();
+                    let source_layout = self
+                        .source_operand_layout(value, &env)
+                        .filter(|layout| !has_open_parameter(layout))
+                        .unwrap_or_else(|| slice_layout.clone());
+                    let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout)
+                    else {
+                        return None;
+                    };
+                    let values = fields.into_iter().collect::<HashMap<_, _>>();
+                    return aggregate_leaf_pairs(&source_layout, &slice_layout)?
+                        .into_iter()
+                        .map(|(source, destination)| {
+                            // `[p]rest` of the slice is `[labels[p]]rest` of `base`.
+                            let (position, rest) =
+                                destination.strip_prefix('[')?.split_once(']')?;
+                            let label = labels.get(position.parse::<usize>().ok()?)?;
+                            let signal = *self.locals.get(&format!("{path}[{label}]{rest}"))?;
+                            let value = values.get(&source)?.clone();
+                            Some((signal, self.coerce_to_target(signal, value)))
+                        })
+                        .collect();
+                }
+            }
+        }
         let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
@@ -254,9 +301,10 @@ impl Lowering<'_> {
                 if matches!(
                     index.as_ref(),
                     ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                ) && expr_path(base)
+                ) && (expr_path(base)
                     .and_then(|path| self.persisted_layout(&path))
-                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. })) =>
+                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. }))
+                    || self.call_array(base)) =>
             {
                 Some(single)
             }
@@ -292,8 +340,14 @@ impl Lowering<'_> {
         }
         let env = HashMap::new();
         let value_expression = value;
+        // A generic's layout with a parameter left open (`Box<T>` from
+        // `Box<integer>::make`) is the target's: the checker matched the
+        // types (#294).
+        // A converted value (`impl Into`) arrives in the target's shape.
+        let converted = self.conversions.contains_key(&ast::expr_span(value));
         let source_layout = self
             .source_operand_layout(value, &env)
+            .filter(|layout| !converted && !has_open_parameter(layout))
             .unwrap_or_else(|| target_layout.clone());
         let value = self.lower_shaped_source(value, &env, &source_layout);
         let Val::Fields(fields) = value else {
@@ -332,6 +386,140 @@ impl Lowering<'_> {
 impl Lowering<'_> {
     /// One concatenation part's scalar elements in order: a slice of an
     /// element-wise array as written, a whole one from `'left`, or one bit.
+    /// `arr[2..]` on an unpacked array as the written slice `arr[2..3]`,
+    /// its open bound taken from the declaration (#296).
+    pub(super) fn full_range_slice(&self, expression: &ast::Expr) -> Option<ast::Expr> {
+        let ast::Expr::Index { base, index, span } = expression else {
+            return None;
+        };
+        let ast::Expr::PartialRange {
+            lo,
+            hi,
+            span: range_span,
+        } = index.as_ref()
+        else {
+            return None;
+        };
+        let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+        // A local's labels, or a port's declared range: `a[..1]` of a port
+        // had neither end to fill (#353).
+        let (first, last) = match self.local_array.get(&path) {
+            Some(labels) => (*labels.first()?, *labels.last()?),
+            None => match &self.persisted_layout(&path)?.kind {
+                LayoutKind::Array {
+                    range: Some(range), ..
+                } => (range.left, range.right),
+                _ => return None,
+            },
+        };
+        let bound = |given: &Option<Box<ast::Expr>>, open: i64| match given {
+            Some(given) => self.eval_const(given, &self.cur_env),
+            None => Some(open),
+        };
+        let left = bound(lo, first)?;
+        let right = bound(hi, last)?;
+        let bound = |value: i64| {
+            Box::new(ast::Expr::Int {
+                text: value.to_string(),
+                span: *range_span,
+            })
+        };
+        Some(ast::Expr::Index {
+            base: base.clone(),
+            index: Box::new(ast::Expr::Range {
+                lo: bound(left),
+                hi: bound(right),
+                span: *range_span,
+            }),
+            span: *span,
+        })
+    }
+
+    /// A composite literal on a child's composite port (`.m = [[1, 2], [3,
+    /// 4]]`, `.b = Bundle { .arr = [1, 2] }`), read through the port's own
+    /// layout as a stored value is: its leaves by suffix (`[1][0]`, `.arr[1]`).
+    /// `leaves` are the port's `(name, signal, direction)`, named from `port`.
+    /// Only one level of struct or array literal was matched, and a nested
+    /// one drove nothing (#355).
+    pub(super) fn port_literal_leaves(
+        &self,
+        value: &ast::Expr,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<HashMap<String, Expr>> {
+        if !matches!(value, ast::Expr::Construct { .. } | ast::Expr::Array { .. }) {
+            return None;
+        }
+        let (name, signal, _) = leaves.first()?;
+        let full = &self.out.signals.get(signal.0 as usize)?.path;
+        let root = full.strip_suffix(name.strip_prefix(port)?)?;
+        let layout = self.out.source_layouts.get(root)?.clone();
+        let Val::Fields(fields) = self.lower_shaped_source(value, &HashMap::new(), &layout) else {
+            return None;
+        };
+        Some(
+            fields
+                .into_iter()
+                .map(|(leaf, expression)| {
+                    let suffix = if leaf.starts_with('[') {
+                        leaf
+                    } else {
+                        format!(".{leaf}")
+                    };
+                    (suffix, expression)
+                })
+                .collect(),
+        )
+    }
+
+    /// A port connected to a constant slice of an array signal (`.inp =
+    /// arr[1..2]`, `arr[2..]`): the array's path, and each of the port's
+    /// labels mapped to the array label it reads, by position.
+    pub(super) fn slice_connection(
+        &self,
+        value: &ast::Expr,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<(String, HashMap<i64, i64>)> {
+        let full = self.full_range_slice(value);
+        let ast::Expr::Index { base, index, .. } = full.as_ref().unwrap_or(value) else {
+            return None;
+        };
+        if !matches!(index.as_ref(), ast::Expr::Range { .. }) {
+            return None;
+        }
+        let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+        let array = self.persisted_layout(&path)?;
+        if !matches!(array.kind, LayoutKind::Array { .. }) {
+            return None;
+        }
+        let selected = self.slice_labels(array, index)?;
+        let own = self.port_labels(leaves, port)?;
+        (own.len() == selected.len()).then(|| (path, own.into_iter().zip(selected).collect()))
+    }
+
+    /// A composite port's own labels in declared order, read off one of its
+    /// leaves' signals: the port's layout is kept under its full path.
+    fn port_labels(
+        &self,
+        leaves: &[(String, SignalId, Option<ast::Direction>)],
+        port: &str,
+    ) -> Option<Vec<i64>> {
+        let (name, signal, _) = leaves.first()?;
+        let full_name = &self.out.signals.get(signal.0 as usize)?.path;
+        let root = full_name.strip_suffix(name.strip_prefix(port)?)?;
+        let range = self.out.source_layouts.get(root)?.index_range()?;
+        Some(loop_range(range.left, range.right))
+    }
+
+    /// Whether `expression` is a call returning an unpacked array.
+    fn call_array(&self, expression: &ast::Expr) -> bool {
+        matches!(expression, ast::Expr::Call { .. })
+            && self
+                .source_call_layout(expression)
+                .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. }))
+    }
+
     fn concat_part_elements(&self, part: &ast::Expr) -> Option<Vec<Expr>> {
         let element = |path: &str, label: i64| {
             self.locals
@@ -347,6 +535,23 @@ impl Lowering<'_> {
                 index.as_ref(),
                 ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
             ) {
+                // A slice of an array a call returns (`get_arr()[0..1]`):
+                // the elements of its value (#289).
+                if self.call_array(base) {
+                    let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
+                        return None;
+                    };
+                    let left = self.eval_const(lo, &self.cur_env)?;
+                    let right = self.eval_const(hi, &self.cur_env)?;
+                    let Val::Fields(fields) = self.lower_val_env(base, &HashMap::new()) else {
+                        return None;
+                    };
+                    let fields = fields.into_iter().collect::<HashMap<_, _>>();
+                    return loop_range(left, right)
+                        .into_iter()
+                        .map(|label| fields.get(&format!("[{label}]")).cloned())
+                        .collect();
+                }
                 let path = array_path(base)?;
                 let (left, right) = self.slice_bounds(base, index)?;
                 return loop_range(left, right)
@@ -377,8 +582,11 @@ impl Lowering<'_> {
         cond: &Option<Expr>,
     ) -> Option<Vec<(SignalId, Expr)>> {
         let env = HashMap::new();
+        // A generic's result with a parameter left open (`(B, A)` of
+        // `swap<A, B>`) is the target's, as for a whole-value store (#330).
         let source_layout = self
             .source_operand_layout(value, &env)
+            .filter(|layout| !has_open_parameter(layout))
             .or_else(|| self.tuple_target_layout(target))?;
         let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout) else {
             return None;
@@ -637,6 +845,18 @@ fn aggregate_leaf_pairs(
     let mut pairs = Vec::new();
     walk(source, target, String::new(), String::new(), &mut pairs)?;
     Some(pairs)
+}
+
+/// Whether a layout still holds a generic parameter no width fixes.
+fn has_open_parameter(layout: &SourceLayout) -> bool {
+    match &layout.kind {
+        LayoutKind::Opaque { width: None, .. } => true,
+        LayoutKind::Struct { fields, .. } => {
+            fields.iter().any(|field| has_open_parameter(&field.layout))
+        }
+        LayoutKind::Array { element, .. } => has_open_parameter(element),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
 # Co-simulation with VHDL and Verilog, and the simulator interfaces
 
-Status: **proposal**. Nothing here is implemented.
+Status: **proposal**. Nothing here is implemented. The cocotb integration it
+leads to was deferred by the owner when the API work was closed (October 2026);
+this stays the design for when it resumes.
 
 ## Problem
 

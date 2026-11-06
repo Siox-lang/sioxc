@@ -9,6 +9,51 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
+Local acceptance (2026-11-06, combined main integration and identity fixes):
+the integration combines accepted foundations with main `801ec40`, including
+implicit/static receivers, generate processes, timed waits and entity methods.
+All original conflicts are resolved; #399's hardware-match fix is ported without
+restoring leaf-name declaration lookup. Newer main is not fully merged, and
+the isolated numeric followup is not part of this accepted snapshot.
+
+Into selection retains complete checked source/target contracts and carries
+the selected method DefId into both lowering paths. Qualified aliases normalize
+through the existing layout path. Inference and diagnostics share declared
+index bounds, including nonzero/negative labels on plain, nested and entity
+arrays. Entity-array slots all exist; E-P022 is retired/reserved, omitted wiring
+uses defaults/W-P021 and invalid labels remain E-P003. Affix tables borrow
+normalized targets and suffix functions/bodies/parameters; both lowering
+consumers select the suffix method and consume checked result identity. Generic
+body memoization uses function/binder DefIds and full checked types instead of
+display names. Same-leaf owners, aliases and reversed module/call orders have
+regressions. Shared constant match/range evaluation preserves source ordering.
+
+Frozen gate 293943 completed `exited/success/0` within the normal 2 GiB guard,
+peak 1,643,999,232 bytes. It passes 732 frontend and 14 import API tests, both
+complete Rust suites (789 default / 768 bitpack library cases and all 23 DWARF
+tests per mode), strict all-target/all-feature Clippy, 64 runner tests and
+12 specified example artifacts. Both actual 273-program corpora pass. Each
+storage mode passes 71 text UI and 71 JSON cases, covers all 56 active codes
+and applies/recompiles both migrations. Both 26-function native API groups and
+all 56 directly executed native/debug/VCD runs pass. Affix and generic-cache
+regressions are verified on this combined source, not just their prototypes.
+
+Source fingerprint `3202805696c2bd2bf30d02880c0ffd1ca72b9d2abd718ed35d7661071fec2a2b`
+and actual-corpus fingerprint
+`1fb5b0208ca0eb19c0cb7d06b09f0886aa7dfdaa167cb8c7f7cdba665f61b9a9`
+match before/after validation and the independent current-state review.
+Only acceptance wording and coordination logs change afterward. Local commits
+are permitted by this gate; nothing is pushed or published to the wiki.
+The paired corpus migration is local commit `d548a52`; its 20 original peer
+files remain untracked and excluded from the commit.
+
+The engineering estimate remains about **85% of compiler foundations**, not
+the whole compiler. All five sections remain required. Fully typed values and
+attributes, remaining declaration registries and residual hook consumers are
+not complete. Generic conversions need per-instantiation lowering facts, and
+the old scalar suffix folders still need migration to the shared evaluator.
+The separate real/natural draft is untested and not claimed accepted here.
+
 Local acceptance (reviewed 2026-11-04, checker alias registry migration): shared
 declaration normalization replaces the checker's copied alias table and separate
 expansion walkers. Frozen gate 2281715 passes both complete Rust suites
@@ -527,6 +572,33 @@ Struct declarations now join that index for applied-layout queries. Bases,
 fields, ports, alias targets and parameter lists remain borrowed source nodes;
 pointer regressions pin the contract. Existing computed struct/member facts
 and other remaining registries still need their own identity migration.
+
+Local integration followup (2026-11-06, awaiting the full gate): affix tables
+borrow their implementation's target Type; suffix inference normalizes that
+contract through the shared declaration index rather than scanning names.
+Process suffix entries borrow functions, bodies and parameters and compare
+normalized target DefIds. Both lowering paths select the suffix method rather
+than a helper, resolve input aliases and consume checked result identity.
+Generic-instantiation memoization likewise uses function/binder IDs and full
+checked Ty arguments, not diagnostic display strings. Regressions preserve
+aliases, same-name nominal/array families, ordering, diagnostics and source
+pointers. Missing binder identities disable caching rather than validation.
+General generic value arguments, prefix result defaults, old suffix scalar
+folders and the other registries remain open; this is not five-section completion.
+
+**Pending Into identity migration (2026-11-05, not accepted).** The local
+integration replaces the qualifier-stripping conversion signature set with
+checked `(target, source)` contracts indexed by the `into` method's `DefId`.
+`Typed::Conversion` carries that selected ID into both native lowering paths;
+the function index no longer reconstructs an Into body key from type leaves.
+Textual layout projections retain qualification and are not selection authority.
+Collection follows array-family/element discovery, so a forward-declared nominal
+family cannot be frozen as a scalar. Unconstrained shapes retain the storage
+site's widths, while concrete contracts check their declared widths and element
+identities. Tests cover equal leaves, aliases, both module orders and native
+ordinary/debug hardware/procedural stores and returns. These new tests and the
+diagnostic snapshots are awaiting guarded validation; the earlier ten native
+passes do not validate this newer change. Other registries remain open.
 
 Elaboration now resolves module constants and free integer functions in
 parameters, widths, generate conditions and rendered indices. Source constants

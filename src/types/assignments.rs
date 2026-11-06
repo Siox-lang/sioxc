@@ -413,7 +413,7 @@ impl<'a> Checker<'a> {
         if self.report_bitless_concat(&lhs, value, sym) {
             return;
         }
-        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+        if !matches!(lhs, Ty::Error) && !self.site_assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(
                 "cannot initialize {} with {} without an explicit conversion",
@@ -478,7 +478,7 @@ impl<'a> Checker<'a> {
         if self.report_bitless_concat(&lhs, value, sym) {
             return;
         }
-        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+        if !matches!(lhs, Ty::Error) && !self.site_assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             // Suggest `T(...)` only where that conversion is defined: a named
             // type without a route from the value's type would reject it.
@@ -698,15 +698,13 @@ impl<'a> Checker<'a> {
         if bindings.is_empty() {
             return;
         }
-        let mut shown: Vec<String> = bindings
+        let key: Option<Vec<_>> = generics
             .iter()
-            .map(|(name, ty)| format!("{name}={}", self.ty_display(ty)))
+            .filter_map(|parameter| bindings.get(&parameter.name.text).map(|ty| (parameter, ty)))
+            .map(|(parameter, ty)| Some((self.resolved.declared(parameter.name.span)?, ty.clone())))
             .collect();
-        shown.sort();
-        if !self
-            .instantiated
-            .borrow_mut()
-            .insert(format!("{function:?}:{}", shown.join(",")))
+        if key
+            .is_some_and(|arguments| !self.instantiated.borrow_mut().insert((function, arguments)))
         {
             return;
         }

@@ -108,9 +108,9 @@ fn issue_151_generic_arity_is_checked() {
 fn issue_152_trait_impls_match_the_trait() {
     let out = metadata(
         "trait_impl",
-        "module m;\ntrait Tr { fn f(self, x: integer) -> integer; fn g(self) -> integer; }\n\
+        "module m;\ntrait Tr { fn f(x: integer) -> integer; fn g() -> integer; }\n\
          struct S { pub v: integer }\n\
-         impl Tr for S { fn f(self) -> integer { return 0; } fn h(self) -> integer { return 1; } }\n",
+         impl Tr for S { fn f() -> integer { return 0; } fn h() -> integer { return 1; } }\n",
     );
     assert!(
         out.contains("`Tr::f` takes 1 parameter(s), but this impl's takes 0"),
@@ -245,7 +245,7 @@ fn issue_167_resolve_on_a_struct_with_fields_is_rejected() {
     let out = metadata(
         "struct_resolve",
         "module m;\nstruct Packet { pub x: integer }\n\
-         impl Resolve for Packet { fn resolve(self, rhs: Packet) -> Packet { return { .x = self.x + rhs.x }; } }\n",
+         impl Resolve for Packet { fn resolve(rhs: Packet) -> Packet { return { .x = self.x + rhs.x }; } }\n",
     );
     assert!(
         out.contains("`Resolve` cannot be implemented for `Packet`, a struct with fields"),

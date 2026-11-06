@@ -66,8 +66,9 @@ const COMPILER_TRAITS: &[&str] = &[
     "IndexAssign",
     "Boolean",
     "Resolve",
-    "New",
+    "Default",
     "From",
+    "Into",
     "LogicEncoding",
     "Eq",
     "Ord",
@@ -94,8 +95,9 @@ fn trait_role(name: &str) -> Option<&'static str> {
         "IndexAssign" => "index_assign",
         "Boolean" => "boolean",
         "Resolve" => "resolve",
-        "New" => "new",
+        "Default" => "default",
         "From" => "from",
+        "Into" => "into",
         "LogicEncoding" => "logic_encoding",
         "Eq" => "eq",
         "Ord" => "ord",
@@ -252,6 +254,8 @@ pub struct Resolved {
     builtin_attrs: HashMap<String, DefId>,
     /// Transparent aliases whose normalized head denotes an entity.
     entity_aliases: HashMap<DefId, DefId>,
+    /// Bare receiver fields retained by source span until AST rewriting.
+    implicit_fields: HashMap<Span, String>,
 }
 
 impl Resolved {
@@ -265,6 +269,12 @@ impl Resolved {
     pub(crate) fn builtin_attribute(&self, name: &str) -> Option<DefId> {
         self.builtin_attrs.get(name).copied()
     }
+    /// The receiver field a bare name at `span` stands for, if it is one:
+    /// `value` inside a method of a struct with a `value` field.
+    pub fn implicit_field(&self, span: Span) -> Option<&str> {
+        self.implicit_fields.get(&span).map(String::as_str)
+    }
+
     /// The declaration that plays `role` for the compiler (`"operator"`,
     /// `"bool"`, `"test"`, …): a lang item, or its builtin fallback when no
     /// library declares one.
@@ -381,7 +391,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         .collect();
     r.file_modules = modules
         .iter()
-        .map(|m| {
+        .flat_map(|m| {
             let path = m
                 .path
                 .segments
@@ -389,7 +399,10 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
                 .map(|s| s.text.as_str())
                 .collect::<Vec<_>>()
                 .join("::");
-            (m.span.file, path)
+            // A derived impl's file belongs to the module it was written for.
+            std::iter::once(m.span.file)
+                .chain(m.derived_files.iter().copied())
+                .map(move |file| (file, path.clone()))
         })
         .collect();
     for m in modules {
@@ -434,6 +447,20 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         }
     }
     r.inherit_enum_variants(modules);
+    for m in modules {
+        for item in &m.items {
+            if let Item::Struct(structure) = item {
+                if let Some(id) = r.out.declared(structure.name.span) {
+                    let names = structure
+                        .fields
+                        .iter()
+                        .map(|f| f.name.text.clone())
+                        .collect();
+                    r.struct_fields.insert(id, (names, structure.base.clone()));
+                }
+            }
+        }
+    }
     for m in modules {
         r.set_current_module(m);
         // A lint directive's word (`allow`) names a built-in directive.
@@ -562,6 +589,12 @@ struct ImplOwner {
 struct Resolver<'a> {
     /// Where resolution diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Each struct's field names and derivation base, for bare field names.
+    struct_fields: HashMap<DefId, (Vec<String>, Option<Type>)>,
+    /// The field names of the struct whose implementation is being resolved.
+    impl_fields: Vec<String>,
+    /// The synthetic local bound for each bare field name, to its field.
+    field_defs: HashMap<DefId, String>,
     /// The resolution being built; returned once the walk completes.
     out: Resolved,
     /// Module-level + builtin type/value namespace.
@@ -635,6 +668,9 @@ impl<'a> Resolver<'a> {
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Resolver {
             sink,
+            struct_fields: HashMap::new(),
+            impl_fields: Vec::new(),
+            field_defs: HashMap::new(),
             out: Resolved::default(),
             globals: HashMap::new(),
             builtins: HashMap::new(),
@@ -1367,9 +1403,10 @@ impl<'a> Resolver<'a> {
                     };
                     let problem = if receiver(declared) != receiver(f) {
                         Some(if receiver(declared) {
-                            "takes `self`, and this impl's does not".to_string()
+                            "has a receiver, and this impl's is `static`".to_string()
                         } else {
-                            "takes no `self`, and this impl's does".to_string()
+                            "is `static`, and this impl's has a receiver: write `static fn`"
+                                .to_string()
                         })
                     } else if arity(declared) != arity(f) {
                         Some(format!(
@@ -1755,7 +1792,10 @@ impl<'a> Resolver<'a> {
                 }
                 self.exit();
             }
-            Item::Impl(im) => self.resolve_impl(im),
+            Item::Impl(im) => {
+                self.resolve_impl(im);
+                self.impl_fields.clear();
+            }
             Item::Trait(t) => {
                 self.enter();
                 self.bind_params(&t.params, true, self.out.declared(t.name.span));
@@ -1832,6 +1872,7 @@ impl<'a> Resolver<'a> {
             }
         }
         self.resolve_type(&im.target);
+        self.impl_fields = self.receiver_fields(&im.target);
         if im.trait_.is_none() {
             self.check_inherent_impl_coherence(im);
         } else {
@@ -2094,6 +2135,15 @@ impl<'a> Resolver<'a> {
         // needed here (rather than only in the module-level Item arm) for
         // generic methods and trait defaults as well.
         self.bind_params(&f.generics, true, None);
+        // A member with a receiver sees its struct's fields by name; its
+        // parameters, bound next in this scope, and its locals shadow them.
+        if f.params.iter().any(|p| p.is_self) {
+            for name in self.impl_fields.clone() {
+                let id = self.add_def(name.clone(), DefKind::Local, false, None, None);
+                self.bind(&name, id);
+                self.field_defs.insert(id, name);
+            }
+        }
         let mut has_self = false;
         for p in &f.params {
             if p.is_self {
@@ -2140,6 +2190,7 @@ impl<'a> Resolver<'a> {
     fn resolve_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Use(_) => {}
+            Stmt::Process(process) => self.resolve_block(&process.body),
             Stmt::Let(l) => {
                 if let Some(t) = &l.ty {
                     self.resolve_type(t);
@@ -2174,6 +2225,12 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(range);
                 self.enter();
                 self.bind_local(&var.text, var.span);
+                self.resolve_block(body);
+                self.exit();
+            }
+            Stmt::While { cond, body, .. } => {
+                self.resolve_expr(cond);
+                self.enter();
                 self.resolve_block(body);
                 self.exit();
             }
@@ -2591,14 +2648,15 @@ impl<'a> Resolver<'a> {
             if let Some(id) = enum_id {
                 if self.out.kind_of(id) == Some(DefKind::Enum) {
                     let var = p.segments.last().expect("two segments").text.clone();
-                    // `Phase::new()` is the `New` trait's constructor, not a
-                    // variant — the same default `Phase()` builds. Resolving
-                    // `Enum::x` as a variant first made the documented pair
-                    // disagree: `Pair::new()` worked and `Phase::new()` was
-                    // "not a variant of enum `Phase`".
+                    // `Phase::default()` is the `Default` trait's constructor,
+                    // not a variant — the same default `Phase()` builds.
+                    // Resolving `Enum::x` as a variant first made the
+                    // documented pair disagree.
                     // An associated function of the enum (`State::default_state()`)
                     // is a call, not a variant (#265).
-                    if var == "new" || self.associated_fns.contains(&(head.clone(), var.clone())) {
+                    if matches!(var.as_str(), "default" | "new")
+                        || self.associated_fns.contains(&(head.clone(), var.clone()))
+                    {
                         self.record_qualified_use(p.segments[enum_position].span, id);
                         return;
                     }
@@ -2649,8 +2707,56 @@ impl<'a> Resolver<'a> {
             if let Some(id) = self.lookup(&name.text) {
                 self.record_qualified_use(p.span, id);
                 self.mark_impl_param_use(id);
+                self.record_implicit_field(p, id);
             }
         }
+    }
+
+    /// A bare field name is `self.<field>`: record the field, and resolve a
+    /// zero-width `self` at its start for the rewrite to use.
+    fn record_implicit_field(&mut self, p: &Path, id: DefId) {
+        let Some(field) = self.field_defs.get(&id).cloned() else {
+            return;
+        };
+        let Some(receiver) = self.lookup("self") else {
+            return;
+        };
+        let at = Span {
+            file: p.span.file,
+            start: p.span.start,
+            end: p.span.start,
+        };
+        self.out.uses.insert(at, receiver);
+        self.out.implicit_fields.insert(p.span, field);
+    }
+
+    /// The field names a member of an implementation of `target` sees
+    /// through its receiver: a struct's own and its derivation bases'.
+    fn receiver_fields(&self, target: &Type) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut current = type_head_path(target).and_then(|path| {
+            self.out
+                .uses
+                .get(&path.span)
+                .copied()
+                .or_else(|| path.segments.last().and_then(|s| self.lookup(&s.text)))
+        });
+        let mut seen = HashSet::new();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some((fields, base)) = self.struct_fields.get(&id) else {
+                break;
+            };
+            names.extend(fields.iter().cloned());
+            current = base
+                .as_ref()
+                .and_then(type_head_path)
+                .and_then(|path| path.segments.last())
+                .and_then(|segment| self.lookup(&segment.text));
+        }
+        names
     }
 
     /// A generic entity's inherent impl must bind its parameters the way Rust
@@ -3321,6 +3427,48 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Rewrite each bare field name resolution found (`value` inside a method
+/// with a receiver) into the `self.value` every later stage already
+/// understands. Its `self` resolves at a zero-width span of its own, recorded
+/// during resolution, so the field access and its base never share a span.
+pub fn rewrite_implicit_fields(modules: &mut [Module], resolved: &Resolved) {
+    if resolved.implicit_fields.is_empty() {
+        return;
+    }
+    for module in modules.iter_mut() {
+        for item in &mut module.items {
+            crate::syntax::walk::walk_item(item, &mut |e| {
+                if let Expr::Path(path) = e {
+                    if let Some(field) = resolved.implicit_field(path.span) {
+                        let span = path.span;
+                        let at = Span {
+                            file: span.file,
+                            start: span.start,
+                            end: span.start,
+                        };
+                        *e = Expr::Field {
+                            base: Box::new(Expr::Path(Path {
+                                segments: vec![Ident {
+                                    text: "self".to_string(),
+                                    span: at,
+                                }],
+                                span: at,
+                            })),
+                            field: Ident {
+                                text: field.to_string(),
+                                span,
+                            },
+                            span,
+                        };
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3450,7 +3598,7 @@ mod tests {
                 FileId(0),
             ),
             (
-                "module user;\nuse owner::{Device};\nimpl Device { pub fn read(self) -> integer { return self.value; } }\n",
+                "module user;\nuse owner::{Device};\nimpl Device { pub fn read() -> integer { return self.value; } }\n",
                 FileId(1),
             ),
         ]);
@@ -3474,7 +3622,7 @@ mod tests {
         let sink = module_diagnostics(&[
             ("module owner;\npub struct Device(integer);\n", FileId(0)),
             (
-                "module owner;\nimpl Device { pub fn read(self) -> integer { return 0; } }\n",
+                "module owner;\nimpl Device { pub fn read() -> integer { return 0; } }\n",
                 FileId(1),
             ),
         ]);
@@ -3490,8 +3638,8 @@ mod tests {
     fn compiler_types_and_aliases_do_not_gain_inherent_impls() {
         let sink = diagnostics(
             "module m;\ntype Count = integer;\n\
-             impl integer { fn raw(self) -> integer { return self; } }\n\
-             impl Count { fn alias(self) -> integer { return self; } }\n",
+             impl integer { fn raw() -> integer { return self; } }\n\
+             impl Count { fn alias() -> integer { return self; } }\n",
         );
         assert_eq!(
             sink.diagnostics()
@@ -3508,8 +3656,8 @@ mod tests {
     fn split_inherent_impls_share_one_member_namespace() {
         let sink = diagnostics(
             "module m;\nstruct Register(integer);\n\
-             impl Register { fn read(self) -> integer { return 0; } }\n\
-             impl Register { fn read(self) -> integer { return 1; } }\n",
+             impl Register { fn read() -> integer { return 0; } }\n\
+             impl Register { fn read() -> integer { return 1; } }\n",
         );
         let duplicates: Vec<_> = sink
             .diagnostics()
@@ -3681,8 +3829,8 @@ mod tests {
              struct Queue { value: integer }\n\
              view Source for Stream { value out }\n\
              view Source for Queue { value out }\n\
-             impl Stream Source { fn get(self) -> integer { return self.value; } }\n\
-             impl Queue Source { fn get(self) -> integer { return self.value; } }\n",
+             impl Stream Source { fn get() -> integer { return self.value; } }\n\
+             impl Queue Source { fn get() -> integer { return self.value; } }\n",
         );
         let errors: Vec<_> = sink
             .diagnostics()
@@ -3872,7 +4020,7 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
             FileId(0),
-            "module a;\nstruct Secret(integer);\nstruct Owner(integer);\nimpl Owner { pub fn keep(self, value: Secret) -> Secret { return value; } }\n",
+            "module a;\nstruct Secret(integer);\nstruct Owner(integer);\nimpl Owner { pub fn keep(value: Secret) -> Secret { return value; } }\n",
             &mut sink,
         );
         resolve(&[module], &mut sink);
@@ -4241,7 +4389,7 @@ mod tests {
              entity E<T, U> { value: T out }\n\
              impl E<T, U> { let cached: T; }\n\
              struct Pair<A, B> { first: A }\n\
-             trait Convert<X, Y> { fn apply(self, value: X) -> X; }\n",
+             trait Convert<X, Y> { fn apply(value: X) -> X; }\n",
         );
         let unused: Vec<&str> = sink
             .diagnostics()
@@ -4265,12 +4413,12 @@ mod tests {
     fn operator_traits_resolve_and_reject_unknown_operators() {
         // The operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
-            "module m;\nstruct V { a: Bit }\nimpl Add<V, V> for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+            "module m;\nstruct V { a: Bit }\nimpl Add<V, V> for V {\n  fn add(rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
         assert_eq!(errs, 0);
 
         // Quoted operator traits were removed with the Rust-style pivot.
-        let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply(self) -> Self;\n}\n");
+        let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply() -> Self;\n}\n");
         assert!(
             sink.diagnostics()
                 .iter()

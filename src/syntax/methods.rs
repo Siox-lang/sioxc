@@ -1,0 +1,978 @@
+//! Entity methods (owner-approved design, 2026-11-03): a `pub fn` with a
+//! receiver on an entity is called on a direct child instance,
+//! `fifo.push(x)` or `fifo.is_full()`. Before resolution, each one becomes
+//! ports and a process on the child, and wiring in the parent, so every later
+//! stage sees only ordinary hardware:
+//!
+//! - the child gains `m#called: Bit in`, one `m#p: T in` per parameter and,
+//!   for a result, `m#ret: R out`. The body becomes a process `m#call` that
+//!   gives every signal it writes a default and then, while `m#called` is
+//!   `'1'`, runs the body with `return e;` as `m#ret = e;`. A method's writes
+//!   are therefore combinational strobes, active only while it is called (a
+//!   SystemVerilog interface function, as `push(v) { wr_en = '1'; din = v; }`
+//!   drives an `xpm_fifo_sync`); the state lives in the child.
+//! - the parent gains hidden signals `x#m#called`, `x#m#p`, `x#m#ret`, wired
+//!   into the instance's connections. A call site sets `called` and the
+//!   arguments just before its statement and reads `ret` in its place; the
+//!   enclosing process defaults them, so no call means no strobe.
+//!
+//! One call site per method per instance (more would need arbitration), a
+//! direct child only, and no testbench callers yet: each is reported. Names
+//! the pass generates take spans in a source file of their own, so no two
+//! generated names can share a span with each other or with written code.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::diag::{Diagnostic, DiagnosticSink, FileId, SourceMap, Span};
+use crate::syntax::ast::*;
+
+/// One public method of an entity: its signature, as the ports carry it.
+#[derive(Clone)]
+struct Method {
+    name: String,
+    params: Vec<(String, Type)>,
+    ret: Option<Type>,
+}
+
+/// Allocates spans in the generated file, each covering its own name.
+struct Spans {
+    file: FileId,
+    text: String,
+}
+
+impl Spans {
+    fn at(&mut self, label: &str) -> Span {
+        let start = self.text.len() as u32;
+        self.text.push_str(label);
+        let end = self.text.len() as u32;
+        self.text.push('\n');
+        Span {
+            file: self.file,
+            start,
+            end,
+        }
+    }
+
+    fn ident(&mut self, text: &str) -> Ident {
+        Ident {
+            text: text.to_string(),
+            span: self.at(text),
+        }
+    }
+
+    fn path(&mut self, text: &str) -> Expr {
+        let ident = self.ident(text);
+        Expr::Path(Path {
+            span: ident.span,
+            segments: vec![ident],
+        })
+    }
+
+    fn assign(&mut self, target: &str, value: Expr) -> Stmt {
+        let target = self.path(target);
+        let span = crate::syntax::ast::expr_span(&target);
+        Stmt::Assign {
+            label: None,
+            target,
+            value,
+            after: None,
+            span,
+        }
+    }
+
+    fn bit(&mut self, value: char) -> Expr {
+        Expr::CharLit {
+            ch: value,
+            span: self.at(&format!("'{value}'")),
+        }
+    }
+
+    fn let_decl(&mut self, name: &str, ty: &Type) -> LetDecl {
+        let name = self.ident(name);
+        LetDecl {
+            attrs: Vec::new(),
+            span: name.span,
+            name,
+            ty: Some(ty.clone()),
+            value: None,
+            is_static: false,
+        }
+    }
+}
+
+/// Rewrite every entity method and every call to one.
+pub fn entity_methods(modules: &mut [Module], sources: &mut SourceMap, sink: &mut DiagnosticSink) {
+    let methods = collect(modules);
+    if methods.is_empty() {
+        return;
+    }
+    let entity_params = entity_params(modules);
+    let tests = test_entities(modules);
+    for module in modules.iter_mut() {
+        // Each module's generated names live in a file of its own, counted
+        // as that module's, so privacy treats them as written there.
+        let file = sources.add("<entity methods>", "");
+        module.derived_files.push(file);
+        let mut spans = Spans {
+            file,
+            text: String::new(),
+        };
+        for item in &mut module.items {
+            match item {
+                Item::Entity(entity) => {
+                    if let Some(methods) = methods.get(&entity.name.text) {
+                        for method in methods {
+                            add_ports(entity, method, &mut spans);
+                        }
+                    }
+                }
+                Item::Impl(implementation) => {
+                    let Some(target) = head_name(&implementation.target) else {
+                        continue;
+                    };
+                    if let Some(own) = methods.get(&target) {
+                        rewrite_child(implementation, own, &mut spans, sink);
+                    }
+                    rewrite_callers(
+                        implementation,
+                        &methods,
+                        &entity_params,
+                        tests.contains(&target),
+                        &mut spans,
+                        sink,
+                    );
+                }
+                _ => {}
+            }
+        }
+        sources.replace_text(file, spans.text);
+    }
+}
+
+/// The last segment of a type's head path.
+fn head_name(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(path) => path.segments.last().map(|s| s.text.clone()),
+        Type::Generic { base, .. } => head_name(base),
+        _ => None,
+    }
+}
+
+/// Entities marked `#[test]`.
+fn test_entities(modules: &[Module]) -> HashSet<String> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Entity(entity)
+                if entity.attrs.iter().any(|attr| {
+                    attr.name.segments.len() == 1 && attr.name.segments[0].text == "test"
+                }) =>
+            {
+                Some(entity.name.text.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each entity's generic parameter names, in order.
+fn entity_params(modules: &[Module]) -> HashMap<String, Vec<String>> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Entity(entity) => Some((
+                entity.name.text.clone(),
+                entity
+                    .params
+                    .params
+                    .iter()
+                    .map(|p| p.name.text.clone())
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every entity's public members with a receiver.
+fn collect(modules: &[Module]) -> HashMap<String, Vec<Method>> {
+    let entities: HashSet<String> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Entity(entity) => Some(entity.name.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut methods: HashMap<String, Vec<Method>> = HashMap::new();
+    for module in modules {
+        for item in &module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            if implementation.trait_.is_some() {
+                continue;
+            }
+            let Some(target) = head_name(&implementation.target).filter(|t| entities.contains(t))
+            else {
+                continue;
+            };
+            for member in &implementation.items {
+                let ImplItem::Fn(function) = member else {
+                    continue;
+                };
+                if !is_method(function) {
+                    continue;
+                }
+                methods.entry(target.clone()).or_default().push(Method {
+                    name: function.name.text.clone(),
+                    params: function
+                        .params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .filter_map(|p| Some((p.name.as_ref()?.text.clone(), p.ty.clone()?)))
+                        .collect(),
+                    ret: function.ret.clone(),
+                });
+            }
+        }
+    }
+    methods
+}
+
+/// A public member with a receiver.
+fn is_method(function: &FnDecl) -> bool {
+    function.is_pub && !function.is_static && function.params.iter().any(|p| p.is_self)
+}
+
+/// The ports a method's calls cross on.
+fn add_ports(entity: &mut EntityDecl, method: &Method, spans: &mut Spans) {
+    let port = |spans: &mut Spans, name: String, ty: Type, dir: Direction| {
+        let name = spans.ident(&name);
+        Port {
+            dir: Some(dir),
+            span: name.span,
+            name,
+            ty,
+            attrs: Vec::new(),
+        }
+    };
+    let bit = bit_type(spans);
+    entity.ports.push(port(
+        spans,
+        format!("{}#called", method.name),
+        bit,
+        Direction::In,
+    ));
+    for (name, ty) in &method.params {
+        entity.ports.push(port(
+            spans,
+            format!("{}#{name}", method.name),
+            ty.clone(),
+            Direction::In,
+        ));
+    }
+    if let Some(ret) = &method.ret {
+        entity.ports.push(port(
+            spans,
+            format!("{}#ret", method.name),
+            ret.clone(),
+            Direction::Out,
+        ));
+    }
+}
+
+fn bit_type(spans: &mut Spans) -> Type {
+    let ident = spans.ident("Bit");
+    Type::Path(Path {
+        span: ident.span,
+        segments: vec![ident],
+    })
+}
+
+/// Replace each method of the child with its process.
+fn rewrite_child(
+    implementation: &mut ImplDecl,
+    methods: &[Method],
+    spans: &mut Spans,
+    sink: &mut DiagnosticSink,
+) {
+    let names: HashSet<&str> = methods.iter().map(|m| m.name.as_str()).collect();
+    // The declared type of every entity-body signal, for defaults.
+    let declared: HashMap<String, Type> = implementation
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ImplItem::Let(declaration) => {
+                Some((declaration.name.text.clone(), declaration.ty.clone()?))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut generated = Vec::new();
+    implementation.items.retain_mut(|item| {
+        let ImplItem::Fn(function) = item else {
+            return true;
+        };
+        if !is_method(function) || !names.contains(function.name.text.as_str()) {
+            return true;
+        }
+        if let Some(body) = function.body.take() {
+            generated.extend(method_process(function, body, &declared, spans, sink));
+        }
+        false
+    });
+    implementation.items.extend(generated);
+}
+
+/// `m#call: process { defaults; if m#called == '1' { body } }` and the
+/// never-written signals the defaults read.
+fn method_process(
+    function: &FnDecl,
+    body: Block,
+    declared: &HashMap<String, Type>,
+    spans: &mut Spans,
+    sink: &mut DiagnosticSink,
+) -> Vec<ImplItem> {
+    let name = function.name.text.clone();
+    let params: HashSet<String> = function
+        .params
+        .iter()
+        .filter_map(|p| p.name.as_ref().map(|n| n.text.clone()))
+        .collect();
+    let mut stmts = body.stmts;
+    // `return e;` is the result; it ends the body.
+    let ret = match stmts.last() {
+        Some(Stmt::Return { value: Some(_), .. }) => match stmts.pop() {
+            Some(Stmt::Return { value, .. }) => value,
+            _ => None,
+        },
+        _ => None,
+    };
+    if function.ret.is_some() && ret.is_none() {
+        sink.emit(
+            Diagnostic::error(format!(
+                "entity method `{name}` must end with `return` of its result"
+            ))
+            .at(function.name.span),
+        );
+    }
+    let mut early = false;
+    for statement in &stmts {
+        early |= contains_return(statement);
+    }
+    if early {
+        sink.emit(
+            Diagnostic::error(format!(
+                "entity method `{name}` returns only at the end of its body"
+            ))
+            .at(function.name.span)
+            .help("compute the result into a local and return it last"),
+        );
+    }
+    // Parameters are the call's ports; `self.x` is the entity's own `x`.
+    let mut rename = |e: &mut Expr| {
+        match e {
+            Expr::Path(path)
+                if path.segments.len() == 1 && params.contains(&path.segments[0].text) =>
+            {
+                path.segments[0].text = format!("{name}#{}", path.segments[0].text);
+            }
+            Expr::Field { base, field, span } if matches!(base.as_ref(), Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "self") =>
+            {
+                *e = Expr::Path(Path {
+                    segments: vec![field.clone()],
+                    span: *span,
+                });
+            }
+            _ => {}
+        }
+        true
+    };
+    for statement in &mut stmts {
+        crate::syntax::walk::walk_stmt(statement, &mut rename);
+    }
+    let ret = ret.map(|mut value| {
+        crate::syntax::walk::walk_expr(&mut value, &mut rename);
+        value
+    });
+    // Every signal the body writes falls back to its default when the
+    // method is not called; locals the body declares are its own.
+    let mut locals = HashSet::new();
+    let mut written = Vec::new();
+    for statement in &stmts {
+        written_roots(statement, &mut locals, &mut written);
+    }
+    let mut items = Vec::new();
+    let mut process_body = Vec::new();
+    for target in written.iter().filter(|w| !locals.contains(*w)) {
+        let Some(ty) = declared.get(target) else {
+            continue;
+        };
+        let none = format!("{name}#none#{target}");
+        items.push(ImplItem::Let(spans.let_decl(&none, ty)));
+        let value = spans.path(&none);
+        process_body.push(spans.assign(target, value));
+    }
+    if let (Some(ty), true) = (&function.ret, ret.is_some()) {
+        let none = format!("{name}#none#ret");
+        items.push(ImplItem::Let(spans.let_decl(&none, ty)));
+        let value = spans.path(&none);
+        process_body.push(spans.assign(&format!("{name}#ret"), value));
+    }
+    if let Some(value) = ret {
+        stmts.push(spans.assign(&format!("{name}#ret"), value));
+    }
+    let called = spans.path(&format!("{name}#called"));
+    let one = spans.bit('1');
+    let cond_span = crate::syntax::ast::expr_span(&called);
+    process_body.push(Stmt::If(IfStmt {
+        label: None,
+        cond: Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(called),
+            rhs: Box::new(one),
+            span: cond_span,
+        },
+        then: Block {
+            stmts,
+            span: body.span,
+        },
+        else_: None,
+        span: body.span,
+    }));
+    items.push(ImplItem::Process(ProcessDecl {
+        label: Some(spans.ident(&format!("{name}#call"))),
+        span: function.span,
+        body: Block {
+            stmts: process_body,
+            span: body.span,
+        },
+    }));
+    items
+}
+
+fn contains_return(statement: &Stmt) -> bool {
+    match statement {
+        Stmt::Return { .. } => true,
+        Stmt::If(chain) => {
+            chain.then.stmts.iter().any(contains_return)
+                || match chain.else_.as_deref() {
+                    Some(ElseBranch::Block(block)) => block.stmts.iter().any(contains_return),
+                    Some(ElseBranch::If(next)) => contains_return(&Stmt::If(next.clone())),
+                    None => false,
+                }
+        }
+        Stmt::Match(m) => m
+            .arms
+            .iter()
+            .any(|arm| arm.body.stmts.iter().any(contains_return)),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => body.stmts.iter().any(contains_return),
+        _ => false,
+    }
+}
+
+/// The root names a statement assigns, and the locals it declares.
+fn written_roots(statement: &Stmt, locals: &mut HashSet<String>, out: &mut Vec<String>) {
+    match statement {
+        Stmt::Let(declaration) => {
+            locals.insert(declaration.name.text.clone());
+        }
+        Stmt::Assign { target, .. } => {
+            let mut root = target;
+            while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Path(path) = root {
+                if let [segment] = path.segments.as_slice() {
+                    if !out.contains(&segment.text) {
+                        out.push(segment.text.clone());
+                    }
+                }
+            }
+        }
+        Stmt::If(chain) => {
+            let mut link = Some(chain);
+            while let Some(current) = link {
+                for inner in &current.then.stmts {
+                    written_roots(inner, locals, out);
+                }
+                link = match current.else_.as_deref() {
+                    Some(ElseBranch::If(next)) => Some(next),
+                    Some(ElseBranch::Block(block)) => {
+                        for inner in &block.stmts {
+                            written_roots(inner, locals, out);
+                        }
+                        None
+                    }
+                    None => None,
+                };
+            }
+        }
+        Stmt::Match(m) => {
+            for arm in &m.arms {
+                for inner in &arm.body.stmts {
+                    written_roots(inner, locals, out);
+                }
+            }
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            for inner in &body.stmts {
+                written_roots(inner, locals, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One instance of an entity with methods, declared in the parent.
+struct Instance {
+    entity: String,
+    /// The instance type's generic arguments, by parameter name.
+    args: HashMap<String, Expr>,
+}
+
+/// Rewrite the calls an implementation makes on its children's methods.
+fn rewrite_callers(
+    implementation: &mut ImplDecl,
+    methods: &HashMap<String, Vec<Method>>,
+    entity_params: &HashMap<String, Vec<String>>,
+    testbench: bool,
+    spans: &mut Spans,
+    sink: &mut DiagnosticSink,
+) {
+    let mut instances: HashMap<String, Instance> = HashMap::new();
+    for item in &implementation.items {
+        let ImplItem::Let(declaration) = item else {
+            continue;
+        };
+        let Some(ty) = &declaration.ty else {
+            continue;
+        };
+        let Some(entity) = head_name(ty).filter(|name| methods.contains_key(name)) else {
+            continue;
+        };
+        let mut args = HashMap::new();
+        if let Type::Generic { args: given, .. } = ty {
+            let names = entity_params.get(&entity).cloned().unwrap_or_default();
+            for (index, arg) in given.iter().enumerate() {
+                match arg {
+                    GenericArg::Named { name, value } => {
+                        args.insert(name.text.clone(), value.clone());
+                    }
+                    GenericArg::Positional(value) => {
+                        if let Some(name) = names.get(index) {
+                            args.insert(name.clone(), value.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        instances.insert(declaration.name.text.clone(), Instance { entity, args });
+    }
+    if instances.is_empty() {
+        return;
+    }
+    let mut context = Callers {
+        instances: &instances,
+        methods,
+        testbench,
+        sites: HashMap::new(),
+        used: Vec::new(),
+        unconditional: HashSet::new(),
+        depth: 0,
+        spans,
+        sink,
+    };
+    let mut generated = Vec::new();
+    for item in &mut implementation.items {
+        match item {
+            ImplItem::Process(process) => {
+                let before = context.used.len();
+                context.depth = 0;
+                context.body(&mut process.body);
+                // No call means no strobe: default what this process drives.
+                let mut defaults = Vec::new();
+                for index in before..context.used.len() {
+                    let (instance, method) = context.used[index].clone();
+                    defaults.extend(context.defaults(&instance, &method, &mut generated));
+                }
+                process.body.stmts.splice(0..0, defaults);
+            }
+            ImplItem::Stmt(statement) => {
+                let mut pre = Vec::new();
+                context.statement(statement, &mut pre);
+                generated.extend(pre.into_iter().map(ImplItem::Stmt));
+            }
+            _ => {}
+        }
+    }
+    // Hidden signals and their wiring into each instance's connections.
+    for (instance, method) in context.used.clone() {
+        let found = &instances[&instance];
+        let Some(signature) = methods[&found.entity].iter().find(|m| m.name == method) else {
+            continue;
+        };
+        let mut connections = Vec::new();
+        let called = format!("{instance}#{method}#called");
+        let bit = bit_type(context.spans);
+        generated.push(ImplItem::Let(context.spans.let_decl(&called, &bit)));
+        connections.push((format!("{method}#called"), called));
+        for (name, ty) in &signature.params {
+            let hidden = format!("{instance}#{method}#{name}");
+            let ty = substitute(ty, &found.args);
+            generated.push(ImplItem::Let(context.spans.let_decl(&hidden, &ty)));
+            connections.push((format!("{method}#{name}"), hidden));
+        }
+        if let Some(ret) = &signature.ret {
+            let hidden = format!("{instance}#{method}#ret");
+            let ty = substitute(ret, &found.args);
+            generated.push(ImplItem::Let(context.spans.let_decl(&hidden, &ty)));
+            connections.push((format!("{method}#ret"), hidden));
+        }
+        for item in &mut implementation.items {
+            let ImplItem::Let(declaration) = item else {
+                continue;
+            };
+            if declaration.name.text != instance {
+                continue;
+            }
+            let value = declaration.value.get_or_insert_with(|| Expr::Construct {
+                ty: None,
+                args: Vec::new(),
+                spread: None,
+                span: declaration.span,
+            });
+            if let Expr::Construct { args, .. } = value {
+                for (port, signal) in &connections {
+                    let field = context.spans.ident(port);
+                    let value = context.spans.path(signal);
+                    args.push(ConnectArg {
+                        span: field.span,
+                        field: Some(field),
+                        value: Some(value),
+                    });
+                }
+            }
+        }
+    }
+    implementation.items.splice(0..0, generated);
+}
+
+/// Replace the instance's generic parameters in a method's port type.
+fn substitute(ty: &Type, args: &HashMap<String, Expr>) -> Type {
+    let mut ty = ty.clone();
+    crate::syntax::walk::walk_type(&mut ty, &mut |e| {
+        if let Expr::Path(path) = e {
+            if let [segment] = path.segments.as_slice() {
+                if let Some(value) = args.get(&segment.text) {
+                    *e = value.clone();
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    ty
+}
+
+struct Callers<'a, 'b> {
+    instances: &'a HashMap<String, Instance>,
+    methods: &'a HashMap<String, Vec<Method>>,
+    testbench: bool,
+    /// Where each `(instance, method)` is called, for the one-site rule.
+    sites: HashMap<(String, String), Span>,
+    /// Each `(instance, method)` called, in first-call order.
+    used: Vec<(String, String)>,
+    /// Calls made at a process body's top level: they always strobe, so
+    /// they need no default.
+    unconditional: HashSet<(String, String)>,
+    /// How deep inside a process body's blocks the walk is.
+    depth: usize,
+    spans: &'b mut Spans,
+    sink: &'b mut DiagnosticSink,
+}
+
+impl Callers<'_, '_> {
+    /// A process body: its top-level statements always run.
+    fn body(&mut self, block: &mut Block) {
+        self.walk(block);
+    }
+
+    /// A nested block: the statements in it run under a condition.
+    fn block(&mut self, block: &mut Block) {
+        self.depth += 1;
+        self.walk(block);
+        self.depth -= 1;
+    }
+
+    /// Rewrite the calls in a block, statement by statement.
+    fn walk(&mut self, block: &mut Block) {
+        let mut index = 0;
+        while index < block.stmts.len() {
+            let mut pre = Vec::new();
+            self.statement(&mut block.stmts[index], &mut pre);
+            let count = pre.len();
+            if count > 0 {
+                block.stmts.splice(index..index, pre);
+            }
+            // A procedure call statement leaves nothing of its own.
+            if matches!(&block.stmts[index + count], Stmt::Expr(Expr::Path(p)) if p.segments.is_empty())
+            {
+                block.stmts.remove(index + count);
+                index += count;
+                continue;
+            }
+            index += count + 1;
+        }
+    }
+
+    /// Rewrite the calls in one statement's own expressions, gathering the
+    /// strobes they need set just before it; nested blocks are handled as
+    /// blocks.
+    fn statement(&mut self, statement: &mut Stmt, pre: &mut Vec<Stmt>) {
+        match statement {
+            Stmt::Expr(Expr::Call { .. }) => {
+                if let Stmt::Expr(expression) = statement {
+                    if self.call(expression, pre, true) {
+                        // Mark for removal by the block walker.
+                        *expression = Expr::Path(Path {
+                            segments: Vec::new(),
+                            span: crate::syntax::ast::expr_span(expression),
+                        });
+                        return;
+                    }
+                    self.expression(expression, pre);
+                }
+            }
+            Stmt::Expr(expression) => self.expression(expression, pre),
+            Stmt::Assign { target, value, .. } => {
+                self.expression(target, pre);
+                self.expression(value, pre);
+            }
+            Stmt::Let(declaration) => {
+                if let Some(value) = &mut declaration.value {
+                    self.expression(value, pre);
+                }
+            }
+            Stmt::If(chain) => {
+                self.expression(&mut chain.cond, pre);
+                self.block(&mut chain.then);
+                let mut link = chain.else_.as_deref_mut();
+                while let Some(branch) = link {
+                    match branch {
+                        ElseBranch::Block(block) => {
+                            self.block(block);
+                            link = None;
+                        }
+                        ElseBranch::If(next) => {
+                            self.expression(&mut next.cond, pre);
+                            self.block(&mut next.then);
+                            link = next.else_.as_deref_mut();
+                        }
+                    }
+                }
+            }
+            Stmt::Match(m) => {
+                self.expression(&mut m.scrutinee, pre);
+                for arm in &mut m.arms {
+                    self.block(&mut arm.body);
+                }
+            }
+            Stmt::For { range, body, .. } => {
+                self.expression(range, pre);
+                self.in_loop(body);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expression(cond, pre);
+                self.in_loop(body);
+            }
+            Stmt::Return {
+                value: Some(value), ..
+            } => self.expression(value, pre),
+            _ => {}
+        }
+    }
+
+    /// A loop body runs more than once: a call in it is several call sites.
+    fn in_loop(&mut self, body: &mut Block) {
+        let mut probe = body.clone();
+        let mut found = Vec::new();
+        for statement in &mut probe.stmts {
+            crate::syntax::walk::walk_stmt(statement, &mut |e| {
+                if let Some((instance, method, span)) = self.method_call(e) {
+                    found.push((instance, method, span));
+                }
+                true
+            });
+        }
+        for (instance, method, span) in found {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{instance}.{method}` is called inside a loop, which calls it more than once"
+                ))
+                .at(span)
+                .help("an entity method has one call site per instance; call it outside the loop"),
+            );
+        }
+    }
+
+    /// Replace every method call inside an expression by its result.
+    fn expression(&mut self, expression: &mut Expr, pre: &mut Vec<Stmt>) {
+        crate::syntax::walk::walk_expr(expression, &mut |e| {
+            if self.call(e, pre, false) {
+                return false;
+            }
+            true
+        });
+    }
+
+    /// `instance.method(args)` on a direct child, with its span.
+    fn method_call(&self, e: &Expr) -> Option<(String, String, Span)> {
+        let Expr::Call {
+            callee,
+            bang: false,
+            span,
+            ..
+        } = e
+        else {
+            return None;
+        };
+        let Expr::Field { base, field, .. } = callee.as_ref() else {
+            return None;
+        };
+        let Expr::Path(path) = base.as_ref() else {
+            return None;
+        };
+        let [instance] = path.segments.as_slice() else {
+            return None;
+        };
+        let found = self.instances.get(&instance.text)?;
+        self.methods[&found.entity]
+            .iter()
+            .any(|m| m.name == field.text)
+            .then(|| (instance.text.clone(), field.text.clone(), *span))
+    }
+
+    /// Rewrite one call: set its strobe and arguments in `pre`, and stand
+    /// for its result. Returns whether `e` was a method call.
+    fn call(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>, statement: bool) -> bool {
+        let Some((instance, method, span)) = self.method_call(e) else {
+            return false;
+        };
+        if self.testbench {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "calling entity method `{instance}.{method}` from a testbench is not supported yet"
+                ))
+                .at(span)
+                .help("drive the instance's ports, or call the method from a hardware entity"),
+            );
+            // Reported: handled, so no other walk reports it again.
+            return true;
+        }
+        let key = (instance.clone(), method.clone());
+        if let Some(first) = self.sites.get(&key) {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{instance}.{method}` is already called; an entity method has one call site \
+                     per instance"
+                ))
+                .at(span)
+                .label(*first, "first call here")
+                .help("merge the calls, choosing the argument by condition"),
+            );
+            return true;
+        }
+        self.sites.insert(key.clone(), span);
+        if self.depth == 0 {
+            self.unconditional.insert(key.clone());
+        }
+        self.used.push(key);
+        let entity = &self.instances[&instance].entity;
+        let signature = self.methods[entity]
+            .iter()
+            .find(|m| m.name == method)
+            .cloned()
+            .expect("found by method_call");
+        let Expr::Call { args, .. } = e else {
+            unreachable!()
+        };
+        if args.len() != signature.params.len() {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{instance}.{method}` takes {} argument(s) but {} were given",
+                    signature.params.len(),
+                    args.len()
+                ))
+                .at(span),
+            );
+            return true;
+        }
+        let one = self.spans.bit('1');
+        pre.push(
+            self.spans
+                .assign(&format!("{instance}#{method}#called"), one),
+        );
+        for ((name, _), arg) in signature.params.iter().zip(args.iter()) {
+            pre.push(
+                self.spans
+                    .assign(&format!("{instance}#{method}#{name}"), arg.clone()),
+            );
+        }
+        if statement {
+            return true;
+        }
+        if signature.ret.is_none() {
+            self.sink.emit(
+                Diagnostic::error(format!("`{instance}.{method}` returns no value")).at(span),
+            );
+        }
+        *e = self.spans.path(&format!("{instance}#{method}#ret"));
+        true
+    }
+
+    /// The defaults a calling process gives what it drives: `'0'` for the
+    /// strobe and each argument's type default.
+    fn defaults(
+        &mut self,
+        instance: &str,
+        method: &str,
+        generated: &mut Vec<ImplItem>,
+    ) -> Vec<Stmt> {
+        let found = &self.instances[instance];
+        let Some(signature) = self.methods[&found.entity]
+            .iter()
+            .find(|m| m.name == method)
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        if self
+            .unconditional
+            .contains(&(instance.to_string(), method.to_string()))
+        {
+            return Vec::new();
+        }
+        let mut defaults = Vec::new();
+        let zero = self.spans.bit('0');
+        defaults.push(
+            self.spans
+                .assign(&format!("{instance}#{method}#called"), zero),
+        );
+        for (name, ty) in &signature.params {
+            let none = format!("{instance}#{method}#none#{name}");
+            let ty = substitute(ty, &found.args);
+            generated.push(ImplItem::Let(self.spans.let_decl(&none, &ty)));
+            let value = self.spans.path(&none);
+            defaults.push(
+                self.spans
+                    .assign(&format!("{instance}#{method}#{name}"), value),
+            );
+        }
+        defaults
+    }
+}

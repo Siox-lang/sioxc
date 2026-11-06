@@ -32,6 +32,16 @@ void sx_runtime_suspend_signed_time(uint32_t process, uint32_t resume_block,
  * re-evaluate its normalized condition. */
 void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block);
 
+/* `await <condition> for <time>`: as `sx_runtime_suspend_condition`, and also
+ * resume at `timeout_block` after `delay` unless a settle disarms the timer
+ * first. The signed form rejects a negative computed time. */
+void sx_runtime_suspend_condition_for(uint32_t process, uint32_t recheck_block,
+                                      uint32_t timeout_block, uint64_t delay);
+void sx_runtime_suspend_condition_for_signed(uint32_t process,
+                                             uint32_t recheck_block,
+                                             uint32_t timeout_block,
+                                             uint64_t delay);
+
 /* Resume the current foreground process after reactive delta cycles settle. */
 void sx_runtime_settle(uint32_t process, uint32_t resume_block);
 

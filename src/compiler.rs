@@ -146,6 +146,10 @@ pub struct CompileRequest {
     /// given; later entries override earlier ones, and source directives
     /// override both unless a level is `forbid`.
     pub lints: Vec<(crate::diag::lints::Level, String)>,
+    /// Object files and libraries linked into a test executable, as given:
+    /// the C side of its `extern "C"` declarations. Other artifacts are not
+    /// linked and ignore it.
+    pub link: Vec<PathBuf>,
 }
 
 impl CompileRequest {
@@ -158,7 +162,14 @@ impl CompileRequest {
             output: None,
             debug: false,
             lints: Vec::new(),
+            link: Vec::new(),
         }
+    }
+
+    /// Link these object files or libraries into a test executable.
+    pub fn with_link(mut self, link: Vec<PathBuf>) -> Self {
+        self.link = link;
+        self
     }
 
     /// Build for a debugger: siox line mapping and no optimization.
@@ -544,6 +555,18 @@ impl Compiler {
             &mut result.diagnostics,
         );
         result.macro_expansions = expansions;
+        crate::syntax::macros::derive(
+            &mut result.modules,
+            &operators,
+            &mut result.sources,
+            &mut result.diagnostics,
+        );
+        crate::syntax::macros::hardware_statics(&mut result.modules, &mut result.diagnostics);
+        crate::syntax::methods::entity_methods(
+            &mut result.modules,
+            &mut result.sources,
+            &mut result.diagnostics,
+        );
         if request.emit == Emit::Expanded {
             result.artifact = result.entry().map(pretty::print_module).map(Artifact::Text);
             return result;
@@ -561,6 +584,7 @@ impl Compiler {
         }
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
+        crate::resolve::rewrite_implicit_fields(&mut result.modules, &resolved);
         result.stats.definitions = Some(resolved.defs().len());
         crate::resolve::normalize_aliases(&mut result.modules, &resolved, &mut result.diagnostics);
         crate::resolve::attributes::attach(&mut result.modules, &resolved, &mut result.diagnostics);
@@ -575,6 +599,7 @@ impl Compiler {
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
         crate::types::fold_value_lengths(&mut result.modules, &typed);
+        crate::types::fold_type_attributes(&mut result.modules, &resolved);
         crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
@@ -584,6 +609,7 @@ impl Compiler {
             &mut typed,
             &mut result.diagnostics,
         );
+        crate::types::type_instance_slots(&mut result.modules, &resolved);
         result.resolved = Some(resolved);
         result.typed = Some(typed);
         if result.diagnostics.has_errors() {
@@ -726,7 +752,7 @@ impl Compiler {
                 let output = request
                     .output
                     .unwrap_or_else(|| path.with_extension("test"));
-                self.emit_test_executable(&mut result, output, request.debug);
+                self.emit_test_executable(&mut result, output, request.debug, &request.link);
             }
             Emit::Metadata
             | Emit::Source
@@ -848,7 +874,13 @@ impl Compiler {
 
     #[cfg(feature = "llvm")]
     /// Build a standalone executable containing every `#[test]` entity.
-    fn emit_test_executable(&self, result: &mut Compilation, output: PathBuf, debug: bool) {
+    fn emit_test_executable(
+        &self,
+        result: &mut Compilation,
+        output: PathBuf,
+        debug: bool,
+        link: &[PathBuf],
+    ) {
         if !Self::validate_design(result) {
             return;
         }
@@ -858,6 +890,7 @@ impl Compiler {
             sources: &result.sources,
             debug,
             output: &output,
+            link,
         }) {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
@@ -873,7 +906,13 @@ impl Compiler {
 
     #[cfg(not(feature = "llvm"))]
     /// Stub for builds without the `llvm` feature.
-    fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
+    fn emit_test_executable(
+        &self,
+        result: &mut Compilation,
+        _output: PathBuf,
+        _debug: bool,
+        _link: &[PathBuf],
+    ) {
         result.failure = Some(backend_unavailable());
     }
 }

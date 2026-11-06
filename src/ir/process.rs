@@ -707,6 +707,16 @@ pub enum ProcessTerminator {
     },
 }
 
+impl ProcessSuspendOp {
+    /// The block a timed-out `await <condition> for <time>` resumes at.
+    pub fn timeout(self) -> Option<ProcessBlockId> {
+        match self {
+            Self::AwaitConditionFor { timeout } => Some(timeout),
+            _ => None,
+        }
+    }
+}
+
 /// Which operation suspended a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessSuspendOp {
@@ -716,6 +726,14 @@ pub enum ProcessSuspendOp {
     /// their trigger to an ordinary branch around this scheduler primitive;
     /// an edge enters the suspension before its first trigger check.
     AwaitCondition,
+    /// `await <condition> for <time>`: as [`Self::AwaitCondition`], and also
+    /// resume at `timeout` once the delay in the suspension's one argument
+    /// has passed. The runtime arms the timer at the first suspension and a
+    /// [`Self::Settle`] (the condition held) disarms it.
+    AwaitConditionFor {
+        /// Where the process resumes when the time runs out.
+        timeout: ProcessBlockId,
+    },
     /// Publish a foreground drive, settle reactive processes to a fixed
     /// point, then resume at the same simulation time.
     Settle,
@@ -1170,6 +1188,13 @@ pub enum ProcessValueKind {
         c_arguments: Vec<Option<crate::ir::CScalar>>,
         /// The narrower C scalar the result's `std::ffi` type names.
         c_result: Option<crate::ir::CScalar>,
+        /// Per argument, whether it is a struct or array passed by pointer to
+        /// a copy laid out as C lays it out; missing entries are scalars. A
+        /// process-local variable passed so receives what C writes.
+        pointer_arguments: Vec<bool>,
+        /// Whether the result is a struct, array or wide packed value,
+        /// returned by the platform's struct-return rules.
+        aggregate_result: bool,
     },
     /// A value-producing operation owned by the fixed simulation runtime.
     HostCall {
@@ -1565,6 +1590,8 @@ impl ProcessIr {
                 void_result: false,
                 c_arguments: c_args.clone(),
                 c_result: *c_ret,
+                pointer_arguments: Vec::new(),
+                aggregate_result: false,
             },
             Expr::Unknown => ProcessValueKind::Invalid,
         };
@@ -1935,7 +1962,8 @@ impl ProcessIr {
                     }
                 }
                 if let ProcessTerminator::Suspend {
-                    operation: ProcessSuspendOp::AwaitTime,
+                    operation:
+                        ProcessSuspendOp::AwaitTime | ProcessSuspendOp::AwaitConditionFor { .. },
                     arguments,
                     ..
                 } = &block.terminator
@@ -2395,7 +2423,11 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
             .chain(fallback.iter().copied())
             .collect(),
         ProcessTerminator::For { body, exit, .. } => vec![*body, *exit],
-        ProcessTerminator::Suspend { resume, .. } => vec![*resume],
+        ProcessTerminator::Suspend {
+            resume, operation, ..
+        } => std::iter::once(*resume)
+            .chain(operation.timeout())
+            .collect(),
     }
 }
 

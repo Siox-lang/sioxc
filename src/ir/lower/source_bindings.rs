@@ -314,13 +314,86 @@ impl Lowering<'_> {
         function: &ast::FnDecl,
         parameter: impl Fn(&str) -> Option<SourceLayout>,
     ) -> Option<SourceLayout> {
+        // A returned local sized from a parameter (`let r: Logic[v'length]`)
+        // reads that parameter's attributes from its argument's shape.
+        let mut env = self.cur_env.clone();
+        for name in function.params.iter().map(|parameter| {
+            parameter
+                .name
+                .as_ref()
+                .map_or("self", |name| name.text.as_str())
+        }) {
+            let Some(range) = parameter(name).and_then(|layout| layout.index_range()) else {
+                continue;
+            };
+            for (attribute, value) in [
+                ("left", range.left),
+                ("right", range.right),
+                ("high", range.left.max(range.right)),
+                ("low", range.left.min(range.right)),
+                ("length", range.left.abs_diff(range.right) as i64 + 1),
+            ] {
+                env.insert(format!("{name}::{attribute}"), value);
+            }
+        }
         returned_shapes(function)
             .into_iter()
             .find_map(|(name, declared)| match declared {
-                Some(ty) => Some(self.source_layout(ty, &self.cur_env))
-                    .filter(|layout| layout.bit_width().is_some()),
+                Some(ty) => {
+                    Some(self.source_layout(ty, &env)).filter(|layout| layout.bit_width().is_some())
+                }
                 None => parameter(name),
             })
+    }
+
+    /// What one index step of an array selects: an element, or for a
+    /// constant slice (`arr[1..2]`, `arr[2..]`) a sub-array numbered by
+    /// position from 0, as an index into a slice counts (#314).
+    pub(super) fn array_step_layout(
+        &self,
+        layout: &SourceLayout,
+        index: &ast::Expr,
+    ) -> Option<SourceLayout> {
+        let LayoutKind::Array { element, .. } = &layout.kind else {
+            return None;
+        };
+        if !matches!(
+            index,
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return Some((**element).clone());
+        }
+        let length = i64::try_from(self.slice_labels(layout, index)?.len()).ok()?;
+        Some(SourceLayout {
+            span: layout.span,
+            kind: LayoutKind::Array {
+                range: Some(crate::ir::LayoutRange {
+                    left: 0,
+                    right: length - 1,
+                }),
+                element: element.clone(),
+            },
+        })
+    }
+
+    /// The labels a constant slice of an array selects, in its order:
+    /// `arr[3..1]` is 3, 2, 1, and an open end is the array's own.
+    pub(super) fn slice_labels(
+        &self,
+        layout: &SourceLayout,
+        index: &ast::Expr,
+    ) -> Option<Vec<i64>> {
+        let range = layout.index_range()?;
+        let (lo, hi) = match index {
+            ast::Expr::Range { lo, hi, .. } => (Some(lo.as_ref()), Some(hi.as_ref())),
+            ast::Expr::PartialRange { lo, hi, .. } => (lo.as_deref(), hi.as_deref()),
+            _ => return None,
+        };
+        let bound = |bound: Option<&ast::Expr>, open: i64| match bound {
+            Some(bound) => self.eval_const(bound, &self.cur_env),
+            None => Some(open),
+        };
+        Some(loop_range(bound(lo, range.left)?, bound(hi, range.right)?))
     }
 
     /// Recover a concrete shape without copying an operand AST into its users.
@@ -367,8 +440,8 @@ impl Lowering<'_> {
                             .find(|field| field.name == name)?
                             .layout
                             .clone(),
-                        (AccessStep::Index(_), LayoutKind::Array { element, .. }) => {
-                            (**element).clone()
+                        (AccessStep::Index(index), LayoutKind::Array { .. }) => {
+                            self.array_step_layout(&layout, index)?
                         }
                         (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
                             self.source_packed_result_layout(&layout, index, env)?
@@ -622,7 +695,9 @@ impl Lowering<'_> {
                     .find(|field| field.name == name)?
                     .layout
                     .clone(),
-                (AccessStep::Index(_), LayoutKind::Array { element, .. }) => (**element).clone(),
+                (AccessStep::Index(index), LayoutKind::Array { .. }) => {
+                    self.array_step_layout(&layout, index)?
+                }
                 (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
                     self.source_packed_result_layout(&layout, index, &HashMap::new())?
                 }
@@ -1020,6 +1095,33 @@ impl Lowering<'_> {
                             continue;
                         }
                     }
+                    // A constant slice (`arr[1..2]`): the elements it
+                    // selects, under their own labels (#314).
+                    if matches!(
+                        index,
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    ) {
+                        let labels = self.slice_labels(layout.as_ref()?, index)?;
+                        let shape = self.array_step_layout(layout.as_ref()?, index)?;
+                        let Val::Fields(fields) = &value else {
+                            return None;
+                        };
+                        let mut selected = Vec::new();
+                        for (position, label) in labels.into_iter().enumerate() {
+                            let element = format!("[{label}]");
+                            for (name, leaf) in fields {
+                                let Some(rest) = name.strip_prefix(&element) else {
+                                    continue;
+                                };
+                                if rest.is_empty() || rest.starts_with(['.', '[']) {
+                                    selected.push((format!("[{position}]{rest}"), leaf.clone()));
+                                }
+                            }
+                        }
+                        value = Val::Fields(selected);
+                        layout = Some(shape);
+                        continue;
+                    }
                     let LayoutKind::Array {
                         range: Some(range),
                         element,
@@ -1130,7 +1232,9 @@ pub(super) fn returned_shapes(function: &ast::FnDecl) -> Vec<(&str, Option<&ast:
                     }
                 }
                 ast::Stmt::Match(m) => m.arms.iter().for_each(|arm| returned(&arm.body.stmts, out)),
-                ast::Stmt::For { body, .. } => returned(&body.stmts, out),
+                ast::Stmt::For { body, .. } | ast::Stmt::While { body, .. } => {
+                    returned(&body.stmts, out)
+                }
                 _ => {}
             }
         }

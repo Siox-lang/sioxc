@@ -100,11 +100,12 @@ macro_rules! walk {
             fn statement(statement: & $($mutable)? Stmt, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
                 match statement {
                     Stmt::Use(_) => {}
+                    Stmt::Process(p) => block(& $($mutable)? p.body, types, expressions),
                     Stmt::Let(l) => declaration(l, types, expressions),
                     Stmt::Assign { target, value, after, .. } => { expr(target, types, expressions); expr(value, types, expressions); if let Some(after) = after { expr(after, types, expressions); } }
                     Stmt::Expr(e) => expr(e, types, expressions),
                     Stmt::Return { value, .. } => if let Some(value) = value { expr(value, types, expressions); },
-                    Stmt::For { range, body, .. } => { expr(range, types, expressions); block(body, types, expressions); }
+                    Stmt::For { range: cond, body, .. } | Stmt::While { cond, body, .. } => { expr(cond, types, expressions); block(body, types, expressions); }
                     Stmt::If(i) => if_statement(i, types, expressions),
                     Stmt::Match(m) => { expr(& $($mutable)? m.scrutinee, types, expressions); for arm in & $($mutable)? m.arms { pattern(& $($mutable)? arm.pattern, types, expressions); block(& $($mutable)? arm.body, types, expressions); } }
                 }
@@ -134,7 +135,7 @@ macro_rules! walk {
                 match arg { GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => expr(e, types, expressions), GenericArg::PositionalType(t) | GenericArg::NamedType { ty: t, .. } => nested_ty(t, root, types, expressions) }
             }
 
-            fn ty(ty: & $($mutable)? Type, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+            pub(crate) fn ty(ty: & $($mutable)? Type, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
                 nested_ty(ty, true, types, expressions);
             }
 

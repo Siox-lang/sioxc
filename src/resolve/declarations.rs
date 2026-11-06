@@ -262,7 +262,7 @@ impl<'a> DeclarationIndex<'a> {
         }
     }
 
-    fn nominal_owner(&self, owner: DefId) -> Option<DefId> {
+    pub(crate) fn nominal_owner(&self, owner: DefId) -> Option<DefId> {
         let owner = self.lexical_owner(owner)?;
         let Some(Declaration::Alias(_, target)) = self.declarations.get(&owner) else {
             return Some(owner);
@@ -282,12 +282,18 @@ impl<'a> DeclarationIndex<'a> {
         &self,
         owner: DefId,
     ) -> impl Iterator<Item = &'a ImplDecl> + '_ {
+        let entity = self.entity(owner).is_some();
         self.implementations
             .values()
             .flatten()
             .copied()
             .filter(move |implementation| {
-                self.scalar_type_id(&implementation.target) == Some(owner)
+                let selected = if entity {
+                    self.entity_type_id(&implementation.target)
+                } else {
+                    self.scalar_type_id(&implementation.target)
+                };
+                selected == Some(owner)
             })
     }
 

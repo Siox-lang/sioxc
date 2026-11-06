@@ -1597,8 +1597,8 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
          pub trait Meter { fn measure(self) -> integer { return 31; } } \
          impl Meter for Pair {} \
          impl Pair { \
-             pub fn score(self) -> integer { return integer(self.left) + 10; } \
-             pub fn tag() -> integer { return 11; } \
+             pub fn score() -> integer { return integer(self.left) + 10; } \
+             pub static fn tag() -> integer { return 11; } \
          } \
          pub const CURRENT: Pair = { .left = 4 };",
     )
@@ -1610,8 +1610,8 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
          pub trait Meter { fn measure(self) -> real { return 2.5; } } \
          impl Meter for Pair {} \
          impl Pair { \
-             pub fn score(self) -> integer { return integer(self.right) + 20; } \
-             pub fn tag() -> integer { return 22; } \
+             pub fn score() -> integer { return integer(self.right) + 20; } \
+             pub static fn tag() -> integer { return 22; } \
          } \
          pub const CURRENT: Pair = { .right = 5 };",
     )
@@ -2643,7 +2643,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  pub word: string[3]
              }}
              impl RealBox {{
-                 pub fn half(self) -> real {{ return self.value / 2.0; }}
+                 pub fn half() -> real {{ return self.value / 2.0; }}
              }}
              entity SignedSource {{ value: integer<-10..10> out, }}
              impl SignedSource {{ value = -3; }}

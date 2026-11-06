@@ -31,8 +31,8 @@ fn core_and_std_paths_name_the_same_hooks() {
          use core::ops::Boolean;\n\
          struct A(integer);\n\
          struct B(integer);\n\
-         impl Boolean for A { fn as_bool(self) -> Bool { return true; } }\n\
-         impl std::ops::Boolean for B { fn as_bool(self) -> Bool { return false; } }\n\
+         impl Boolean for A { fn as_bool() -> Bool { return true; } }\n\
+         impl std::ops::Boolean for B { fn as_bool() -> Bool { return false; } }\n\
          fn f(a: A, b: B) -> integer { if a { return 1; } if b { return 2; } return 0; }\n\
          fn g(x: core::primitive::Bool) -> std::primitive::Bool { return x; }\n",
         STD,
@@ -50,7 +50,7 @@ fn core_needs_no_standard_library() {
         "no_std",
         "module main;\n\
          struct Flag(integer);\n\
-         impl Boolean for Flag { fn as_bool(self) -> Bool { return true; } }\n\
+         impl Boolean for Flag { fn as_bool() -> Bool { return true; } }\n\
          fn f(x: Flag) -> Bool { if x { return true; } return false; }\n\
          #[allow(unused_param)]\n\
          fn g(unused: integer) -> string { return \"core\"; }\n",
@@ -81,9 +81,9 @@ fn a_hook_name_alone_grants_nothing() {
     let (rendered, ok) = compile(
         "spelling",
         "module main;\n\
-         trait Boolean { fn as_bool(self) -> Bool; }\n\
+         trait Boolean { fn as_bool() -> Bool; }\n\
          struct Flag(integer);\n\
-         impl Boolean for Flag { fn as_bool(self) -> Bool { return true; } }\n\
+         impl Boolean for Flag { fn as_bool() -> Bool { return true; } }\n\
          fn f(x: Flag) -> integer { if x { return 1; } return 0; }\n",
         STD,
     );

@@ -5,8 +5,8 @@
 
 use crate::diag::Span;
 use crate::syntax::ast::{
-    expr_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, FnParam, Ident, IfStmt, Path, Stmt,
-    Type, UnOp,
+    expr_span, pattern_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, FnParam, Ident, IfStmt,
+    MatchArm, Path, Pattern, Stmt, Type, UnOp,
 };
 
 use super::helpers::unsigned_lit_text;
@@ -39,6 +39,13 @@ pub(crate) struct NotConstant {
 pub(crate) enum IntegerDomain {
     Analysis,
     NativeWord,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RangeOrder {
+    Forward,
+    Reversed,
+    Unordered,
 }
 
 impl IntegerDomain {
@@ -332,6 +339,24 @@ pub(crate) fn evaluate_condition(
     interpreter.condition(value, depth, expr_span(expression))
 }
 
+/// Compare borrowed bounds through the same source order as a match pattern.
+pub(crate) fn evaluate_range_order(
+    left: &Expr,
+    right: &Expr,
+    environment: &dyn Environment,
+    expected_enum: Option<DefId>,
+    depth: u32,
+) -> Result<RangeOrder, NotConstant> {
+    let mut interpreter = Interpreter {
+        environment,
+        locals: Vec::new(),
+        operators: Vec::new(),
+    };
+    let a = interpreter.expression(left, expected_enum, depth)?;
+    let b = interpreter.expression(right, expected_enum.or(a.enum_owner()), depth)?;
+    interpreter.range_order(a, b, expr_span(left).to(expr_span(right)), depth)
+}
+
 pub(crate) fn evaluate_value_statements(
     statements: &[Stmt],
     environment: &dyn Environment,
@@ -414,31 +439,7 @@ impl<'a> Interpreter<'a> {
                     .ok_or_else(|| fail(Reason::Unsupported))?,
                 None => Value::Character(*ch),
             },
-            Expr::Path(path) => {
-                let local = environment.local_key(path).and_then(|key| {
-                    self.locals
-                        .last()?
-                        .bindings
-                        .iter()
-                        .rev()
-                        .find(|(bound, _)| *bound == key)
-                        .map(|(_, value)| *value)
-                });
-                if let Some(value) = local {
-                    value.ok_or_else(|| fail(Reason::UnknownConstant))?
-                } else {
-                    match environment
-                        .binding(path)
-                        .ok_or_else(|| fail(Reason::UnknownConstant))?
-                    {
-                        Binding::Value(value) => value,
-                        Binding::Expression(value) => self.expression(value, None, depth + 1)?,
-                        Binding::TypedExpression { value, enum_owner } => {
-                            self.expression(value, enum_owner, depth + 1)?
-                        }
-                    }
-                }
-            }
+            Expr::Path(path) => self.path_value(path, depth)?,
             Expr::SysAttr { base, attr, .. } => Value::Integer(
                 environment
                     .attribute(base, attr)
@@ -496,12 +497,224 @@ impl<'a> Interpreter<'a> {
                 let selected = self.condition(value, depth + 1, expr_span(cond))?;
                 self.expression(if selected { then } else { els }, expected_enum, depth + 1)?
             }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                let value = self.expression(scrutinee, None, depth + 1)?;
+                let arm = self
+                    .select_arm(arms, value, expr_span(expression), depth + 1)?
+                    .ok_or_else(|| fail(Reason::Unsupported))?;
+                self.expression(
+                    arm.value_expr().ok_or_else(|| fail(Reason::Unsupported))?,
+                    expected_enum,
+                    depth + 1,
+                )?
+            }
             Expr::Call { callee, args, .. } => {
                 self.call(callee, args, depth, expr_span(expression))?
             }
             _ => return Err(fail(Reason::Unsupported)),
         };
         self.checked_value(value, expr_span(expression))
+    }
+
+    fn path_value(&mut self, path: &Path, depth: u32) -> Result<Value, NotConstant> {
+        let fail = || NotConstant {
+            span: path.span,
+            reason: Reason::UnknownConstant,
+        };
+        let environment = self.environment;
+        let local = environment.local_key(path).and_then(|key| {
+            self.locals
+                .last()?
+                .bindings
+                .iter()
+                .rev()
+                .find(|(bound, _)| *bound == key)
+                .map(|(_, value)| *value)
+        });
+        if let Some(value) = local {
+            value.ok_or_else(fail)
+        } else {
+            match environment.binding(path).ok_or_else(fail)? {
+                Binding::Value(value) => Ok(value),
+                Binding::Expression(value) => self.expression(value, None, depth + 1),
+                Binding::TypedExpression { value, enum_owner } => {
+                    self.expression(value, enum_owner, depth + 1)
+                }
+            }
+        }
+    }
+
+    fn select_arm<'m>(
+        &mut self,
+        arms: &'m [MatchArm],
+        value: Value,
+        span: Span,
+        depth: u32,
+    ) -> Result<Option<&'m MatchArm>, NotConstant> {
+        for arm in arms {
+            if self.pattern(&arm.pattern, value, span, depth)? {
+                return Ok(Some(arm));
+            }
+        }
+        Ok(None)
+    }
+
+    fn pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: Value,
+        span: Span,
+        depth: u32,
+    ) -> Result<bool, NotConstant> {
+        let span = pattern_span(pattern).unwrap_or(span);
+        let fail = || NotConstant {
+            span,
+            reason: Reason::Unsupported,
+        };
+        if depth > 64 {
+            return Err(NotConstant {
+                span,
+                reason: Reason::RecursionLimit,
+            });
+        }
+        let environment = self.environment;
+        let equivalent = |other| match environment.source() {
+            Some(source) => source.equivalent(value, other),
+            None => Some(value == other),
+        };
+        match pattern {
+            Pattern::Wildcard => Ok(true),
+            Pattern::Or { alts, .. } => {
+                for alternative in alts {
+                    if self.pattern(alternative, value, span, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Pattern::Path(path) => {
+                let other = self.path_value(path, depth + 1)?;
+                let other = self.checked_value(other, path.span)?;
+                equivalent(other).ok_or_else(fail)
+            }
+            Pattern::CharLit { ch, .. } => {
+                let other = match value.enum_owner() {
+                    Some(owner) => self.environment.enum_literal(*ch, owner).ok_or_else(fail)?,
+                    None => Value::Character(*ch),
+                };
+                equivalent(other).ok_or_else(fail)
+            }
+            Pattern::Range { lo, hi, .. } => match value {
+                Value::Integer(_) => self.matches_bounds(
+                    value,
+                    Some(Value::Integer(i128::from(*lo))),
+                    Some(Value::Integer(i128::from(*hi))),
+                    span,
+                    depth + 1,
+                ),
+                _ => Err(fail()),
+            },
+            Pattern::Bounds { lo, hi, .. } => {
+                let low = lo
+                    .as_deref()
+                    .map(|bound| self.expression(bound, value.enum_owner(), depth + 1))
+                    .transpose()?;
+                let high = hi
+                    .as_deref()
+                    .map(|bound| self.expression(bound, value.enum_owner(), depth + 1))
+                    .transpose()?;
+                self.matches_bounds(value, low, high, span, depth + 1)
+            }
+            Pattern::BitPattern { .. } | Pattern::Tuple { .. } => Err(fail()),
+        }
+    }
+
+    fn matches_bounds(
+        &mut self,
+        value: Value,
+        mut low: Option<Value>,
+        mut high: Option<Value>,
+        span: Span,
+        depth: u32,
+    ) -> Result<bool, NotConstant> {
+        if let (Some(left), Some(right)) = (low, high) {
+            match self.range_order(left, right, span, depth)? {
+                RangeOrder::Forward => {}
+                RangeOrder::Reversed => std::mem::swap(&mut low, &mut high),
+                RangeOrder::Unordered => return Ok(false),
+            }
+        }
+        if let Some(low) = low {
+            if !self.less_equal(low, value, span, depth)? {
+                return Ok(false);
+            }
+        }
+        match high {
+            Some(high) => self.less_equal(value, high, span, depth),
+            None => Ok(true),
+        }
+    }
+
+    fn range_order(
+        &mut self,
+        left: Value,
+        right: Value,
+        span: Span,
+        depth: u32,
+    ) -> Result<RangeOrder, NotConstant> {
+        if self.less_equal(left, right, span, depth)? {
+            Ok(RangeOrder::Forward)
+        } else if self.less_equal(right, left, span, depth)? {
+            Ok(RangeOrder::Reversed)
+        } else {
+            Ok(RangeOrder::Unordered)
+        }
+    }
+
+    fn less_equal(
+        &mut self,
+        left: Value,
+        right: Value,
+        span: Span,
+        depth: u32,
+    ) -> Result<bool, NotConstant> {
+        let fail = || NotConstant {
+            span,
+            reason: Reason::Unsupported,
+        };
+        let source = self.environment.source();
+        let value = if let Some(function) =
+            source.and_then(|source| source.binary_function(&BinOp::Le, left, right))
+        {
+            if self
+                .operators
+                .iter()
+                .any(|active| std::ptr::eq(*active, function))
+            {
+                source
+                    .unwrap()
+                    .binary_values(&BinOp::Le, left, right, true)
+                    .ok_or_else(fail)?
+            } else {
+                self.operators.push(function);
+                let result = self.invoke(function, vec![left, right], depth + 1, span);
+                self.operators.pop();
+                result?
+            }
+        } else {
+            match (left, right) {
+                (Value::Integer(left), Value::Integer(right)) => return Ok(left <= right),
+                (Value::Character(left), Value::Character(right)) => return Ok(left <= right),
+                _ => {}
+            }
+            source
+                .ok_or_else(fail)?
+                .binary_values(&BinOp::Le, left, right, false)
+                .ok_or_else(fail)?
+        };
+        self.condition(value, depth + 1, span)
     }
 
     fn call(
@@ -778,6 +991,7 @@ impl<'a> Interpreter<'a> {
                 return Err(fail(Reason::RecursionLimit));
             }
             match statement {
+                Stmt::Use(_) => {}
                 Stmt::Let(declaration) => {
                     let key = self
                         .environment
@@ -856,6 +1070,21 @@ impl<'a> Interpreter<'a> {
                     if let Some(value) = self.branch(branch, expected_enum, depth)? {
                         return Ok(Some(value));
                     }
+                }
+                Stmt::Match(branch) => {
+                    let value = self.expression(&branch.scrutinee, None, depth + 1)?;
+                    if let Some(arm) =
+                        self.select_arm(&branch.arms, value, branch.span, depth + 1)?
+                    {
+                        if let Some(value) =
+                            self.statements(&arm.body.stmts, expected_enum, depth)?
+                        {
+                            return Ok(Some(value));
+                        }
+                    }
+                }
+                Stmt::Expr(expression) => {
+                    self.expression(expression, None, depth)?;
                 }
                 _ => return Err(fail(Reason::Unsupported)),
             }

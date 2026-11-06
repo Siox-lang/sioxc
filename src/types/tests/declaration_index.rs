@@ -578,7 +578,7 @@ fn checker_alias_types_share_applied_shapes_and_definition_site_identity() {
             elem: Box::new(Ty::Integer),
             len: 3,
             family: None,
-            low: 0,
+            low: 4,
         }
     );
     let Item::Enum(state) = &modules[0].items[1] else {
@@ -590,7 +590,7 @@ fn checker_alias_types_share_applied_shapes_and_definition_site_identity() {
             elem: Box::new(Ty::Named(resolved.declared(state.name.span).unwrap())),
             len: 3,
             family: None,
-            low: 0,
+            low: 4,
         }
     );
     assert_eq!(

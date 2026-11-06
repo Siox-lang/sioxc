@@ -507,6 +507,8 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "else" => TokenKind::Else,
         "match" => TokenKind::Match,
         "for" => TokenKind::For,
+        "while" => TokenKind::While,
+        "static" => TokenKind::Static,
         "return" => TokenKind::Return,
         "extern" => TokenKind::Extern,
         "self" => TokenKind::SelfKw,

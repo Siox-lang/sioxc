@@ -549,7 +549,7 @@ struct Q<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
 impl Q {
     pub attr ints: integer = self'high + 1;
     attr double: integer = self'ints * 2;
-    pub fn probe(v: Q) -> integer { return Self'ints * 100 + v'ints * 10 + v'double; }
+    pub static fn probe(v: Q) -> integer { return Self'ints * 100 + v'ints * 10 + v'double; }
 }
 
 entity Dut { x: ufixed<8, 4> in, z: float<32, 23> in, q: Q<10, 3> in,
@@ -686,11 +686,11 @@ fn loopdiv<T>(a: integer, b: integer, format: T) -> integer {
 }
 
 impl From<integer> for G {
-    fn from(value: integer) -> G { return value; }
+    static fn from(value: integer) -> G { return value; }
 }
 
 impl Div<G, G> for G {
-    fn div(self, rhs: G) -> G {
+    fn div(rhs: G) -> G {
         let f: integer = 0 - self'low;
         return loopdiv((1 << f) + integer(self), (1 << f) + integer(rhs), self);
     }
@@ -962,10 +962,10 @@ fn an_integer_local_returned_as_a_family() {
 module r1;
 use std::float::float;
 
-trait Keep { fn keep_or_zero(self) -> Self; }
+trait Keep { fn keep_or_zero() -> Self; }
 
 impl Keep for float {
-    fn keep_or_zero(self) -> float {
+    fn keep_or_zero() -> float {
         let a: integer = integer(self);
         if a == 0 { return a; }
         return a;

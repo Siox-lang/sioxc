@@ -398,6 +398,7 @@ fn statement(
 ) -> Option<()> {
     match statement {
         Stmt::Use(_) => {}
+        Stmt::Process(process) => block(&mut process.body, bindings, resolved)?,
         Stmt::Let(declaration) => {
             if let Some(t) = &mut declaration.ty {
                 ty(t, bindings, resolved)?;
@@ -426,8 +427,11 @@ fn statement(
                 block(&mut arm.body, bindings, resolved)?;
             }
         }
-        Stmt::For { range, body, .. } => {
-            expr(range, bindings, resolved)?;
+        Stmt::For {
+            range: cond, body, ..
+        }
+        | Stmt::While { cond, body, .. } => {
+            expr(cond, bindings, resolved)?;
             block(body, bindings, resolved)?;
         }
         Stmt::Expr(value) => expr(value, bindings, resolved)?,

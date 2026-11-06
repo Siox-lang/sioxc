@@ -38,6 +38,9 @@ pub struct Module {
     /// which is all a built-in macro needs; a user macro re-reads the tokens
     /// by its parameters' fragment kinds (`syntax::macros`).
     pub macro_args: MacroArgTable,
+    /// Source files the compiler wrote for this module (`#[derive]` impls).
+    /// Their items belong to it, for visibility as for everything else.
+    pub derived_files: Vec<crate::diag::FileId>,
 }
 
 /// Every `name!(…)` call's argument tokens, by the call's span. A macro body
@@ -370,6 +373,9 @@ pub struct StructDecl {
     /// Declared fields, in layout order. Empty for a derived leaf type whose
     /// representation comes entirely from `base`.
     pub fields: Vec<Field>,
+    /// The traits `#[derive(..)]` asks for (`Eq`, `Ord`), expanded into
+    /// ordinary impls with the macros, before names resolve.
+    pub derives: Vec<Ident>,
     /// `struct` keyword through the closing brace.
     pub span: Span,
 }
@@ -666,6 +672,8 @@ pub struct FnDecl {
     /// What `#[inline]` asked for. It shapes only the simulation the
     /// compiler builds; a function's hardware meaning never depends on it.
     pub inline: Inline,
+    /// `static fn`: an implementation or trait member with no receiver.
+    pub is_static: bool,
 }
 
 /// Whether a call to a function is expanded at the call site or calls one
@@ -714,6 +722,9 @@ pub struct LetDecl {
     pub value: Option<Expr>,
     /// `let` keyword through the terminating `;`.
     pub span: Span,
+    /// `static let`: a process or function local that keeps its value
+    /// between activations and calls, initialized once.
+    pub is_static: bool,
 }
 
 /// A brace-delimited statement sequence.
@@ -769,8 +780,21 @@ pub enum Stmt {
         /// `for` keyword through the closing brace.
         span: Span,
     },
+    /// `while cond { ... }`: repeats while the condition holds. A loop of
+    /// run-time length, so testbench-only: hardware loops unroll.
+    While {
+        /// Tested before each pass, read through the `Condition` trait.
+        cond: Expr,
+        /// The statements repeated.
+        body: Block,
+        /// `while` keyword through the closing brace.
+        span: Span,
+    },
     /// `assert!(cond, "msg");`, `wait 10.ns;`, `tick(clk);` (Stage 8).
     Expr(Expr),
+    /// A process inside a generate `for`/`if`: elaboration builds one per
+    /// iteration or taken branch, with the loop value substituted.
+    Process(ProcessDecl),
     /// `return;` or `return expr;`.
     Return {
         /// The returned value, or `None` for a bare `return`.
@@ -1335,10 +1359,11 @@ pub fn stmt_span(s: &Stmt) -> Span {
     match s {
         Stmt::Use(u) => u.span,
         Stmt::Let(l) => l.span,
+        Stmt::Process(process) => process.span,
         Stmt::Assign { span, .. } => *span,
         Stmt::If(i) => i.span,
         Stmt::Match(m) => m.span,
-        Stmt::For { span, .. } => *span,
+        Stmt::For { span, .. } | Stmt::While { span, .. } => *span,
         Stmt::Expr(e) => expr_span(e),
         Stmt::Return { span, .. } => *span,
     }

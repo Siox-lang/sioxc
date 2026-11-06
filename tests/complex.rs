@@ -98,9 +98,9 @@ fn a_struct_suffix_is_chosen_by_its_symbol() {
         r#"module g;
 use std::ops::Suffix;
 struct L { pub mm: real }
-impl Suffix<"mm", real> for L { fn suffix(v: real) -> L { return { .mm = v }; } }
-impl Suffix<"cm", real> for L { fn suffix(v: real) -> L { return { .mm = v * 10.0 }; } }
-impl Suffix<"km", real> for L { fn suffix(v: real) -> L { return { .mm = v * 1000000.0 }; } }
+impl Suffix<"mm", real> for L { static fn suffix(v: real) -> L { return { .mm = v }; } }
+impl Suffix<"cm", real> for L { static fn suffix(v: real) -> L { return { .mm = v * 10.0 }; } }
+impl Suffix<"km", real> for L { static fn suffix(v: real) -> L { return { .mm = v * 1000000.0 }; } }
 #[test] entity T {}
 impl T { check: process { let a: L = 3.0cm; let b: L = 2.0km; let c: L = 7.0mm; print!("|{} {} {}", a.mm, b.mm, c.mm); } }
 "#,

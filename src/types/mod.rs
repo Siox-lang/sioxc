@@ -48,7 +48,7 @@ mod tuples;
 use helpers::*;
 
 /// A checked, interned type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     /// The kernel base type `integer` — an unbounded mathematical number, NOT
     /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
@@ -77,8 +77,9 @@ pub enum Ty {
         /// The nominal family for a library newtype such as `unsigned`, which
         /// drives method and operator dispatch. `None` for a plain array.
         family: Option<String>,
-        /// The lowest index: 0 for `unsigned[8]` (`7..0`), `-4` for
-        /// `sfixed<8, 4>` (`3..-4`). With `len` it is the whole range, which
+        /// The lowest declared index of any array: 10 for `integer[10..11]`,
+        /// 0 for `unsigned[8]` (`7..0`), -4 for `sfixed<8, 4>` (`3..-4`).
+        /// With `len` it is the whole index domain, which
         /// for a fixed or float format *is* the format: `ufixed<8, 4>` and
         /// `ufixed<8, 2>` are different types.
         low: i64,
@@ -94,6 +95,20 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// Whether this type crosses to C by pointer: a struct, a fixed array, or
+    /// a packed value wider than the 64-bit word (little-endian words).
+    pub fn is_c_aggregate(&self) -> bool {
+        match self {
+            Ty::Named(_) | Ty::Array { family: None, .. } => true,
+            Ty::Array {
+                family: Some(_),
+                len,
+                ..
+            } => *len > 64,
+            _ => false,
+        }
+    }
+
     /// Concrete storage width known at Stage 4. Named types need declaration
     /// metadata and therefore return `None` here.
     pub fn bit_width(&self) -> Option<u32> {
@@ -134,9 +149,26 @@ pub struct Typed {
     /// Each operand of a mixed numeric operation that widens, keyed by its
     /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
-    /// Each tuple `match` whose arms cover every combination without a `_`,
-    /// by the match's span: its last arm needs no condition.
+    /// Each value an `impl Into` converts where it is stored, keyed by its
+    /// span (conversions proposal).
+    conversions: HashMap<Span, Conversion>,
+    /// Each `match` whose arms cover its scrutinee without a `_` (every
+    /// combination of a tuple, every value of a number), by the match's
+    /// span: its last arm needs no condition.
     covered_tuple_matches: HashSet<Span>,
+}
+
+/// A value converted where it is stored, through `impl Into<T> for S`.
+#[derive(Clone, Debug)]
+pub struct Conversion {
+    /// The type stored into, `T` at its declared width.
+    pub target: Ty,
+    /// The exact `into` declaration selected by semantic checking.
+    pub function: DefId,
+    /// `T`'s layout name, not a conversion lookup key.
+    pub target_key: String,
+    /// The source layout name, not a conversion lookup key.
+    pub source_key: String,
 }
 
 impl Typed {
@@ -149,6 +181,21 @@ impl Typed {
     /// The type an operand widens to in a mixed numeric operation.
     pub fn promotion(&self, span: Span) -> Option<&Ty> {
         self.promotions.get(&span)
+    }
+
+    /// The `impl Into` a stored value converts through.
+    pub fn conversion(&self, span: Span) -> Option<&Conversion> {
+        self.conversions.get(&span)
+    }
+
+    /// Every implicit conversion, keyed by the converted value's span.
+    pub fn conversions(&self) -> &HashMap<Span, Conversion> {
+        &self.conversions
+    }
+
+    /// The matches [`Self::covers_tuple_match`] answers for.
+    pub fn covered_matches(&self) -> &HashSet<Span> {
+        &self.covered_tuple_matches
     }
 
     /// Every operand promotion, keyed by the operand's span.
@@ -169,8 +216,8 @@ impl Typed {
 
 pub use enum_values::refresh_enum_values;
 pub use expand::{
-    expand_type_attrs, flatten_slice_chains, fold_metadata_constants, fold_value_lengths,
-    inline_loop_ranges,
+    expand_type_attrs, flatten_slice_chains, fold_metadata_constants, fold_type_attributes,
+    fold_value_lengths, inline_loop_ranges, type_instance_slots,
 };
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
@@ -198,6 +245,7 @@ pub fn check<'a>(
     checker.collect(modules);
     checker.check_struct_field_cycles();
     checker.check_source_layouts(modules);
+    checker.collect_aggregate_extern_fns(modules);
     for m in modules {
         for item in &m.items {
             checker.check_item(item);
@@ -242,11 +290,16 @@ enum AttrValueTy {
 
 /// `(operator trait, implementing type)` to its overloads, each
 /// `(input type, output type)`.
-type OperatorOutput = (String, Option<Type>);
 type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<OperatorOutput>)>>;
+/// An operator's output type key, and the type as written when it is more
+/// than its head (`unsigned[3]`, an alias), which the result keeps (#143).
+type OperatorOutput = (String, Option<Type>);
+/// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
 type IndexSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
 /// A generic function's declared parameters and their written types.
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
+/// Function and ordered binder identities, with complete checked argument types.
+type GenericInstantiation = (DefId, Vec<(DefId, Ty)>);
 /// A method's declared non-`self` parameter types, `None` where the
 /// type was left to inference.
 type MethodParams = Vec<Option<Type>>;
@@ -285,7 +338,7 @@ struct Checker<'a> {
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
     /// Instantiations already checked, by function and type arguments.
-    instantiated: std::cell::RefCell<HashSet<String>>,
+    instantiated: std::cell::RefCell<HashSet<GenericInstantiation>>,
     /// Generic functions whose body is being checked, against recursion.
     instantiating: std::cell::RefCell<Vec<DefId>>,
     /// Entities carrying `#[test]`: testbenches, where the stimulus
@@ -370,6 +423,9 @@ struct Checker<'a> {
     generic_fns: HashMap<DefId, GenericFnSignature>,
     /// `extern "C"` functions declared without a result: C `void`.
     void_extern_fns: HashSet<DefId>,
+    /// `extern "C"` functions taking a struct or array by pointer, which only
+    /// a testbench can call (hardware holds an aggregate as separate leaves).
+    aggregate_extern_fns: HashSet<DefId>,
     /// The function whose body is being checked, if any.
     current_fn: std::cell::Cell<Option<DefId>>,
     /// Functions whose bodies call an operation only a testbench can run
@@ -380,13 +436,13 @@ struct Checker<'a> {
     /// Calls from hardware to functions, checked once every body has been
     /// seen against `testbench_only_fns`.
     hardware_fn_calls: std::cell::RefCell<Vec<(DefId, Span, String)>>,
-    /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
-    /// for T` (more than one is an ambiguity error at the use site).
-    suffix_types: HashMap<String, Vec<String>>,
-    /// Bit-string prefix (`x`, `o`) -> the type names defining it via
+    /// Literal suffix -> borrowed targets of `impl Suffix<sym, _> for T`.
+    /// Interpret after family discovery; more than one is ambiguous at use.
+    suffix_types: HashMap<String, Vec<&'a Type>>,
+    /// Bit-string prefix (`x`, `o`) -> borrowed targets declared via
     /// `impl Prefix<sym, _> for T` (spec 3.24). std declares which prefixes
     /// exist; the compiler evaluates the known radix ones intrinsically.
-    prefix_types: HashMap<String, Vec<String>>,
+    prefix_types: HashMap<String, Vec<&'a Type>>,
     /// Indexed local -> its inclusive declared labels. Range direction is not
     /// retained in `Ty`: both `unsigned[15..8]` and `unsigned[8..15]` have
     /// length 8, while their valid labels are 8..15 rather than 0..7. The
@@ -454,6 +510,10 @@ struct Checker<'a> {
     metadata_constants: HashMap<Span, i64>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
+    /// Checked `(target, source)` contracts by their `into` declaration ID.
+    into_sigs: HashMap<DefId, (Ty, Ty)>,
+    /// Values converted by an `impl Into` where stored; handed on in [`Typed`].
+    conversions: HashMap<Span, Conversion>,
 }
 
 #[cfg(test)]

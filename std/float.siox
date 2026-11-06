@@ -125,7 +125,7 @@ fn pow2(k: integer) -> real {
 // --- arithmetic ----------------------------------------------------------------
 
 impl Mul<float, float> for float {
-    fn mul(self, rhs: float) -> float {
+    fn mul(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -149,13 +149,13 @@ impl Mul<float, float> for float {
 }
 
 impl Add<float, float> for float {
-    fn add(self, rhs: float) -> float {
+    fn add(rhs: float) -> float {
         return add_words(integer(self), integer(rhs), self'high, 0 - self'low);
     }
 }
 
 impl Sub<float, float> for float {
-    fn sub(self, rhs: float) -> float {
+    fn sub(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let b: integer = integer(rhs);
@@ -168,7 +168,7 @@ impl Sub<float, float> for float {
 // IEEE-754 division, rounded to nearest even. `x / 0` is infinite, `0 / 0`
 // and `inf / inf` are NaN, and `x / inf` is zero.
 impl Div<float, float> for float {
-    fn div(self, rhs: float) -> float {
+    fn div(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -266,7 +266,7 @@ fn is_nan_word(w: integer, e: integer, f: integer) -> Bool {
 }
 
 impl Eq<float> for float {
-    fn eq(self, rhs: float) -> Bool {
+    fn eq(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -278,7 +278,7 @@ impl Eq<float> for float {
 }
 
 impl Ord<float> for float {
-    fn lt(self, rhs: float) -> Bool {
+    fn lt(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -292,13 +292,13 @@ impl Ord<float> for float {
         if sa != sb { return sa == 1; }
         return if sa == 0 { ma < mb } else { ma > mb };
     }
-    fn le(self, rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
+    fn le(rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
 }
 
 // `-x`: the same number with its sign flipped (IEEE `negate`, exact for
 // every value including zero, infinity and NaN).
 impl Neg<float> for float {
-    fn neg(self) -> float {
+    fn neg() -> float {
         let w: integer = self'high - self'low;
         let a: integer = integer(self);
         return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
@@ -314,20 +314,20 @@ impl float {
     pub attr mantissa: integer = 0 - self'low;
     pub attr bias: integer = (1 << (self'exponent - 1)) - 1;
 
-    pub fn is_nan(self) -> Bool {
+    pub fn is_nan() -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) != 0;
     }
 
-    pub fn is_infinite(self) -> Bool {
+    pub fn is_infinite() -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) == 0;
     }
 
     // Zero, of either sign; a subnormal counts as zero.
-    pub fn is_zero(self) -> Bool {
+    pub fn is_zero() -> Bool {
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, self'high) == 0;
     }
@@ -335,7 +335,7 @@ impl float {
 
 // Prints as its value: `{:.3}` and `{:e}` reach the real it converts to.
 impl Display for float {
-    fn fmt(self, f: Formatter) {
+    fn fmt(f: Formatter) {
         write!(f, "{}", real(self));
     }
 }
@@ -345,7 +345,7 @@ impl Sqrt for float {
     // NaN or a negative number, and zero, `-0` and infinity are their own
     // roots. The radicand needs `2f + 6` bits of the 64-bit kernel word, so
     // it holds up to 28 mantissa bits (binary16, binary32), as `*` and `/` do.
-    fn sqrt(self) -> float {
+    fn sqrt() -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -370,8 +370,43 @@ impl Sqrt for float {
 }
 
 // `real(x)`: the number a float holds.
+// `float<32, 23>(v)` for a `Logic[]` (VHDL's `to_float(slv, 8, 23)`): the
+// raw sign, exponent and fraction bits, the leftmost at `'high`.
+impl From<Logic[]> for float {
+    static fn from(value: Logic[]) -> float {
+        return integer(unsigned(value));
+    }
+}
+
+// Stored where the other is expected, a `Logic[]` and a float convert
+// implicitly: the raw sign, exponent and fraction bits.
+impl Into<float> for Logic[] {
+    fn into() -> float {
+        return float(self);
+    }
+}
+
+impl Into<Logic[]> for float {
+    fn into() -> Logic[] {
+        return elements(self);
+    }
+}
+
+// A format's bits as a `Logic[]`, the most significant first: its bits read
+// as an `unsigned` of the same length, so every label is non-negative.
+// `unsigned(value)` keeps the bits (there is no numeric `From` from a format
+// to `unsigned`), metavalues included.
+fn elements<T>(value: T) -> Logic[] {
+    let bits: unsigned[value'length] = unsigned(value);
+    let r: Logic[value'length];
+    for k in 0..value'length - 1 {
+        r[k] = bits[value'length - 1 - k];
+    }
+    return r;
+}
+
 impl From<float> for real {
-    fn from(value: float) -> real {
+    static fn from(value: float) -> real {
         let e: integer = value'high;
         let f: integer = 0 - value'low;
         let a: integer = integer(value);
@@ -391,7 +426,7 @@ impl From<float> for real {
 // exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
 // the range it is infinite, below it zero.
 impl From<real> for float {
-    fn from(value: real) -> float {
+    static fn from(value: real) -> float {
         return float_word(value, Self'high, 0 - Self'low);
     }
 }
@@ -399,19 +434,19 @@ impl From<real> for float {
 // An integer, `unsigned` or `signed` rounds to nearest even where the
 // format cannot hold it: integer arithmetic, so it lowers to hardware.
 impl From<integer> for float {
-    fn from(value: integer) -> float {
+    static fn from(value: integer) -> float {
         return fixed_to_float(value, 0, Self'high, 0 - Self'low);
     }
 }
 
 impl From<unsigned> for float {
-    fn from(value: unsigned) -> float {
+    static fn from(value: unsigned) -> float {
         return fixed_to_float(fixed_word(value, false), 0, Self'high, 0 - Self'low);
     }
 }
 
 impl From<signed> for float {
-    fn from(value: signed) -> float {
+    static fn from(value: signed) -> float {
         return fixed_to_float(fixed_word(value, true), 0, Self'high, 0 - Self'low);
     }
 }
@@ -419,7 +454,7 @@ impl From<signed> for float {
 // `float<16, 10>(x)` from another format: rounded to nearest even, infinite
 // beyond the range and zero below it.
 impl From<float> for float {
-    fn from(value: float) -> float {
+    static fn from(value: float) -> float {
         return refloat(integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low, false);
     }
 }
@@ -428,7 +463,7 @@ impl From<float> for float {
 // names, rounded as chosen. Overflow follows IEEE-754 for the rounding: to
 // nearest it is infinite, truncated it is the largest finite number.
 impl float {
-    pub fn resize(value: float, rounding: Rounding) -> float {
+    pub static fn resize(value: float, rounding: Rounding) -> float {
         return refloat(
             integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low,
             rounding == Rounding::Truncate
@@ -453,13 +488,13 @@ fn refloat(a: integer, ea: integer, fa: integer, e: integer, f: integer, truncat
 
 // `float<32, 23>(x)` from a fixed-point number: rounded to nearest even.
 impl From<ufixed> for float {
-    fn from(value: ufixed) -> float {
+    static fn from(value: ufixed) -> float {
         return fixed_to_float(fixed_word(value, false), 0 - value'low, Self'high, 0 - Self'low);
     }
 }
 
 impl From<sfixed> for float {
-    fn from(value: sfixed) -> float {
+    static fn from(value: sfixed) -> float {
         return fixed_to_float(fixed_word(value, true), 0 - value'low, Self'high, 0 - Self'low);
     }
 }
@@ -468,7 +503,7 @@ impl From<sfixed> for float {
 // zero) and saturated, as fixed point's other constructors are. A NaN is
 // zero; an infinity saturates.
 impl From<float> for ufixed {
-    fn from(value: float) -> ufixed {
+    static fn from(value: float) -> ufixed {
         return float_to_fixed(
             integer(value), value'high, 0 - value'low, Self'high, Self'low, false
         );
@@ -476,7 +511,7 @@ impl From<float> for ufixed {
 }
 
 impl From<float> for sfixed {
-    fn from(value: float) -> sfixed {
+    static fn from(value: float) -> sfixed {
         return float_to_fixed(
             integer(value), value'high, 0 - value'low, Self'high, Self'low, true
         );

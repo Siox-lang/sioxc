@@ -9,10 +9,12 @@ pub mod format;
 pub mod imports;
 pub mod lexer;
 pub mod macros;
+pub mod methods;
 pub mod parser;
 pub mod pretty;
 pub mod token;
 pub(crate) mod visit;
+pub mod walk;
 
 pub use ast::Module;
 

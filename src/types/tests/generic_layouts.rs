@@ -63,7 +63,7 @@ fn constructor_qualifier_and_trait_argument_types_check_applied_widths() {
     ] {
         let source = format!("module model;
             struct Packet<N: integer> {{ pub data: integer[N] }}
-            impl<N: integer> Packet<N> {{ pub fn size() -> integer {{ return 1; }} }}
+            impl<N: integer> Packet<N> {{ pub static fn size() -> integer {{ return 1; }} }}
             {use_site}");
         let sink = check_modules(&[(&source, FileId(0))]);
         assert_eq!(sink.error_count(), 1, "{source}: {:?}", sink.diagnostics());

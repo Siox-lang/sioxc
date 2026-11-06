@@ -955,6 +955,7 @@ impl Expander<'_> {
 
     fn stmt(&mut self, statement: &mut Stmt, sequential: bool, depth: usize) {
         match statement {
+            Stmt::Process(p) => self.block(&mut p.body, true, depth),
             Stmt::Let(l) => {
                 if let Some(value) = &mut l.value {
                     self.expr(value, depth);
@@ -980,8 +981,11 @@ impl Expander<'_> {
                     self.block(&mut arm.body, sequential, depth);
                 }
             }
-            Stmt::For { range, body, .. } => {
-                self.expr(range, depth);
+            Stmt::For {
+                range: cond, body, ..
+            }
+            | Stmt::While { cond, body, .. } => {
+                self.expr(cond, depth);
                 self.block(body, sequential, depth);
             }
             Stmt::Expr(e) => self.expr(e, depth),
@@ -1367,4 +1371,488 @@ fn form_home(index: &Index, form: &MacroDecl) -> bool {
         .iter()
         .find(|(_, forms)| forms.iter().any(|f| f.span == form.span))
         .is_some_and(|((module, _), _)| module == "core" || module.starts_with("core::"))
+}
+
+/// `#[derive(Eq)]` / `#[derive(Ord)]` on a struct: the comparison impls a
+/// user would write, field by field in declared order (`Ord`
+/// lexicographically), appended to the struct's module (derive proposal).
+/// Each is a source file of its own in `sources` (`<derive Eq for P>`), so
+/// its spans are distinct and a diagnostic in it shows the generated code.
+/// `gt`/`ge` and `ne` keep their trait defaults.
+pub fn derive(
+    modules: &mut [Module],
+    operators: &HashMap<String, u8>,
+    sources: &mut crate::diag::SourceMap,
+    sink: &mut DiagnosticSink,
+) {
+    for module in modules.iter_mut() {
+        let mut generated = Vec::new();
+        for item in &module.items {
+            let Item::Struct(declaration) = item else {
+                continue;
+            };
+            for derive in &declaration.derives {
+                let Some(text) = derive_text(declaration, derive, sink) else {
+                    continue;
+                };
+                let name = format!("<derive {} for {}>", derive.text, declaration.name.text);
+                let text = format!("module {};\n{text}\n", path_text(&module.path));
+                let file = sources.add(name, text.clone());
+                module.derived_files.push(file);
+                let whole = Span {
+                    file,
+                    start: 0,
+                    end: u32::try_from(text.len()).unwrap_or(u32::MAX),
+                };
+                sink.note_inside(
+                    whole,
+                    format!(
+                        "in the `{}` impl that `#[derive({})]` writes for `{}`",
+                        derive.text, derive.text, declaration.name.text
+                    ),
+                );
+                generated.extend(
+                    crate::syntax::parse_module_with_operators(file, &text, operators, sink).items,
+                );
+            }
+        }
+        module.items.extend(generated);
+    }
+}
+
+/// The source of one derived impl, or `None` after reporting why not.
+fn derive_text(
+    declaration: &StructDecl,
+    derive: &Ident,
+    sink: &mut DiagnosticSink,
+) -> Option<String> {
+    let name = &declaration.name.text;
+    if !matches!(derive.text.as_str(), "Eq" | "Ord") {
+        sink.emit(
+            Diagnostic::error(format!(
+                "cannot derive `{}`: only `Eq` and `Ord` derive",
+                derive.text
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
+        );
+        return None;
+    }
+    // ponytail: a generic newtype reads its value as `unsigned[W](self)`,
+    // which a testbench cannot lower yet (the generic-integer gap on the
+    // board); its forwarded base operators usually cover it meanwhile.
+    if declaration.base.is_some() && !declaration.params.params.is_empty() {
+        sink.emit(
+            Diagnostic::error(format!(
+                "cannot derive `{}` for `{name}`: a generic newtype does not derive yet",
+                derive.text
+            ))
+            .with_code(codes::INVALID_DERIVE)
+            .at(derive.span)
+            .help("write the impl by hand"),
+        );
+        return None;
+    }
+    // A generic struct derives for every instance: `impl<A, B> Eq<Pair<A, B>>
+    // for Pair<A, B>`, its parameters and bounds as declared.
+    let binder = crate::syntax::pretty::params(&declaration.params);
+    let arguments: Vec<&str> = declaration
+        .params
+        .params
+        .iter()
+        .map(|param| param.name.text.as_str())
+        .collect();
+    let applied = if arguments.is_empty() {
+        name.clone()
+    } else {
+        format!("{name}<{}>", arguments.join(", "))
+    };
+    // What is compared, in order: each field, or a newtype's value read as
+    // its base (`integer(self)` for `struct Count(integer)`), which a
+    // newtype over a kernel type has no operator for of its own.
+    let operands: Vec<(String, String)> = match &declaration.base {
+        Some(base) => {
+            let base = crate::syntax::pretty::type_str(base);
+            vec![(format!("{base}(self)"), format!("{base}(rhs)"))]
+        }
+        None => declaration
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    format!("self.{}", field.name.text),
+                    format!("rhs.{}", field.name.text),
+                )
+            })
+            .collect(),
+    };
+    Some(match derive.text.as_str() {
+        "Eq" => {
+            let body = if operands.is_empty() {
+                "true".to_string()
+            } else {
+                operands
+                    .iter()
+                    .map(|(left, right)| format!("({left} == {right})"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            };
+            format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(rhs: {applied}) -> Bool {{ return {body}; }} }}")
+        }
+        _ => format!(
+            "impl{binder} Ord<{applied}> for {applied} {{ \
+             fn lt(rhs: {applied}) -> Bool {{ return {}; }} \
+             fn le(rhs: {applied}) -> Bool {{ return {}; }} }}",
+            lexicographic(&operands, "<"),
+            lexicographic(&operands, "<="),
+        ),
+    })
+}
+
+/// `self < rhs` (or `<=`) over `operands` in order: the first pair that
+/// differs decides, and the last compares with `last`.
+fn lexicographic(operands: &[(String, String)], last: &str) -> String {
+    match operands {
+        [] => if last == "<=" { "true" } else { "false" }.to_string(),
+        [(left, right)] => format!("({left} {last} {right})"),
+        [(left, right), rest @ ..] => format!(
+            "(({left} < {right}) or (({left} == {right}) and {}))",
+            lexicographic(rest, last)
+        ),
+    }
+}
+
+/// Hardware `static let`: a register owned by its process. Before
+/// resolution, each one in a hardware process becomes a hidden entity-body
+/// signal named `label#name` (the register, at its constant initializer); the
+/// process starts with an ordinary local read from it, so later statements
+/// see every write at once; and each clock-edge branch ends by writing the
+/// local back, so the register takes its final value at the edge. A write
+/// anywhere but under a clock edge would be a feedback loop, and is an error.
+pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
+    for module in modules.iter_mut() {
+        let tests: HashSet<String> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Entity(entity)
+                    if entity
+                        .attrs
+                        .iter()
+                        .any(|attr| path_text(&attr.name) == "test") =>
+                {
+                    Some(entity.name.text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for item in &mut module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            let target = match &implementation.target {
+                Type::Path(path) => path.segments.last().map(|s| s.text.clone()),
+                Type::Generic { base, .. } => match base.as_ref() {
+                    Type::Path(path) => path.segments.last().map(|s| s.text.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if target.is_none_or(|name| tests.contains(&name)) {
+                continue;
+            }
+            let mut registers = Vec::new();
+            for (index, member) in implementation.items.iter_mut().enumerate() {
+                let ImplItem::Process(process) = member else {
+                    continue;
+                };
+                let label = process
+                    .label
+                    .as_ref()
+                    .map_or_else(|| format!("process{index}"), |label| label.text.clone());
+                registers.extend(process_registers(process, &label, sink));
+            }
+            implementation
+                .items
+                .splice(0..0, registers.into_iter().map(ImplItem::Let));
+        }
+    }
+}
+
+/// Rewrite one hardware process's `static let`s, returning their registers.
+fn process_registers(
+    process: &mut ProcessDecl,
+    label: &str,
+    sink: &mut DiagnosticSink,
+) -> Vec<LetDecl> {
+    let mut registers = Vec::new();
+    let mut write_backs = Vec::new();
+    for statement in &mut process.body.stmts {
+        let Stmt::Let(declaration) = statement else {
+            continue;
+        };
+        if !declaration.is_static {
+            continue;
+        }
+        // Distinct zero-cost spans inside the `static` keyword: resolution
+        // keys names by span, and none of these overlaps a real token.
+        let at = |offset: u32| Span {
+            file: declaration.span.file,
+            start: declaration.span.start + offset,
+            end: declaration.span.start + offset + 1,
+        };
+        let register = Ident {
+            text: format!("{label}#{}", declaration.name.text),
+            span: at(0),
+        };
+        registers.push(LetDecl {
+            attrs: Vec::new(),
+            name: register.clone(),
+            ty: declaration.ty.clone(),
+            value: declaration.value.take(),
+            span: declaration.span,
+            is_static: false,
+        });
+        declaration.is_static = false;
+        declaration.value = Some(Expr::Path(Path {
+            segments: vec![Ident {
+                span: at(1),
+                ..register.clone()
+            }],
+            span: at(1),
+        }));
+        write_backs.push(Stmt::Assign {
+            label: None,
+            target: Expr::Path(Path {
+                segments: vec![Ident {
+                    span: at(2),
+                    ..register
+                }],
+                span: at(2),
+            }),
+            value: Expr::Path(Path {
+                segments: vec![Ident {
+                    span: at(3),
+                    ..declaration.name.clone()
+                }],
+                span: at(3),
+            }),
+            after: None,
+            span: declaration.span,
+        });
+    }
+    if write_backs.is_empty() {
+        return registers;
+    }
+    let names: Vec<String> = write_backs
+        .iter()
+        .filter_map(|write| match write {
+            Stmt::Assign {
+                value: Expr::Path(path),
+                ..
+            } => path.segments.first().map(|s| s.text.clone()),
+            _ => None,
+        })
+        .collect();
+    for statement in &mut process.body.stmts {
+        clock_write_backs(statement, &names, &write_backs, false, sink);
+    }
+    registers
+}
+
+/// Append the write-backs to every clocked branch under `statement`, and
+/// report a write to a static outside one. A branch is clocked when its own
+/// condition is a clock edge, or when it precedes an edge in the same chain
+/// (an asynchronous reset: `if rst == '1' { .. } else if clk.rising() { .. }`).
+fn clock_write_backs(
+    statement: &mut Stmt,
+    names: &[String],
+    write_backs: &[Stmt],
+    clocked: bool,
+    sink: &mut DiagnosticSink,
+) {
+    match statement {
+        Stmt::If(chain) if !clocked && chain_has_edge(chain) => {
+            let mut link = Some(chain);
+            while let Some(current) = link {
+                let clocked_link = chain_has_edge(current);
+                for inner in &mut current.then.stmts {
+                    clock_write_backs(inner, names, write_backs, clocked_link, sink);
+                }
+                if is_edge(&current.cond) {
+                    // A next-state update: the local's final value.
+                    current.then.stmts.extend(write_backs.iter().cloned());
+                } else if clocked_link {
+                    // An asynchronous reset is level-sensitive: write the
+                    // register with each assigned value itself, as a plain
+                    // signal would be, so the write reads no feedback.
+                    mirror_writes(&mut current.then, names, write_backs);
+                }
+                link = match current.else_.as_deref_mut() {
+                    Some(ElseBranch::If(next)) => Some(next),
+                    Some(ElseBranch::Block(block)) => {
+                        for inner in &mut block.stmts {
+                            clock_write_backs(inner, names, write_backs, false, sink);
+                        }
+                        None
+                    }
+                    None => None,
+                };
+            }
+        }
+        Stmt::If(chain) => {
+            let mut link = Some(chain);
+            while let Some(current) = link {
+                for inner in &mut current.then.stmts {
+                    clock_write_backs(inner, names, write_backs, clocked, sink);
+                }
+                link = match current.else_.as_deref_mut() {
+                    Some(ElseBranch::If(next)) => Some(next),
+                    Some(ElseBranch::Block(block)) => {
+                        for inner in &mut block.stmts {
+                            clock_write_backs(inner, names, write_backs, clocked, sink);
+                        }
+                        None
+                    }
+                    None => None,
+                };
+            }
+        }
+        Stmt::Match(m) => {
+            for arm in &mut m.arms {
+                for inner in &mut arm.body.stmts {
+                    clock_write_backs(inner, names, write_backs, clocked, sink);
+                }
+            }
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            for inner in &mut body.stmts {
+                clock_write_backs(inner, names, write_backs, clocked, sink);
+            }
+        }
+        Stmt::Assign { target, span, .. } if !clocked => {
+            let mut root = &*target;
+            while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Path(path) = root {
+                if let [segment] = path.segments.as_slice() {
+                    if names.contains(&segment.text) {
+                        sink.emit(
+                            Diagnostic::error(format!(
+                                "a hardware `static let` is written only under a clock edge; \
+                                 `{}` is written here without one",
+                                segment.text
+                            ))
+                            .at(*span)
+                            .help(
+                                "a register changes at an edge: write it inside \
+                                 `if clk.rising() { ... }`, or use an ordinary `let` for a \
+                                 value computed fresh each time",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// After each write to a static in `block` (at any depth), write its
+/// register with the same value.
+fn mirror_writes(block: &mut Block, names: &[String], write_backs: &[Stmt]) {
+    let mut index = 0;
+    while index < block.stmts.len() {
+        match &mut block.stmts[index] {
+            Stmt::If(chain) => {
+                let mut link = Some(chain);
+                while let Some(current) = link {
+                    mirror_writes(&mut current.then, names, write_backs);
+                    link = match current.else_.as_deref_mut() {
+                        Some(ElseBranch::If(next)) => Some(next),
+                        Some(ElseBranch::Block(inner)) => {
+                            mirror_writes(inner, names, write_backs);
+                            None
+                        }
+                        None => None,
+                    };
+                }
+            }
+            Stmt::Match(m) => {
+                for arm in &mut m.arms {
+                    mirror_writes(&mut arm.body, names, write_backs);
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                mirror_writes(body, names, write_backs)
+            }
+            Stmt::Assign {
+                target,
+                value,
+                after: None,
+                span,
+                ..
+            } => {
+                let mirrored = names.iter().zip(write_backs).find_map(|(name, write)| {
+                    let Stmt::Assign {
+                        target: Expr::Path(register),
+                        ..
+                    } = write
+                    else {
+                        return None;
+                    };
+                    let mut copy = target.clone();
+                    let mut root = &mut copy;
+                    while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                        root = base;
+                    }
+                    match root {
+                        Expr::Path(path)
+                            if path.segments.len() == 1 && path.segments[0].text == *name =>
+                        {
+                            *path = register.clone();
+                            Some(Stmt::Assign {
+                                label: None,
+                                target: copy,
+                                value: value.clone(),
+                                after: None,
+                                span: *span,
+                            })
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some(mirrored) = mirrored {
+                    block.stmts.insert(index + 1, mirrored);
+                    index += 1;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+}
+
+/// Whether a condition is a clock edge: `.rising()`, `.falling()`, `.edge()`
+/// or `'event`, possibly combined with other terms.
+fn is_edge(cond: &Expr) -> bool {
+    let text = crate::syntax::pretty::expr_string(cond);
+    [".rising()", ".falling()", ".edge()", "'event"]
+        .iter()
+        .any(|edge| text.contains(edge))
+}
+
+/// Whether any condition of an `if` chain, from this link on, is an edge.
+fn chain_has_edge(chain: &IfStmt) -> bool {
+    is_edge(&chain.cond) || chain_has_edge_after(chain)
+}
+
+/// Whether a later link of the chain is an edge.
+fn chain_has_edge_after(chain: &IfStmt) -> bool {
+    match chain.else_.as_deref() {
+        Some(ElseBranch::If(next)) => chain_has_edge(next),
+        _ => false,
+    }
 }

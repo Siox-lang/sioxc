@@ -38,6 +38,51 @@ const SHAPES: &[(&str, &str)] = &[
 ];
 
 #[test]
+fn block_type_imports_qualify_enum_members_through_aliases() {
+    let (rendered, ok) = compile(
+        "block_type_prefix",
+        "module main; use shapes::colors;
+         fn f(value: shapes::colors::Color) -> integer {
+             use Local = shapes::geometry::Hue;
+             return match value { Local::Red => 1, Local::Green => 2 };
+         }",
+    );
+    assert!(ok, "qualified block imports retain their owner: {rendered}");
+}
+
+#[test]
+fn qualified_block_patterns_still_require_the_scrutinees_enum_owner() {
+    let (rendered, ok) = compile(
+        "wrong_block_type_prefix",
+        "module main; use shapes::colors;
+         fn f(value: shapes::colors::Color) -> integer {
+             use Local = shapes::geometry::Corner;
+             return match value { Local::NorthEast => 1, _ => 2 };
+         }",
+    );
+    assert!(!ok, "an unrelated enum must not match: {rendered}");
+    assert!(rendered.contains("belongs to enum"), "{rendered}");
+    assert!(!rendered.contains("error[E-P009]"), "{rendered}");
+}
+
+#[test]
+fn a_local_value_shadows_a_block_import_used_as_a_prefix() {
+    let (rendered, ok) = compile(
+        "shadowed_block_type_prefix",
+        "module main; use shapes::colors;
+         fn f() -> integer {
+             use Local = shapes::geometry::Hue;
+             let Local: integer = 3;
+             return integer(Local::Red);
+         }",
+    );
+    assert!(
+        !ok,
+        "a local value must not name the imported type: {rendered}"
+    );
+}
+
+#[test]
 fn chained_alias_constructors_keep_their_declaration_scope() {
     let (rendered, ok) = compile(
         "chained_constructor",

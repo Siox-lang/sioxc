@@ -385,33 +385,37 @@ impl<'i, 'a> Source<'i, 'a> {
         let (role, method, symbol) = match expression {
             Expr::Unary { op: UnOp::Not, .. } => ("not", "not", None),
             Expr::Unary { op: UnOp::Neg, .. } => ("neg", "neg", None),
-            Expr::Binary { op, .. } => match op {
-                BinOp::Eq => ("eq", "eq", None),
-                BinOp::Ne => ("eq", "ne", None),
-                BinOp::Lt => ("ord", "lt", None),
-                BinOp::Le => ("ord", "le", None),
-                BinOp::Gt => ("ord", "gt", None),
-                BinOp::Ge => ("ord", "ge", None),
-                BinOp::And => ("and", "and", None),
-                BinOp::Or => ("or", "or", None),
-                BinOp::Add => ("add", "add", None),
-                BinOp::Sub => ("sub", "sub", None),
-                BinOp::Mul => ("mul", "mul", None),
-                BinOp::Div => ("div", "div", None),
-                BinOp::Rem => ("rem", "rem", None),
-                BinOp::Shl => ("shl", "shl", None),
-                BinOp::Shr => ("shr", "shr", None),
-                BinOp::Custom { symbol, .. } => ("custom_operator", "apply", Some(symbol.as_str())),
-            },
+            Expr::Binary { op, .. } => return self.binary_function(op, left, right?),
             _ => return None,
         };
-        let values = [left, right.unwrap_or(left)];
-        self.hook(
-            role,
-            method,
-            &values[..1 + usize::from(right.is_some())],
-            symbol,
-        )
+        self.hook(role, method, &[left], symbol)
+    }
+
+    pub(super) fn binary_function(
+        &self,
+        op: &BinOp,
+        left: Value,
+        right: Value,
+    ) -> Option<&'a FnDecl> {
+        let (role, method, symbol) = match op {
+            BinOp::Eq => ("eq", "eq", None),
+            BinOp::Ne => ("eq", "ne", None),
+            BinOp::Lt => ("ord", "lt", None),
+            BinOp::Le => ("ord", "le", None),
+            BinOp::Gt => ("ord", "gt", None),
+            BinOp::Ge => ("ord", "ge", None),
+            BinOp::And => ("and", "and", None),
+            BinOp::Or => ("or", "or", None),
+            BinOp::Add => ("add", "add", None),
+            BinOp::Sub => ("sub", "sub", None),
+            BinOp::Mul => ("mul", "mul", None),
+            BinOp::Div => ("div", "div", None),
+            BinOp::Rem => ("rem", "rem", None),
+            BinOp::Shl => ("shl", "shl", None),
+            BinOp::Shr => ("shr", "shr", None),
+            BinOp::Custom { symbol, .. } => ("custom_operator", "apply", Some(symbol.as_str())),
+        };
+        self.hook(role, method, &[left, right], symbol)
     }
 
     pub(super) fn condition_function(&self, value: Value) -> Option<&'a FnDecl> {
@@ -458,6 +462,16 @@ impl<'i, 'a> Source<'i, 'a> {
         let Expr::Binary { op, .. } = expression else {
             return None;
         };
+        self.binary_values(op, left, right, intrinsic)
+    }
+
+    pub(super) fn binary_values(
+        &self,
+        op: &BinOp,
+        left: Value,
+        right: Value,
+        intrinsic: bool,
+    ) -> Option<Value> {
         let order = match (left, right) {
             (Value::Integer(left), Value::Integer(right)) => match op {
                 BinOp::And => return Some(Value::Integer(left & right)),

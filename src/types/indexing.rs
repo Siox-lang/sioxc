@@ -115,6 +115,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Inference and diagnostics consume the same array index domain. Written
+    /// labels retain direction in the local table; typed fields keep its low.
+    pub(super) fn known_index_bounds(&self, base: &Expr, ty: &Ty) -> Option<(i64, i64)> {
+        let Ty::Array { len, low, .. } = ty else {
+            return None;
+        };
+        declared_bounds_of(base, &self.array_bounds).or_else(|| {
+            let offset = len.checked_sub(1)?;
+            Some((*low, low.checked_add(i64::from(offset))?))
+        })
+    }
+
     /// A constant bit index or slice outside a packed vector's width has no
     /// hardware meaning — it lowered to `Unknown` and surfaced much later as a
     /// generic "no engine can run this design". Both packed vectors and data
@@ -126,57 +138,21 @@ impl<'a> Checker<'a> {
         index: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
-        // What we can bound-check, and how to name it. A packed vector or data
-        // array may carry nonzero declared labels. An instance array (`let s:
-        // Sub[4]`) is always declared with a plain count and remains 0-based.
-        let (lo, hi, noun) = match self.type_of(base, sym) {
+        let ty = self.type_of(base, sym);
+        let Some((lo, hi)) = self.known_index_bounds(base, &ty) else {
+            return;
+        };
+        let noun = match &ty {
             Ty::Array {
-                len,
-                family: Some(_),
-                low,
-                ..
-            } => declared_bounds_of(base, &self.array_bounds)
-                .map(|(lo, hi)| (lo, hi, "bit"))
-                .unwrap_or((low, low + len as i64 - 1, "bit")),
-            Ty::Array {
-                elem,
-                len,
-                family: None,
-                ..
-            } if self.is_entity_ty(&elem) => (0, len as i64 - 1, "instance"),
-            // A data array's bounds come from its declaration, not its
-            // length: `Logic[15..8]` is indexed `8..15`.
-            // An array literal (`[10, 20, 30][5]`) is labelled from 0. It was
-            // not checked at all and failed to lower (#198, #213). A field or
-            // element of a declaration keeps labels its checked type lacks.
-            Ty::Array {
-                family: None, len, ..
-            } => match declared_bounds_of(base, &self.array_bounds) {
-                Some((lo, hi)) => (lo, hi, "element"),
-                None if len > 0 && matches!(base, Expr::Array { .. }) => {
-                    (0, len as i64 - 1, "element")
-                }
-                // A constant array (`ARR[999]`) has its declared labels;
-                // hardware read past them as 0 in silence (#228).
-                None => match base {
-                    Expr::Path(path) => match self
-                        .resolved
-                        .resolved(path.span)
-                        .and_then(|id| self.declarations.constant(id))
-                        .and_then(|declaration| self.declared_index_bounds(&declaration.ty))
-                    {
-                        Some((left, right)) => (left.min(right), left.max(right), "element"),
-                        None => return,
-                    },
-                    _ => return,
-                },
-            },
-            _ => return,
+                family: Some(_), ..
+            } => "bit",
+            Ty::Array { elem, .. } if self.is_entity_ty(elem) => "instance",
+            _ => "element",
         };
         if hi < lo {
             return; // parametric: not known yet
         }
-        let len = hi - lo + 1;
+        let len = i128::from(hi) - i128::from(lo) + 1;
         let positions: Vec<&Expr> = match index {
             Expr::Range { lo, hi, .. } => vec![lo.as_ref(), hi.as_ref()],
             Expr::PartialRange { lo, hi, .. } => lo

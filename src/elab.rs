@@ -105,16 +105,15 @@ pub struct Connection {
 }
 
 /// Concrete elaboration facts for one instance-array declaration in a parent
-/// instance. An array may be only partially populated by generate conditions;
-/// retaining both sets lets later stages distinguish an intentionally absent
-/// slot from an ordinary unresolved signal path.
+/// instance. A declaration creates every slot, including ones left unwired by
+/// generate conditions. Retain the concrete shape for bounds checks and clients.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceArrayFact {
     /// The local declaration name (`stage` in `let stage: Cell[N]`).
     pub name: String,
     /// Ordered indices implied by the declaration after parameter evaluation.
     pub declared: Vec<i64>,
-    /// Declared indices whose construction sites survived generate elaboration.
+    /// Indices of concrete children, including slots using default connections.
     pub built: Vec<i64>,
     /// The array declaration, used as a related diagnostic location.
     pub span: Span,
@@ -166,6 +165,12 @@ pub struct Hierarchy {
     /// Operands of mixed numeric operations that widen, by span, to the type
     /// they widen to (Stage 4's `Typed::promotions`).
     pub(crate) promotions: HashMap<Span, Ty>,
+    /// Each value an `impl Into` converts where stored (Stage 4's
+    /// `Typed::conversions`).
+    pub(crate) conversions: HashMap<Span, crate::types::Conversion>,
+    /// Matches proved to cover their scrutinee without a `_` arm (see
+    /// `Typed::covered_matches`).
+    pub(crate) covered_matches: std::collections::HashSet<Span>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
     /// beside the instance forest lets downstream consumers disambiguate equal
     /// root leaves without rediscovering module ownership from source text.
@@ -342,7 +347,7 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         out: &mut HashSet<DefId>,
     ) {
         match statement {
-            Stmt::Use(_) => {}
+            Stmt::Use(_) | Stmt::Process(_) => {}
             Stmt::Let(declaration) => record_let(declaration, declared, out),
             Stmt::Assign {
                 value: Expr::Construct { ty: Some(ty), .. },
@@ -364,7 +369,7 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
                     record_block(&arm.body, declared, out);
                 }
             }
-            Stmt::For { body, .. } => record_block(body, declared, out),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => record_block(body, declared, out),
             Stmt::Assign { .. } | Stmt::Expr(_) | Stmt::Return { .. } => {}
         }
     }
@@ -455,6 +460,8 @@ fn elaborate_roots(
     e.out.expr_types = typed.expr_types().clone();
     e.out.enum_values = std::sync::Arc::clone(&typed.enum_values);
     e.out.promotions = typed.promotions().clone();
+    e.out.conversions = typed.conversions().clone();
+    e.out.covered_matches = typed.covered_matches().clone();
     e.collect(modules);
 
     let mut stack = Vec::new();
@@ -597,6 +604,20 @@ impl<'a> Elaborator<'a> {
         // connections of the children it instantiates.
         let parent_signals = self.entity_signals(entity_id, &env);
 
+        // Arrays wired element by element (`stage[i] = Cell { .. }`): a slot
+        // of one that nothing wires is still built, and warned about.
+        let array_of = |name: &str| {
+            let mut array = name;
+            while let Some((rest, _)) = array.strip_suffix(']').and_then(|n| n.rsplit_once('[')) {
+                array = rest;
+            }
+            (array.len() < name.len()).then(|| array.to_string())
+        };
+        let wired_arrays: HashSet<String> = specs
+            .iter()
+            .filter(|spec| !spec.declared_slot)
+            .filter_map(|spec| array_of(&spec.name))
+            .collect();
         stack.push(entity_id);
         let mut children = Vec::new();
         for spec in specs {
@@ -615,8 +636,29 @@ impl<'a> Elaborator<'a> {
                 // Ports this instance drives post-declaration (`inst.p = x;`)
                 // count as connected for the missing-connection check.
                 let driven = self.post_decl_driven(entity_id, &spec.name);
+                let unwired = spec.declared_slot
+                    && driven.is_empty()
+                    && array_of(&spec.name).is_some_and(|array| wired_arrays.contains(&array));
+                if unwired {
+                    self.sink.emit(
+                        Diagnostic::warning(format!(
+                            "`{}` is built but nothing wires it; it simulates on its default inputs",
+                            spec.name
+                        ))
+                        .with_code(codes::UNWIRED_INSTANCE)
+                        .at(spec.site)
+                        .help(format!(
+                            "wire it with `{} = {{ .. }}` or its ports, or size the array to the \
+                             slots in use",
+                            spec.name
+                        )),
+                    );
+                }
+                // An unwired slot's warning stands for its inputs.
+                let instance = if unwired { "" } else { spec.name.as_str() };
                 let cconns = self.resolve_connections(
                     sub_decl,
+                    instance,
                     &spec.args,
                     spec.site,
                     &child_env,
@@ -739,6 +781,15 @@ impl<'a> Elaborator<'a> {
                 }
             }
         }
+        // Every declared slot exists (`let stage: Cell[N];`); a construction
+        // of one (`stage[i] = Cell { .. }`, `= { .. }`) only wires it, so it
+        // replaces that slot's declaration and no other.
+        let constructed: HashSet<String> = specs
+            .iter()
+            .filter(|spec| !spec.declared_slot)
+            .map(|spec| spec.name.clone())
+            .collect();
+        specs.retain(|spec| !spec.declared_slot || !constructed.contains(&spec.name));
         // A generated name (`s_0`) shares the parent's namespace with declared
         // ones, and two loops can generate the same name. Recorded here and
         // reported once per site by `report_collisions`.
@@ -913,6 +964,27 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
+        // `let stage: Cell[N];` declares its N instances (#290), and
+        // `Cell[R][C]` its C * R (#300); ports are wired afterwards,
+        // `stage[i].din = ..`.
+        if let (None, Some(ty)) = (&l.value, &l.ty) {
+            if let Some((base, slots)) = instance_array_slots(ty, env, self.source()) {
+                let entity = self.declarations.entity_type_id(base).is_some();
+                if entity {
+                    for slot in slots {
+                        out.push(InstanceSpec {
+                            name: at.name(&format!("{}{slot}", l.name.text)),
+                            ty: std::borrow::Cow::Borrowed(base),
+                            args: Vec::new(),
+                            attrs: &l.attrs,
+                            site: l.span,
+                            loop_env: env.clone(),
+                            declared_slot: true,
+                        });
+                    }
+                }
+            }
+        }
         if let Some((ty, args, span)) = self.instance_let(l, tparams) {
             out.push(InstanceSpec {
                 name: at.name(&l.name.text),
@@ -921,6 +993,7 @@ impl<'a> Elaborator<'a> {
                 attrs: &l.attrs,
                 site: span,
                 loop_env: env.clone(),
+                declared_slot: false,
             });
         }
     }
@@ -961,6 +1034,7 @@ impl<'a> Elaborator<'a> {
                     attrs: &[],
                     site: *span,
                     loop_env: env.clone(),
+                    declared_slot: false,
                 });
             }
             Stmt::For {
@@ -1233,9 +1307,12 @@ impl<'a> Elaborator<'a> {
     /// Match an instance's connection arguments to the entity's ports, checking
     /// widths after parameter substitution and reporting unknown or unconnected
     /// ports.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_connections(
         &mut self,
         edecl: &EntityDecl,
+        // The instance's name; empty when its inputs are already warned about.
+        instance: &str,
         args: &[ConnectArg],
         site: Span,
         env: &HashMap<String, i64>,
@@ -1328,14 +1405,23 @@ impl<'a> Elaborator<'a> {
             if !connected.contains(&p.name.text)
                 && !driven.contains(&p.name.text)
                 && p.dir == Some(Direction::In)
+                && !instance.is_empty()
             {
                 // An unconnected input isn't an error — it holds its default
                 // value (§3.29; "always initialized, may be undriven"). Warn so
                 // a forgotten connection is still surfaced.
+                // A slot of an instance array is named, since the array's
+                // other slots may be wired: a partly wired array still builds
+                // every slot, and this one simulates on its defaults.
+                let owner = if instance.ends_with(']') {
+                    format!("`{instance}` (`{}`)", edecl.name.text)
+                } else {
+                    format!("`{}`", edecl.name.text)
+                };
                 self.sink.emit(
                     Diagnostic::warning(format!(
-                        "input port `{}` of `{}` is not connected; it holds its default value",
-                        p.name.text, edecl.name.text
+                        "input port `{}` of {owner} is not connected; it holds its default value",
+                        p.name.text
                     ))
                     .with_code(codes::UNCONNECTED_INPUT)
                     .at(site)
@@ -1458,6 +1544,9 @@ struct InstanceSpec<'a> {
     /// Loop-variable bindings for a generated instance (`for i in 0..N`),
     /// substituted into the connection signal names (`wires[i]`).
     loop_env: HashMap<String, i64>,
+    /// A slot of an instance array made by its declaration; an element
+    /// construction of the same slot replaces it.
+    declared_slot: bool,
 }
 
 /// The `Int`-valued subset of a param list, as a substitution environment.
@@ -1807,12 +1896,23 @@ fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
                 // ponytail: no loop-range evaluation, so `cells[k]` over
                 // `1..2` also covers `cells[0]`; a forgotten element 0 then
                 // goes unwarned.
-                Expr::Index { base, index, .. } => {
-                    if let Expr::Path(p) = base.as_ref() {
+                // `grid[1][0].a` names one element of a nested array (#300).
+                Expr::Index { .. } => {
+                    let mut root = base.as_ref();
+                    let mut labels = Vec::new();
+                    while let Expr::Index { base, index, .. } = root {
+                        labels.push(match index.as_ref() {
+                            Expr::Int { text, .. } => Some(text.clone()),
+                            _ => None,
+                        });
+                        root = base;
+                    }
+                    if let Expr::Path(p) = root {
                         let name = &p.segments[0].text;
-                        let element = match index.as_ref() {
-                            Expr::Int { text, .. } => inst == format!("{name}[{text}]"),
-                            _ => inst.starts_with(&format!("{name}[")),
+                        let element = match labels.iter().rev().cloned().collect::<Option<Vec<_>>>()
+                        {
+                            Some(labels) => inst == format!("{name}[{}]", labels.join("][")),
+                            None => inst.starts_with(&format!("{name}[")),
                         };
                         if p.segments.len() == 1 && element {
                             out.insert(field.text.clone());
@@ -1890,6 +1990,23 @@ fn render_signal(
         // signal, with the (loop/const) index evaluated.
         Expr::Index { base, index, .. } => {
             let b = render_signal(base, env, declarations);
+            // A constant slice keeps its bounds (`ai[2..]`), so a testbench
+            // binds the port's positions to the labels it selects (#358).
+            let bound = |bound: Option<&Expr>| match bound {
+                Some(bound) => match eval(bound, env, declarations) {
+                    ParamValue::Int(i) => Some(i.to_string()),
+                    _ => None,
+                },
+                None => Some(String::new()),
+            };
+            let slice = match index.as_ref() {
+                Expr::Range { lo, hi, .. } => bound(Some(lo)).zip(bound(Some(hi))),
+                Expr::PartialRange { lo, hi, .. } => bound(lo.as_deref()).zip(bound(hi.as_deref())),
+                _ => None,
+            };
+            if let Some((lo, hi)) = slice {
+                return format!("{b}[{lo}..{hi}]");
+            }
             match eval(index, env, declarations) {
                 ParamValue::Int(i) => format!("{b}[{i}]"),
                 _ => format!("{b}[<expr>]"),
@@ -1900,6 +2017,43 @@ fn render_signal(
         }
         _ => "<expr>".to_string(),
     }
+}
+
+/// An instance array's element type and slot suffixes, outer index first:
+/// `Cell[2][3]` is three rows of `Cell[2]`, slots `[0][0]` to `[2][1]`.
+/// `None` for a type that is not indexed, or a bound that does not fold.
+pub(crate) fn instance_array_slots<'t>(
+    ty: &'t Type,
+    env: &HashMap<String, i64>,
+    source: consteval::Source<'_, '_>,
+) -> Option<(&'t Type, Vec<String>)> {
+    let Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let labels = match index.as_ref() {
+        Expr::Range { lo, hi, .. } => match (eval(lo, env, source), eval(hi, env, source)) {
+            (ParamValue::Int(left), ParamValue::Int(right)) => loop_range(left, right),
+            _ => return None,
+        },
+        count => match eval(count, env, source) {
+            ParamValue::Int(count) if count > 0 => loop_range(0, count - 1),
+            _ => return None,
+        },
+    };
+    let (element, inner) = match base.as_ref() {
+        Type::Indexed { .. } => instance_array_slots(base, env, source)?,
+        element => (element, vec![String::new()]),
+    };
+    let slots = labels
+        .iter()
+        .flat_map(|label| inner.iter().map(move |rest| format!("[{label}]{rest}")))
+        .collect();
+    Some((element, slots))
 }
 
 /// The leading name of a type expression, looking through generic
@@ -2333,10 +2487,9 @@ mod tests {
     }
 
     #[test]
-    /// A partially populated instance array must retain both its declared and
-    /// its actually-built slots, so an intentionally absent element is
-    /// distinguishable from an unresolved path.
-    fn hierarchy_retains_declared_and_conditionally_built_instance_slots() {
+    /// Every declared slot of an instance array is built, also one that a
+    /// generate condition leaves unwired (it simulates on its defaults).
+    fn every_declared_instance_slot_is_built() {
         let src = "module m;\n\
             entity Cell { y: Bit out }\n\
             impl Cell { y = '1'; }\n\
@@ -2348,19 +2501,23 @@ mod tests {
             }\n\
             entity Top { y: Bit out }\n\
             impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
-        let (hier, errors) = elaborate_src(src);
-        assert_eq!(errors, 0);
-        let top = hier.instance(hier.roots[0]);
-        let chain = hier.instance(top.children[0]);
-        assert_eq!(
-            chain.instance_arrays,
-            vec![InstanceArrayFact {
-                name: "stage".into(),
-                declared: vec![3, 2, 1],
-                built: vec![3, 2],
-                span: chain.instance_arrays[0].span,
-            }]
-        );
+        for limit in 0..=3 {
+            let source = src.replace("N = 1", &format!("N = {limit}"));
+            let (hier, errors) = elaborate_src(&source);
+            assert_eq!(errors, 0, "N={limit}");
+            let top = hier.instance(hier.roots[0]);
+            let chain = hier.instance(top.children[0]);
+            assert_eq!(
+                chain.instance_arrays,
+                vec![InstanceArrayFact {
+                    name: "stage".into(),
+                    declared: vec![3, 2, 1],
+                    built: vec![3, 2, 1],
+                    span: chain.instance_arrays[0].span,
+                }],
+                "N={limit}"
+            );
+        }
     }
 
     #[test]

@@ -85,10 +85,13 @@ impl<'a> Checker<'a> {
             }
             frontier = frontier.max(end.saturating_add(1));
             if frontier > hi {
-                return;
+                break;
             }
         }
+        // Every value is named: a target every arm assigns is no latch, and
+        // a function's arms all return (#347).
         if frontier > hi {
+            self.covered_tuple_matches.insert(span);
             return;
         }
         let missing = if frontier == gap_end {
@@ -189,8 +192,13 @@ impl<'a> Checker<'a> {
                     self.ty_display(ty)
                 ),
             ),
-            Pattern::Path(path) if path.segments.len() == 2 => {
-                let qualifier = &path.segments[0];
+            Pattern::Path(path)
+                if path.segments.len() >= 2
+                    && (path.segments.len() == 2
+                        || self.declarations.enum_owner(path).is_some()) =>
+            {
+                let qualifier = &path.segments[path.segments.len() - 2];
+                let variant = path.segments.last().unwrap();
                 let qualifier_key = self
                     .declarations
                     .enum_owner(path)
@@ -207,7 +215,7 @@ impl<'a> Checker<'a> {
                         path.span,
                         format!(
                             "pattern `{}` belongs to enum `{}`, but the matched value is `{expected}`",
-                            path.segments[1].text, qualifier_key
+                            variant.text, qualifier_key
                         ),
                         format!(
                             "use a `{}::…` variant in this match",
@@ -220,13 +228,13 @@ impl<'a> Checker<'a> {
                         format!(
                             "enum pattern `{}::{}` cannot match a {} value",
                             qualifier_key,
-                            path.segments[1].text,
+                            variant.text,
                             self.ty_display(ty)
                         ),
                     ),
                 }
             }
-            // Bare/deeper paths receive their spelling diagnostic from
+            // Bare/unresolved deeper paths receive their spelling diagnostic from
             // `check_pattern_form`; avoid adding a dependent type error.
             Pattern::Path(_) => {}
             Pattern::Range { span, .. } => {
@@ -449,7 +457,9 @@ impl<'a> Checker<'a> {
                         ),
                 );
             }
-            Pattern::Path(path) if path.segments.len() != 2 => {
+            Pattern::Path(path)
+                if path.segments.len() != 2 && self.declarations.enum_owner(path).is_none() =>
+            {
                 self.sink.emit(
                     Diagnostic::error("an enum pattern must be written as `Type::Variant`")
                         .with_code(codes::INVALID_PATTERN)
@@ -671,7 +681,7 @@ impl<'a> Checker<'a> {
                         None
                     }
                     Pattern::Path(p) if p.segments.len() >= 2 => {
-                        let var = p.segments[1].text.clone();
+                        let var = p.segments.last().unwrap().text.clone();
                         (!seen.insert(var.clone()))
                             .then(|| format!("`{var}` is already matched by an earlier arm"))
                     }

@@ -104,6 +104,12 @@ impl<'a> Lowering<'a> {
             if !seen.insert(sig.0) || driven.contains(&sig.0) {
                 continue;
             }
+            // An entity method's default holder (`m#none#x`) is never driven
+            // by design: it carries the type's default. `#` cannot be written
+            // in source, so no user signal is exempted.
+            if self.out.signals[sig.0 as usize].path.contains("#none#") {
+                continue;
+            }
             let signal = &self.out.signals[sig.0 as usize];
             let path = signal.path.clone();
             self.sink.emit(
@@ -230,81 +236,6 @@ impl<'a> Lowering<'a> {
                     ),
             );
         }
-    }
-
-    /// Report a reference to an in-range instance-array slot that concrete
-    /// generate elaboration omitted. This is distinct from an out-of-bounds
-    /// index: the slot belongs to the declaration, but no child instance (and
-    /// therefore no port signals) exists for this parameter set.
-    pub(super) fn report_unelaborated_instance_uses(&mut self) {
-        let mut uses = std::mem::take(&mut *self.unelaborated_instance_uses.borrow_mut());
-        uses.sort_by_key(|use_| {
-            (
-                use_.use_span.file.0,
-                use_.use_span.start,
-                use_.slot.clone(),
-                use_.parent_path.clone(),
-            )
-        });
-        uses.dedup_by(|left, right| {
-            left.use_span == right.use_span
-                && left.slot == right.slot
-                && left.parent_path == right.parent_path
-        });
-        for use_ in uses {
-            self.sink.emit(
-                crate::diag::Diagnostic::error(format!(
-                    "instance `{}` was not elaborated in `{}`",
-                    use_.slot, use_.parent_path
-                ))
-                .with_code(crate::diag::codes::INSTANCE_NOT_ELABORATED)
-                .at(use_.use_span)
-                .label(
-                    use_.declaration_span,
-                    format!("instance array `{}` declared here", use_.slot_root()),
-                )
-                .help(
-                    "this slot was omitted by the active generate conditions; \
-                     guard the reference with the same condition, or construct \
-                     the slot for this parameter set",
-                ),
-            );
-        }
-    }
-
-    /// Record `e` when its flattened path begins with a declared-but-unbuilt
-    /// instance slot in the body currently being lowered.
-    pub(super) fn record_unelaborated_instance_use(&self, e: &ast::Expr) -> bool {
-        let Some(path) = self.folded_elem_path(e).or_else(|| expr_path(e)) else {
-            return false;
-        };
-        let Some(facts) = self.instance_array_facts.get(&self.cur_instance_path) else {
-            return false;
-        };
-        for fact in facts {
-            for &index in &fact.declared {
-                if fact.built.contains(&index) {
-                    continue;
-                }
-                let slot = format!("{}[{index}]", fact.name);
-                if path == slot
-                    || path
-                        .strip_prefix(&slot)
-                        .is_some_and(|rest| rest.starts_with('.'))
-                {
-                    self.unelaborated_instance_uses
-                        .borrow_mut()
-                        .push(UnelaboratedInstanceUse {
-                            slot,
-                            parent_path: self.cur_instance_path.clone(),
-                            use_span: ast::expr_span(e),
-                            declaration_span: fact.span,
-                        });
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     /// Whether the entity being lowered has a value parameter with no value:
@@ -628,6 +559,11 @@ impl<'a> Lowering<'a> {
     ) {
         match s {
             ast::Stmt::Use(_) => {}
+            ast::Stmt::Process(process) => {
+                for statement in &process.body.stmts {
+                    self.collect_stmt_bad_indices(statement, out);
+                }
+            }
             ast::Stmt::Assign {
                 target,
                 value,
@@ -657,8 +593,11 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            ast::Stmt::For { range, body, .. } => {
-                self.collect_bad_indices(range, out);
+            ast::Stmt::For {
+                range: cond, body, ..
+            }
+            | ast::Stmt::While { cond, body, .. } => {
+                self.collect_bad_indices(cond, out);
                 for s in &body.stmts {
                     self.collect_stmt_bad_indices(s, out);
                 }

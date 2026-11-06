@@ -2,6 +2,210 @@
 
 use super::*;
 
+#[test]
+fn ambiguous_suffix_does_not_acquire_the_intrinsic_fallback_type() {
+    let source = "module suffixes;
+        struct Left {} struct Right {}
+        impl Suffix<\"ns\", integer> for Left {}
+        impl Suffix<\"ns\", integer> for Right {}
+        fn value() -> integer { return 7ns; }";
+    let mut sink = DiagnosticSink::default();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let typed = check(&modules, &resolved, &mut sink);
+    assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+    let error = sink
+        .diagnostics()
+        .iter()
+        .find(|d| d.severity == crate::diag::Severity::Error)
+        .unwrap();
+    assert_eq!(error.code, Some(codes::UNKNOWN_NAME));
+    assert!(error.message.contains("suffixes::Left::ns"));
+    assert!(error.message.contains("suffixes::Right::ns"));
+    let expression = modules[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) => match &function.body.as_ref()?.stmts[0] {
+                Stmt::Return { value, .. } => value.as_ref(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(typed.expr_type(expr_span(expression)), Some(&Ty::Error));
+}
+
+#[test]
+fn suffix_contracts_follow_aliases_and_module_order() {
+    let consumer = "module consumer;
+        fn from_left() -> left::Measure { return 7leftunit; }
+        fn from_right() -> right::Measure { return 9rightunit; }
+        fn from_array() -> left::Word { return 3words; }";
+    let left = "module left;
+        impl Suffix<\"leftunit\", integer> for Alias {}
+        impl Suffix<\"words\", integer> for Packed {}
+        pub struct Measure {}
+        pub type Alias = Measure;
+        pub enum Cell { Low, High }
+        pub struct Word(Cell[]);
+        pub type Packed = Word;";
+    let right = "module right;
+        pub struct Measure {}
+        impl Suffix<\"rightunit\", integer> for Measure {}";
+    for reversed in [false, true] {
+        for wrong_owner in [false, true] {
+            let source = if wrong_owner {
+                consumer.replace(
+                    "from_left() -> left::Measure",
+                    "from_left() -> right::Measure",
+                )
+            } else {
+                consumer.to_string()
+            };
+            let mut sink = DiagnosticSink::default();
+            let mut modules = with_core(
+                vec![
+                    crate::syntax::parse_module(FileId(0), &source, &mut sink),
+                    crate::syntax::parse_module(FileId(1), left, &mut sink),
+                    crate::syntax::parse_module(FileId(2), right, &mut sink),
+                ],
+                &mut sink,
+            );
+            if reversed {
+                modules.reverse();
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let typed = check(&modules, &resolved, &mut sink);
+            assert_eq!(
+                sink.error_count(),
+                usize::from(wrong_owner),
+                "reversed={reversed} wrong_owner={wrong_owner}: {:?}",
+                sink.diagnostics()
+            );
+            let owner = |module: &str, name: &str| {
+                let declaration = modules
+                    .iter()
+                    .find(|source| {
+                        source.path.segments.len() == 1 && source.path.segments[0].text == module
+                    })
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Struct(declaration) if declaration.name.text == name => {
+                            Some(declaration.name.span)
+                        }
+                        Item::Enum(declaration) if declaration.name.text == name => {
+                            Some(declaration.name.span)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                resolved.declared(declaration).unwrap()
+            };
+            let expected = [
+                ("from_left", Ty::Named(owner("left", "Measure"))),
+                ("from_right", Ty::Named(owner("right", "Measure"))),
+                (
+                    "from_array",
+                    Ty::Array {
+                        elem: Box::new(Ty::Named(owner("left", "Cell"))),
+                        family: Some("left::Word".to_string()),
+                        len: 0,
+                        low: 0,
+                    },
+                ),
+            ];
+            for (name, expected) in expected {
+                let expression = modules
+                    .iter()
+                    .flat_map(|module| &module.items)
+                    .find_map(|item| match item {
+                        Item::Fn(function) if function.name.text == name => {
+                            match &function.body.as_ref()?.stmts[0] {
+                                Stmt::Return { value, .. } => value.as_ref(),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(typed.expr_type(expr_span(expression)), Some(&expected));
+            }
+        }
+    }
+}
+
+#[test]
+fn resize_preserves_its_operands_element_identity() {
+    let source = "module consumer;
+        enum Logic { OtherLow, OtherHigh }
+        fn resize_left(value: left::Word[8]) -> left::Word[3] { return resize(value, 3); }
+        fn resize_right(value: right::Word[8]) -> right::Word[3] { return resize(value, 3); }
+        fn resize_plain(value: left::Cell[8]) -> left::Cell[3] { return resize(value, 3); }";
+    let left = "module left; pub enum Cell { Low, High } pub struct Word(Cell[]);";
+    let right = "module right; pub enum Cell { Low, High } pub struct Word(Cell[]);";
+    for reversed in [false, true] {
+        let mut sink = DiagnosticSink::default();
+        let mut modules = with_core(
+            vec![
+                crate::syntax::parse_module(FileId(0), source, &mut sink),
+                crate::syntax::parse_module(FileId(1), left, &mut sink),
+                crate::syntax::parse_module(FileId(2), right, &mut sink),
+            ],
+            &mut sink,
+        );
+        if reversed {
+            modules.reverse();
+        }
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = check(&modules, &resolved, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let mut checked = 0;
+        for function in modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .filter_map(|item| {
+                if let Item::Fn(function) = item {
+                    Some(function)
+                } else {
+                    None
+                }
+            })
+        {
+            let Stmt::Return {
+                value: Some(call), ..
+            } = &function.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("return")
+            };
+            let Expr::Call { args, .. } = call else {
+                panic!("resize call")
+            };
+            let Some(Ty::Array { elem, family, .. }) = typed.expr_type(expr_span(&args[0])) else {
+                panic!("typed array input")
+            };
+            assert_eq!(
+                typed.expr_type(expr_span(call)),
+                Some(&Ty::Array {
+                    elem: elem.clone(),
+                    family: family.clone(),
+                    len: 3,
+                    low: 0,
+                }),
+                "{} reversed={reversed}",
+                function.name.text
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+    }
+}
+
 const RESULTS: &str = "module user;
     enum Bool { Off, On }
     fn comparison() -> Bool { return 1 < 2; }

@@ -25,14 +25,27 @@ use crate::types::Typed;
 
 mod cfg_calls;
 
-#[derive(Clone)]
-struct ConstantSuffix {
-    target: String,
-    parameter: String,
+struct ConstantSuffix<'a> {
+    target: crate::resolve::DefId,
+    declarations: &'a crate::resolve::declarations::DeclarationIndex<'a>,
+    parameter: &'a str,
     domain: SuffixDomain,
-    body: ast::Block,
+    body: &'a ast::Block,
     /// The impl's `suffix`, inlined when the body builds a struct.
-    function: ast::FnDecl,
+    function: &'a ast::FnDecl,
+}
+
+impl ConstantSuffix<'_> {
+    fn constructs_target(&self, callee: &ast::Expr) -> bool {
+        let ast::Expr::Path(path) = callee else {
+            return false;
+        };
+        self.declarations
+            .resolved()
+            .resolved(path.span)
+            .and_then(|owner| self.declarations.nominal_owner(owner))
+            == Some(self.target)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -49,7 +62,7 @@ struct LoweringContext<'a> {
     hierarchy: &'a Hierarchy,
     root_path: &'a str,
     process_ir: &'a mut ProcessIr,
-    suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
+    suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix<'a>>>,
     constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
     /// Type aliases by resolver identity, for a local declared through one
     /// (`let h: binary16`) to find the index range its type denotes.
@@ -909,11 +922,13 @@ fn process_aggregate_layout_for_type(
     aggregate.then(|| process_layout_for_type(ty, span, context))?
 }
 
-fn constant_suffixes(
-    modules: &[Module],
-    resolved: &Resolved,
-) -> std::collections::HashMap<String, Vec<ConstantSuffix>> {
-    let mut suffixes = std::collections::HashMap::<String, Vec<ConstantSuffix>>::new();
+fn constant_suffixes<'a>(
+    modules: &'a [Module],
+    functions: &'a crate::ir::FunctionIndex<'a>,
+) -> std::collections::HashMap<String, Vec<ConstantSuffix<'a>>> {
+    let resolved = functions.resolved();
+    let declarations = functions.declarations();
+    let mut suffixes = std::collections::HashMap::<String, Vec<ConstantSuffix<'a>>>::new();
     for implementation in modules.iter().flat_map(|module| &module.items) {
         let ast::Item::Impl(implementation) = implementation else {
             continue;
@@ -930,21 +945,28 @@ fn constant_suffixes(
         else {
             continue;
         };
-        let Some(target) = type_leaf(&implementation.target) else {
+        let Some(target) = declarations.scalar_type_id(&implementation.target) else {
             continue;
         };
         for item in &implementation.items {
             let ast::ImplItem::Fn(function) = item else {
                 continue;
             };
+            if function.name.text != "suffix" {
+                continue;
+            }
             let Some(body) = &function.body else { continue };
             let Some(parameter) = function.params.iter().find(|parameter| !parameter.is_self)
             else {
                 continue;
             };
-            let domain = match parameter.ty.as_ref().and_then(type_leaf) {
-                Some("integer") => SuffixDomain::Integer,
-                Some("real") => SuffixDomain::Real,
+            let domain = match parameter
+                .ty
+                .as_ref()
+                .and_then(|ty| declarations.scalar_type_id(ty))
+            {
+                Some(id) if Some(id) == resolved.builtin("integer") => SuffixDomain::Integer,
+                Some(id) if Some(id) == resolved.builtin("real") => SuffixDomain::Real,
                 _ => continue,
             };
             let Some(parameter_name) = parameter.name.as_ref() else {
@@ -954,11 +976,12 @@ fn constant_suffixes(
                 .entry(symbol.clone())
                 .or_default()
                 .push(ConstantSuffix {
-                    target: target.to_string(),
-                    parameter: parameter_name.text.clone(),
+                    target,
+                    declarations,
+                    parameter: &parameter_name.text,
                     domain,
-                    body: body.clone(),
-                    function: function.clone(),
+                    body,
+                    function,
                 });
         }
     }
@@ -975,7 +998,11 @@ fn integer_literal_u64(text: &str) -> Option<u64> {
         .then(|| words.first().copied().unwrap_or(0))
 }
 
-fn eval_suffix_expr(expression: &ast::Expr, suffix: &ConstantSuffix, input: u64) -> Option<u64> {
+fn eval_suffix_expr(
+    expression: &ast::Expr,
+    suffix: &ConstantSuffix<'_>,
+    input: u64,
+) -> Option<u64> {
     match expression {
         ast::Expr::Int { text, .. } => integer_literal_u64(text),
         ast::Expr::Path(path)
@@ -984,7 +1011,7 @@ fn eval_suffix_expr(expression: &ast::Expr, suffix: &ConstantSuffix, input: u64)
             Some(input)
         }
         ast::Expr::Call { callee, args, .. }
-            if callee_name(callee) == suffix.target && args.len() == 1 =>
+            if suffix.constructs_target(callee) && args.len() == 1 =>
         {
             eval_suffix_expr(&args[0], suffix, input)
         }
@@ -1035,7 +1062,7 @@ fn eval_suffix_expr(expression: &ast::Expr, suffix: &ConstantSuffix, input: u64)
     }
 }
 
-fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: u64) -> Option<u64> {
+fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix<'_>, input: u64) -> Option<u64> {
     for statement in &block.stmts {
         match statement {
             ast::Stmt::Return {
@@ -1068,7 +1095,7 @@ fn real_literal(text: &str) -> Option<f64> {
 
 fn eval_real_suffix_expr(
     expression: &ast::Expr,
-    suffix: &ConstantSuffix,
+    suffix: &ConstantSuffix<'_>,
     input: f64,
 ) -> Option<f64> {
     match expression {
@@ -1079,7 +1106,7 @@ fn eval_real_suffix_expr(
             Some(input)
         }
         ast::Expr::Call { callee, args, .. }
-            if callee_name(callee) == suffix.target && args.len() == 1 =>
+            if suffix.constructs_target(callee) && args.len() == 1 =>
         {
             eval_real_suffix_expr(&args[0], suffix, input)
         }
@@ -1128,7 +1155,11 @@ fn eval_real_suffix_expr(
     }
 }
 
-fn eval_real_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: f64) -> Option<f64> {
+fn eval_real_suffix_block(
+    block: &ast::Block,
+    suffix: &ConstantSuffix<'_>,
+    input: f64,
+) -> Option<f64> {
     for statement in &block.stmts {
         match statement {
             ast::Stmt::Return {
@@ -1176,7 +1207,7 @@ fn normalized_suffix(
         SuffixDomain::Integer => {
             let input = integer_literal_u64(text)?;
             Some(ProcessNumber::Integer(vec![eval_suffix_block(
-                &suffix.body,
+                suffix.body,
                 suffix,
                 input,
             )?]))
@@ -1184,7 +1215,7 @@ fn normalized_suffix(
         SuffixDomain::Real => {
             let input = real_literal(text)?;
             Some(ProcessNumber::Real(
-                eval_real_suffix_block(&suffix.body, suffix, input)?.to_bits(),
+                eval_real_suffix_block(suffix.body, suffix, input)?.to_bits(),
             ))
         }
     }
@@ -1212,7 +1243,6 @@ pub fn lower(
     // to preserve the runtime's foreground/clock dispatch order.
     let mut process_ir = std::mem::take(&mut design.process_ir);
     let hardware_processes = std::mem::take(&mut process_ir.processes);
-    let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
     let type_aliases = source_type_aliases(modules, resolved);
     let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
@@ -1220,6 +1250,7 @@ pub fn lower(
     let rejected = std::cell::RefCell::new(Vec::new());
     let self_calls = std::cell::RefCell::new(std::collections::HashSet::new());
     let functions = process_functions(modules, resolved, typed);
+    let suffixes = constant_suffixes(modules, &functions);
     let constant_integers = module_constant_integers(modules, &functions);
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
@@ -1269,6 +1300,9 @@ pub fn lower(
             }
         }
 
+        // Storages pushed from here on are function `static let`s, created
+        // as their functions are lowered into this test's processes.
+        let statics_from = process_ir.storages.len();
         // Initializers are ordinary canonical CFGs with an earlier activation
         // boundary. Their locals, returned calls and suspension are real state,
         // never an expression evaluated against a fake process id.
@@ -1560,6 +1594,7 @@ pub fn lower(
             test_processes.push(id);
         }
 
+        initialize_function_statics(&mut process_ir, statics_from, &test_processes);
         process_ir.tests.push(ProcessTest {
             entity: test.entity,
             root: test.root,
@@ -1793,12 +1828,35 @@ pub(super) fn testbench_bindings(
             let Some(storage_prefix) = storage_projection(&connection.signal, storage) else {
                 continue;
             };
-            // A slice or computed index (rendered `[<expr>]`) is no storage
+            // A computed index (rendered `[<expr>]`) is no storage
             // projection: an input reads it as a value.
             if storage_prefix.contains("<expr>") {
                 continue;
             }
             let port_path = format!("{root_path}.{}.{}", child.name, connection.port);
+            // `.inp = ai[2..]`: port position `p` is the slice's `p`-th label
+            // (#358). An open end is as far from the other as the port is
+            // long. ponytail: it reads the array as ascending.
+            let slice = slice_projection(storage_prefix).and_then(|(before, lo, hi)| {
+                let range = design.source_layouts.get(&port_path)?.index_range()?;
+                let own = crate::ir::lower_helpers::loop_range(range.left, range.right);
+                let length = i64::try_from(own.len()).ok()?;
+                let (lo, hi) = match (lo, hi) {
+                    (Some(lo), Some(hi)) => (lo, hi),
+                    (Some(lo), None) => (lo, lo + length - 1),
+                    (None, Some(hi)) => (hi - length + 1, hi),
+                    (None, None) => (0, length - 1),
+                };
+                let selected = crate::ir::lower_helpers::loop_range(lo, hi);
+                (selected.len() == own.len()).then(|| {
+                    let labels: std::collections::HashMap<i64, i64> =
+                        own.into_iter().zip(selected).collect();
+                    (before.to_string(), labels)
+                })
+            });
+            if slice_projection(storage_prefix).is_some() && slice.is_none() {
+                continue;
+            }
             for (index, signal) in design.signals.iter().enumerate() {
                 let port_projection = if signal.path == port_path {
                     ""
@@ -1827,8 +1885,25 @@ pub(super) fn testbench_bindings(
                 ) else {
                     continue;
                 };
+                let projection = match &slice {
+                    Some((before, labels)) => {
+                        let Some((label, rest)) = port_projection
+                            .strip_prefix('[')
+                            .and_then(|inner| inner.split_once(']'))
+                        else {
+                            continue;
+                        };
+                        let Some(selected) =
+                            label.parse().ok().and_then(|label: i64| labels.get(&label))
+                        else {
+                            continue;
+                        };
+                        format!("{before}[{selected}]{rest}")
+                    }
+                    None => format!("{storage_prefix}{port_projection}"),
+                };
                 bindings.push(ProcessStorageBinding {
-                    projection: format!("{storage_prefix}{port_projection}"),
+                    projection,
                     signal: SignalId(index),
                     direction,
                 });
@@ -1864,6 +1939,22 @@ pub(super) fn testbench_bindings(
     bindings
         .dedup_by(|left, right| left.projection == right.projection && left.signal == right.signal);
     bindings
+}
+
+/// A storage projection ending in a slice (`[2..]`, `.v[1..2]`): what comes
+/// before it, and its bounds, `None` where open.
+fn slice_projection(projection: &str) -> Option<(&str, Option<i64>, Option<i64>)> {
+    let inner = projection.strip_suffix(']')?;
+    let open = inner.rfind('[')?;
+    let (lo, hi) = inner[open + 1..].split_once("..")?;
+    let bound = |text: &str| -> Option<Option<i64>> {
+        if text.is_empty() {
+            Some(None)
+        } else {
+            text.parse().ok().map(Some)
+        }
+    };
+    Some((&projection[..open], bound(lo)?, bound(hi)?))
 }
 
 /// Suffix of a connected source path relative to a storage root.
@@ -2043,10 +2134,33 @@ fn lower_legacy_process(
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
+    let entity = context.hierarchy.instance(owner).entity_id;
+    let all_items =
+        crate::testbench::implementation_items(context.modules, context.resolved, entity);
+    let instance_arrays: std::collections::HashSet<String> = all_items
+        .iter()
+        .filter_map(|item| match item {
+            ImplItem::Let(declaration)
+                if matches!(declaration.ty, Some(ast::Type::Indexed { .. }))
+                    && declaration_is_entity(declaration, context.resolved) =>
+            {
+                Some(declaration.name.text.clone())
+            }
+            _ => None,
+        })
+        .collect();
     let mut current = Some(ProcessBlockId(0));
     for item in items {
         let Some(block) = current else { break };
         current = match item {
+            ImplItem::Stmt(statement) if !instance_arrays.is_empty() => {
+                let mut block = Some(block);
+                for statement in instance_array_statements(statement, &instance_arrays) {
+                    let Some(at) = block else { break };
+                    block = lower_statement(&statement, context, &mut process, at);
+                }
+                block
+            }
             ImplItem::Stmt(statement) => lower_statement(statement, context, &mut process, block),
             ImplItem::Let(declaration) if declaration_is_entity(declaration, context.resolved) => {
                 lower_ordered_instance_connections(declaration, context, &mut process, block)
@@ -2059,6 +2173,85 @@ fn lower_legacy_process(
     }
     cfg_calls::lower_value_calls(&mut process, context);
     process
+}
+
+/// A testbench's instance arrays (`let stage: Cell[N];`) are hardware, so a
+/// `for` over constant bounds that touches one is a generate loop: unrolled,
+/// each slot named by its index. Building a slot (`stage[i] = Cell { .din =
+/// x }`, or `= { .. }`) writes the ports it names (#290).
+fn instance_array_statements(
+    statement: &Stmt,
+    arrays: &std::collections::HashSet<String>,
+) -> Vec<Stmt> {
+    let touches = |statement: &Stmt| {
+        let text = crate::syntax::pretty::print_stmts(std::slice::from_ref(statement));
+        arrays.iter().any(|name| text.contains(&format!("{name}[")))
+    };
+    match statement {
+        Stmt::For {
+            var,
+            range: ast::Expr::Range { lo, hi, .. },
+            body,
+            ..
+        } if touches(statement) => {
+            let (Some(left), Some(right)) = (literal_arithmetic(lo), literal_arithmetic(hi)) else {
+                return vec![statement.clone()];
+            };
+            let (Ok(left), Ok(right)) = (i64::try_from(left), i64::try_from(right)) else {
+                return vec![statement.clone()];
+            };
+            crate::ir::lower_helpers::loop_range(left, right)
+                .into_iter()
+                .flat_map(|index| {
+                    body.stmts.iter().map(move |inner| {
+                        crate::ir::lower_helpers::subst_stmt(inner, &var.text, index)
+                    })
+                })
+                .flat_map(|inner| instance_array_statements(&inner, arrays))
+                .collect()
+        }
+        Stmt::Assign {
+            target,
+            value: ast::Expr::Construct { args, .. },
+            span,
+            ..
+        } if expr_path_root(target).is_some_and(|root| arrays.contains(&root)) => args
+            .iter()
+            .filter_map(|argument| {
+                Some(Stmt::Assign {
+                    label: None,
+                    target: ast::Expr::Field {
+                        base: Box::new(target.clone()),
+                        field: argument.field.clone()?,
+                        span: *span,
+                    },
+                    value: argument.value.clone()?,
+                    after: None,
+                    span: *span,
+                })
+            })
+            .collect(),
+        // `stage[i] = {}` lexes as an empty concatenation: nothing to wire.
+        Stmt::Assign {
+            target,
+            value: ast::Expr::Concat { parts, .. },
+            ..
+        } if parts.is_empty()
+            && expr_path_root(target).is_some_and(|root| arrays.contains(&root)) =>
+        {
+            Vec::new()
+        }
+        _ => vec![statement.clone()],
+    }
+}
+
+/// The name an access path starts from: `stage` of `stage[1].din`.
+fn expr_path_root(expression: &ast::Expr) -> Option<String> {
+    match expression {
+        ast::Expr::Path(path) if path.segments.len() == 1 => Some(path.segments[0].text.clone()),
+        ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => expr_path_root(base),
+        _ => None,
+    }
 }
 
 /// Resolve the declaration's annotated type through generic/index wrappers.
@@ -2486,6 +2679,17 @@ fn lower_statement(
             let name = crate::syntax::pretty::expr_string(target);
             lower_instance_value_connections(&name, value, *span, context, process, block)
         }
+        // The checker rejects a generate-built process in a testbench.
+        Stmt::Process(_) => None,
+        // A function's `static let` is one copy per function: storage on the
+        // test root that every call shares. A process's is an ordinary local,
+        // since a testbench process runs its body once.
+        Stmt::Let(declaration)
+            if declaration.is_static && !context.inline_return_blocks.is_empty() =>
+        {
+            lower_function_static(declaration, process, context);
+            Some(block)
+        }
         // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
         // struct's construct has no field types to give its values, but the
         // local is laid out from its declaration (#196). Declared bare and
@@ -2641,6 +2845,18 @@ fn lower_statement(
             });
             lower_statement(&call, context, process, block)
         }
+        // `rx.data[i] = v`, `stage[i].din = v`: a runtime index into design
+        // signals, written as an `if` chain over the array's labels.
+        Stmt::Assign {
+            target,
+            value,
+            after: None,
+            span,
+            ..
+        } if dynamic_signal_write(target, value, *span, process, context).is_some() => {
+            let chain = dynamic_signal_write(target, value, *span, process, context)?;
+            lower_statement(&chain, context, process, block)
+        }
         Stmt::Assign {
             target,
             value,
@@ -2684,6 +2900,23 @@ fn lower_statement(
             Some(block)
         }
         Stmt::If(statement) => lower_if(statement, context, process, block),
+        // `while c { body }`: a header that tests `c` before every pass, a
+        // body that loops back to it, and the exit after it.
+        Stmt::While { cond, body, .. } => {
+            let header = process.push_block();
+            let body_block = process.push_block();
+            let exit = process.push_block();
+            process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(header);
+            process.blocks[header.0 as usize].terminator = ProcessTerminator::Branch {
+                condition: value_ref(cond, process, context),
+                then_block: body_block,
+                else_block: exit,
+            };
+            if let Some(tail) = lower_statements(&body.stmts, context, process, body_block) {
+                process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(header);
+            }
+            Some(exit)
+        }
         Stmt::Match(statement) => lower_match(statement, context, process, block),
         Stmt::For {
             var,
@@ -3243,12 +3476,35 @@ fn lower_call(
             let wait = process.push_block();
             let settle = process.push_block();
             let resume = process.push_block();
-            process.blocks[block.0 as usize].terminator =
-                ProcessTerminator::Goto(if arguments.first().is_some_and(await_is_event) {
-                    wait
-                } else {
-                    check
-                });
+            // `await c for t`: the first suspension arms the timer, which
+            // resumes straight past the check; later ones wait as usual and
+            // the settle after a met condition disarms it.
+            let first = match lowered_arguments.get(1) {
+                Some(&delay) => {
+                    let first = process.push_block();
+                    let first_check = process.push_block();
+                    process.blocks[first.0 as usize].terminator = ProcessTerminator::Suspend {
+                        operation: ProcessSuspendOp::AwaitConditionFor { timeout: resume },
+                        arguments: vec![delay],
+                        resume: check,
+                        span,
+                    };
+                    process.blocks[first_check.0 as usize].terminator = ProcessTerminator::Branch {
+                        condition,
+                        then_block: settle,
+                        else_block: first,
+                    };
+                    Some((first, first_check))
+                }
+                None => None,
+            };
+            let entry = match first {
+                Some((first, _)) if arguments.first().is_some_and(await_is_event) => first,
+                Some((_, first_check)) => first_check,
+                None if arguments.first().is_some_and(await_is_event) => wait,
+                None => check,
+            };
+            process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
             process.blocks[check.0 as usize].terminator = ProcessTerminator::Branch {
                 condition,
                 then_block: settle,
@@ -3616,13 +3872,18 @@ fn capture_process_operand(
         return value;
     }
     let local = ProcessLocalId(process.locals.len() as u32);
+    // A checked runtime index is the label it passed with, a plain word: as
+    // the index's own `unsigned[2]` it needed metavalue planes it has none
+    // of, and `swap(arr[i], arr[j])` did not lower (#348).
+    let checked = matches!(node.kind, ProcessValueKind::CheckedIndex { .. });
     let layout = process_value_source_layout(value, context.process_ir)
         .cloned()
         .or_else(|| {
             node.ty
                 .as_ref()
                 .and_then(|ty| process_layout_for_type(ty, node.span, context))
-        });
+        })
+        .filter(|_| !checked);
     // A kernel integer wider than its word (`x << 6` keeps the operand's
     // bits) wraps to the word it is captured as, as any `integer` does.
     let word = layout.as_ref().and_then(SourceLayout::packed_width);
@@ -4650,6 +4911,34 @@ fn operand_type(
     ty
 }
 
+/// A value stored where an `impl Into` converts it: the impl's `into`,
+/// inlined with the value as `self` (conversions proposal). The span is held
+/// while the receiver lowers, so it lowers unconverted.
+fn process_converted_value(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let span = ast::expr_span(expression);
+    if context.widening.contains(&span) {
+        return None;
+    }
+    let conversion = context.typed.conversion(span)?.clone();
+    let function = context.functions.get_into(conversion.function)?;
+    context.widening.insert(span);
+    let receiver = value_ref(expression, process, context);
+    context.widening.remove(&span);
+    inline_process_function(
+        function,
+        span,
+        Some(receiver),
+        &[],
+        process,
+        context,
+        Some(&conversion.target),
+    )
+}
+
 /// `expression` widened to its promoted type (spec 3.17) through std's
 /// `From<Source>` impl for that type, inlined with `Self` as the promoted
 /// format. `None` when it does not widen.
@@ -5504,21 +5793,6 @@ fn compare_values(
     Some(bool_binary(operation, left, right, span, context))
 }
 
-/// Whether two lowered constants are written high-to-low, so a range of them
-/// is the same set swapped. `None` when either is not a known number.
-fn bounds_descend(
-    low: ProcessValueId,
-    high: ProcessValueId,
-    context: &LoweringContext<'_>,
-) -> Option<bool> {
-    let number =
-        |value: ProcessValueId| match &context.process_ir.values.get(value.0 as usize)?.kind {
-            ProcessValueKind::Number(ProcessNumber::Real(bits)) => Some(f64::from_bits(*bits)),
-            _ => constant_integer(value, context).map(|value| value as f64),
-        };
-    Some(number(low)? > number(high)?)
-}
-
 /// The condition one pattern puts on a lowered scrutinee.
 fn pattern_condition(
     pattern: &ast::Pattern,
@@ -5559,8 +5833,73 @@ fn pattern_condition(
                 .as_deref()
                 .map(|bound| value_ref_with_type(bound, process, context, scrutinee_type));
             if let (Some(l), Some(h)) = (low, high) {
-                if bounds_descend(l, h, context) == Some(true) {
-                    std::mem::swap(&mut low, &mut high);
+                use crate::types::consteval::RangeOrder;
+                let owner = scrutinee_type.and_then(|ty| match ty {
+                    crate::types::Ty::Named(owner)
+                        if context.resolved.kind_of(*owner)
+                            == Some(crate::resolve::DefKind::Enum) =>
+                    {
+                        Some(*owner)
+                    }
+                    _ => None,
+                });
+                let order = crate::ir::lower_helpers::eval_range_order_fns(
+                    lo.as_deref()?,
+                    hi.as_deref()?,
+                    context.constant_integers,
+                    context.functions,
+                    owner,
+                );
+                match order {
+                    Some(RangeOrder::Forward) => {}
+                    Some(RangeOrder::Reversed) => std::mem::swap(&mut low, &mut high),
+                    Some(RangeOrder::Unordered) => return Some(bool_value(false, span, context)),
+                    None => {
+                        let interval = |lower, upper, context: &mut LoweringContext<'_>| {
+                            let direction = compare_values(
+                                ast::BinOp::Le,
+                                lower,
+                                upper,
+                                span,
+                                process,
+                                context,
+                            )?;
+                            let above = compare_values(
+                                ast::BinOp::Le,
+                                lower,
+                                scrutinee,
+                                span,
+                                process,
+                                context,
+                            )?;
+                            let below = compare_values(
+                                ast::BinOp::Le,
+                                scrutinee,
+                                upper,
+                                span,
+                                process,
+                                context,
+                            )?;
+                            let inside =
+                                bool_binary(ProcessBinaryOp::And, above, below, span, context);
+                            Some(bool_binary(
+                                ProcessBinaryOp::And,
+                                direction,
+                                inside,
+                                span,
+                                context,
+                            ))
+                        };
+                        let forward = interval(l, h, context)?;
+                        let reversed = interval(h, l, context)?;
+                        return Some(bool_binary(
+                            ProcessBinaryOp::Or,
+                            forward,
+                            reversed,
+                            span,
+                            context,
+                        ));
+                    }
                 }
             }
             let above = match low {
@@ -6339,6 +6678,98 @@ fn push_local(
         layout,
     });
     id
+}
+
+/// A root's initialization CFG owns every initializer write, so a function
+/// static's retained initializer is written first in it, before any other
+/// initializer can call the function. Without one, the backend applies the
+/// retained initializer itself.
+fn initialize_function_statics(
+    process_ir: &mut ProcessIr,
+    statics_from: usize,
+    test_processes: &[ProcessId],
+) {
+    let Some(&init) = test_processes.iter().find(|id| {
+        matches!(
+            process_ir.processes[id.0 as usize].activation,
+            ProcessActivation::Initialization
+        )
+    }) else {
+        return;
+    };
+    for index in (statics_from..process_ir.storages.len()).rev() {
+        let storage = &process_ir.storages[index];
+        let (id, span) = (storage.id, storage.span);
+        let Some(value) = storage.initializer else {
+            continue;
+        };
+        // Any value naming the storage is a place for it; an unread,
+        // unwritten static has none and needs no write.
+        let Some(target) = process_ir
+            .values
+            .iter()
+            .position(|value| matches!(value.kind, ProcessValueKind::Storage(at) if at == id))
+        else {
+            continue;
+        };
+        let process = &mut process_ir.processes[init.0 as usize];
+        let entry = process.entry.0 as usize;
+        process.blocks[entry].instructions.insert(
+            0,
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateStorage,
+                driver_context: None,
+                target: crate::ir::ProcessValueId(target as u32),
+                value,
+                span,
+            },
+        );
+    }
+}
+
+/// Create the storage of a function's `static let` on first reach: one per
+/// test root and declaration, found again by every later call. Its constant
+/// initializer is retained on the storage; the per-test tail moves it into
+/// the root's initialization CFG when there is one, so it is written once
+/// before any process runs.
+fn lower_function_static(
+    declaration: &ast::LetDecl,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let Some(definition) = context.resolved.declared(declaration.name.span) else {
+        return;
+    };
+    let owner = process.owner;
+    if context
+        .process_ir
+        .storages
+        .iter()
+        .any(|storage| storage.owner == owner && storage.source == Some(definition))
+    {
+        return;
+    }
+    // The type and layout a local of this declaration would have.
+    push_local(process, declaration, context);
+    let Some(local) = process.locals.pop() else {
+        return;
+    };
+    let initializer = declaration
+        .value
+        .as_ref()
+        .map(|value| value_ref_with_type(value, process, context, local.ty.as_ref()));
+    let id = ProcessStorageId(context.process_ir.storages.len() as u32);
+    context.process_ir.storages.push(ProcessStorage {
+        id,
+        owner,
+        name: format!("<static>{}", declaration.name.text),
+        source: Some(definition),
+        span: declaration.span,
+        ty: local.ty,
+        layout: local.layout,
+        initializer,
+        bindings: Vec::new(),
+    });
 }
 
 /// Resolve an enum-variant declaration to its elaborated discriminant while
@@ -7610,10 +8041,19 @@ fn lower_process_default(
     if !type_args.is_empty() || !args.is_empty() || context.functions.get(callee).is_some() {
         return None;
     }
+    // `Counter::new()` the type declares (inherent or `impl Default`) is that
+    // function, not the structural default: it read as all zeros (#361).
+    if matches!(callee.as_ref(), ast::Expr::Path(_)) && context.functions.get(callee).is_some() {
+        return None;
+    }
     let definition = match callee.as_ref() {
-        ast::Expr::Path(path) if path.segments.last()?.text == "new" => context
-            .resolved
-            .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span),
+        ast::Expr::Path(path)
+            if matches!(path.segments.last()?.text.as_str(), "default" | "new") =>
+        {
+            context
+                .resolved
+                .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span)
+        }
         ast::Expr::Path(path) => context.resolved.resolved(path.span),
         ast::Expr::Index { base, .. } => match base.as_ref() {
             ast::Expr::Path(path) => context.resolved.resolved(path.span),
@@ -7747,9 +8187,17 @@ fn lower_process_foreign_call(
     let mut arguments = Vec::with_capacity(args.len());
     let mut float_arguments = Vec::with_capacity(args.len());
     let mut integer_arguments = Vec::with_capacity(args.len());
+    let mut pointer_arguments = Vec::with_capacity(args.len());
     for (argument, parameter) in args.iter().zip(parameters) {
         let actual = context.typed.expr_type(ast::expr_span(argument)).cloned();
         let (float, integer) = abi_kind(parameter.ty.as_ref(), actual.as_ref());
+        // A struct, fixed array or wide packed value crosses by pointer
+        // (checked by the types pass).
+        pointer_arguments.push(
+            actual
+                .as_ref()
+                .is_some_and(|ty| ty.is_c_aggregate() && !is_c_handle(ty, context.resolved)),
+        );
         arguments.push(value_ref_with_type(
             argument,
             process,
@@ -7771,6 +8219,9 @@ fn lower_process_foreign_call(
             .cloned()
             .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)))
     };
+    let aggregate_result = ty
+        .as_ref()
+        .is_some_and(|ty| ty.is_c_aggregate() && !is_c_handle(ty, context.resolved));
     let kind = ProcessValueKind::ForeignCall {
         name: function.name.text.clone(),
         arguments,
@@ -7781,9 +8232,28 @@ fn lower_process_foreign_call(
         void_result,
         c_arguments,
         c_result,
+        pointer_arguments,
+        aggregate_result,
     };
-    let width = source_value_width(&kind, ty.as_ref(), process, context);
-    Some(push_value(*span, ty, width, kind, context))
+    // A struct result is the whole aggregate, laid out by its type.
+    let layout = aggregate_result
+        .then(|| process_layout_for_type(ty.as_ref()?, *span, context))
+        .flatten();
+    let width = match &layout {
+        Some(layout) => layout.packed_width(),
+        None => source_value_width(&kind, ty.as_ref(), process, context),
+    };
+    let call = push_value(*span, ty, width, kind, context);
+    if layout.is_some() {
+        context.process_ir.value_layouts[call.0 as usize] = layout;
+    }
+    Some(call)
+}
+
+/// Whether `ty` is `std::ffi::Handle`: an opaque C pointer, which crosses
+/// `extern "C"` by value rather than by pointer as other structs do.
+fn is_c_handle(ty: &crate::types::Ty, resolved: &Resolved) -> bool {
+    matches!(ty, crate::types::Ty::Named(id) if resolved.lang_of(*id) == Some("c_handle"))
 }
 
 /// Normalize deterministic randomization before it can become a generic
@@ -8105,6 +8575,102 @@ fn symbol_encode(
         );
     }
     Some(result)
+}
+
+/// A write through a runtime index into an array of design signals (a
+/// child's array port, an instance array): the staged write has a form only
+/// at a constant element, so it is an `if` chain over the array's labels,
+/// each branch writing one element (#309, #310, #312). `None` for any other
+/// target.
+fn dynamic_signal_write(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<Stmt> {
+    // The first runtime index from the root: the array it selects in.
+    fn first_dynamic(expression: &ast::Expr) -> Option<(&ast::Expr, &ast::Expr)> {
+        match expression {
+            ast::Expr::Field { base, .. } => first_dynamic(base),
+            ast::Expr::Index { base, index, .. } => first_dynamic(base).or_else(|| {
+                (literal_arithmetic(index).is_none()
+                    && !matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    ))
+                .then_some((base.as_ref(), index.as_ref()))
+            }),
+            _ => None,
+        }
+    }
+    let (base, index) = first_dynamic(target)?;
+    signal_reference(base, process, context)?;
+    let path = format!(
+        "{}.{}",
+        context.root_path,
+        crate::syntax::pretty::expr_string(base)
+    );
+    let range = context.design.source_layouts.get(&path)?.index_range()?;
+    let labels = layout_labels(range)?;
+    crate::ir::lower_helpers::label_chain(target, value, index, &labels, span)
+}
+
+/// An instance array's layout with each instance as the struct of its
+/// ports: the design records the instance itself as opaque, which has no
+/// width to select an element by (#309, #312). The ports are the first
+/// slot's, in signal order, with their own recorded layouts.
+fn instance_array_layout(
+    path: &str,
+    layout: crate::ir::SourceLayout,
+    design: &Design,
+) -> crate::ir::SourceLayout {
+    let LayoutKind::Array {
+        range: Some(range),
+        element,
+    } = &layout.kind
+    else {
+        return layout;
+    };
+    let LayoutKind::Opaque { name, .. } = &element.kind else {
+        return layout;
+    };
+    let slot = format!("{path}[{}].", range.left);
+    let mut fields: Vec<crate::ir::LayoutField> = Vec::new();
+    for signal in &design.signals {
+        let Some(rest) = signal.path.strip_prefix(&slot) else {
+            continue;
+        };
+        let port = rest.split(['.', '[']).next().unwrap_or(rest).to_string();
+        if fields.iter().any(|field| field.name == port) {
+            continue;
+        }
+        let Some(port_layout) = design.source_layouts.get(&format!("{slot}{port}")) else {
+            return layout;
+        };
+        fields.push(crate::ir::LayoutField {
+            name: port,
+            direction: None,
+            layout: port_layout.clone(),
+        });
+    }
+    if fields.is_empty() {
+        return layout;
+    }
+    crate::ir::SourceLayout {
+        span: layout.span,
+        kind: LayoutKind::Array {
+            range: Some(*range),
+            element: Box::new(crate::ir::SourceLayout {
+                span: element.span,
+                kind: LayoutKind::Struct {
+                    name: name.clone(),
+                    view: None,
+                    fields,
+                },
+            }),
+        },
+    }
 }
 
 /// The runtime array element read (`StringIndex`) a place is rooted in, and
@@ -9700,7 +10266,31 @@ fn inline_process_binary_operator(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
-    result.map(|result| inherit_receiver_layout(result, left, context))
+    result.map(|result| {
+        let result = inherit_receiver_layout(result, left, context);
+        label_declared_result(result, function.ret.as_ref(), context);
+        result
+    })
+}
+
+/// An operator impl that writes its result's range (`-> unsigned[6..4]`, or
+/// an alias of one) labels the result so: the checked type carries only the
+/// width, and `(a clip b)'left` read 0 where hardware read 6 (#144).
+fn label_declared_result(
+    result: ProcessValueId,
+    declared: Option<&ast::Type>,
+    context: &mut LoweringContext<'_>,
+) {
+    let Some(declared) = declared else {
+        return;
+    };
+    let Some(mut layout) = process_value_source_layout(result, context.process_ir).cloned() else {
+        return;
+    };
+    let mut aliases = std::collections::HashSet::new();
+    if apply_process_declared_ranges(&mut layout, declared, context, &mut aliases).is_some() {
+        context.process_ir.value_layouts[result.0 as usize] = Some(layout);
+    }
 }
 
 /// A comparison on a type with an `Eq`/`Ord` impl (spec 3.25) calls its
@@ -9999,6 +10589,8 @@ fn inline_value_statements(
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
     let (statement, rest) = statements.split_first()?;
     match *statement {
+        // A `static let` is shared state, not a value: the CFG form keeps it.
+        Stmt::Let(declaration) if declaration.is_static => None,
         Stmt::Return {
             value: Some(value), ..
         } => {
@@ -10257,8 +10849,53 @@ fn inline_pattern_condition(
             }
             return Some(condition);
         }
+        // A number (`0 =>`) or an inclusive range (`1..9 =>`) of literals:
+        // a function matching on one did not inline (#347).
+        ast::Pattern::Range { lo, hi, span } => {
+            let node = context.process_ir.values.get(scrutinee.0 as usize)?;
+            let (ty, width) = (node.ty.clone(), node.bit_width);
+            let signed = ty.as_ref().is_some_and(process_type_is_signed);
+            if !signed && *lo < 0 {
+                return None;
+            }
+            let bound = |value: i64, context: &mut LoweringContext<'_>| {
+                push_value(
+                    *span,
+                    ty.clone(),
+                    width,
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64])),
+                    context,
+                )
+            };
+            if lo == hi {
+                let candidate = bound(*lo, context);
+                return Some(Some(push_inline_binary(
+                    *span,
+                    ProcessBinaryOp::Eq,
+                    scrutinee,
+                    candidate,
+                    Some(1),
+                    context,
+                )));
+            }
+            let (ge, le) = if signed {
+                (ProcessBinaryOp::SignedGe, ProcessBinaryOp::SignedLe)
+            } else {
+                (ProcessBinaryOp::Ge, ProcessBinaryOp::Le)
+            };
+            let (low, high) = (bound(*lo.min(hi), context), bound(*lo.max(hi), context));
+            let above = push_inline_binary(*span, ge, scrutinee, low, Some(1), context);
+            let below = push_inline_binary(*span, le, scrutinee, high, Some(1), context);
+            return Some(Some(push_inline_binary(
+                *span,
+                ProcessBinaryOp::And,
+                above,
+                below,
+                Some(1),
+                context,
+            )));
+        }
         ast::Pattern::BitPattern { .. }
-        | ast::Pattern::Range { .. }
         | ast::Pattern::Bounds { .. }
         | ast::Pattern::Tuple { .. } => return None,
     };
@@ -10464,30 +11101,19 @@ fn struct_suffix_literal(
     }
     // This literal's impl, by its symbol: any `suffix` of the type picked
     // `ms`'s for an `ns`.
-    let leaf = context.resolved.def(definition)?.name.clone();
-    let function = context
+    let implementation = context
         .suffixes
         .get(&suffix.text)?
         .iter()
-        .find(|entry| entry.target == leaf)?
-        .function
-        .clone();
-    let function = &function;
-    let parameter = function
-        .params
-        .iter()
-        .find(|parameter| !parameter.is_self)?
-        .ty
-        .as_ref()
-        .and_then(crate::ir::lower_helpers::type_head_name)?;
-    let (number, number_type, width) = match parameter {
-        "real" => (
+        .find(|entry| entry.target == definition)?;
+    let function = implementation.function;
+    let (number, number_type, width) = match implementation.domain {
+        SuffixDomain::Real => (
             ProcessNumber::Real(real_literal(text)?.to_bits()),
             crate::types::Ty::Real,
             64,
         ),
-        "integer" => (parse_number(text, None), crate::types::Ty::Integer, 64),
-        _ => return None,
+        SuffixDomain::Integer => (parse_number(text, None), crate::types::Ty::Integer, 64),
     };
     let argument = push_value(
         *span,
@@ -10513,6 +11139,9 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let Some(value) = process_converted_value(expression, process, context) {
+        return value;
+    }
     if matches!(expression, ast::Expr::Range { .. })
         && matches!(contextual_type, Some(crate::types::Ty::Named(owner))
             if context.resolved.lang("range") == Some(*owner))
@@ -10952,6 +11581,7 @@ fn value_ref_with_type_inner(
                     state: ProcessSignalState::Current,
                 }
             } else {
+                let base_source = &**base;
                 let base = value_ref(base, process, context);
                 // An element of a computed vector (`(not u)[2]`) decodes
                 // through the vector's layout, which an operator result
@@ -10985,6 +11615,36 @@ fn value_ref_with_type_inner(
                         }
                     }
                 }
+                // `arr[lo..hi]` with bounds known only when the test runs, of
+                // a fixed array: a runtime array of its elements, sliced as
+                // one is (#317). Positions count from the array's first label.
+                let runtime_bounds = match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => {
+                        literal_arithmetic(lo).is_none() || literal_arithmetic(hi).is_none()
+                    }
+                    ast::Expr::PartialRange { lo, hi, .. } => [lo, hi]
+                        .into_iter()
+                        .flatten()
+                        .any(|bound| literal_arithmetic(bound).is_none()),
+                    _ => false,
+                };
+                let base = match process_value_type(base, context) {
+                    Some(crate::types::Ty::Array {
+                        elem,
+                        len,
+                        family: None,
+                        ..
+                    }) if runtime_bounds && len > 0 => {
+                        let runtime = crate::types::Ty::Array {
+                            elem,
+                            len: 0,
+                            family: None,
+                            low: 0,
+                        };
+                        runtime_array_copy(base, Some(&runtime), context)
+                    }
+                    _ => base,
+                };
                 if process_value_is_runtime_string(base, process, context) {
                     // `s[1..3]`: a new string (or array) of those elements.
                     // As an index, the range had no native form (#160).
@@ -11107,6 +11767,20 @@ fn value_ref_with_type_inner(
                         };
                         (*owner == process.id)
                             .then(|| process.locals.get(local.0 as usize)?.layout.clone())?
+                    })
+                    // A child's array port (`rx.data`) or an instance array
+                    // (`rxs`) read as its group of signals: the layout the
+                    // design keeps for its path (#309, #310, #312).
+                    .or_else(|| {
+                        let path = format!(
+                            "{}.{}",
+                            context.root_path,
+                            crate::syntax::pretty::expr_string(base_source)
+                        );
+                        let layout = context.design.source_layouts.get(&path)?.clone();
+                        let layout = instance_array_layout(&path, layout, context.design);
+                        context.process_ir.value_layouts[base.0 as usize] = Some(layout.clone());
+                        Some(layout)
                     });
                 let bounds = base_layout
                     .as_ref()
@@ -11180,9 +11854,27 @@ fn value_ref_with_type_inner(
                 // The selected element is a source enum, not a raw bit.
                 // Named enum widths come from the elaborated declaration;
                 // Ty::bit_width alone cannot represent a Logic discriminant.
+                // An element whose type has no width of its own (an instance
+                // of an instance array, a struct element of a child's port)
+                // takes its element layout's, and that layout for the field
+                // read after it (#309, #312).
+                let element = base_layout.as_ref().and_then(|layout| match &layout.kind {
+                    LayoutKind::Array { element, .. } => Some((**element).clone()),
+                    _ => None,
+                });
                 let width = source_value_width(&kind, ty.as_ref(), process, context)
-                    .or_else(|| packed.then_some(1));
-                return push_value(span, ty, width, kind, context);
+                    .or_else(|| packed.then_some(1))
+                    .or_else(|| {
+                        element
+                            .as_ref()
+                            .and_then(crate::ir::SourceLayout::bit_width)
+                            .and_then(|width| u32::try_from(width).ok())
+                    });
+                let id = push_value(span, ty, width, kind, context);
+                if context.process_ir.value_layouts[id.0 as usize].is_none() {
+                    context.process_ir.value_layouts[id.0 as usize] = element;
+                }
+                return id;
             }
         }
         ast::Expr::Range { lo, hi, .. } => ProcessValueKind::Range {
@@ -12849,14 +13541,14 @@ mod tests {
              enum Mode { Off, On }\n\
              enum Cell { Low, High }\n\
              impl Not<Cell> for Cell {\n\
-               fn not(self) -> Cell {\n\
+               fn not() -> Cell {\n\
                  if self == Cell::Low { return Cell::High; }\n\
                  return Cell::Low;\n\
                }\n\
              }\n\
              struct Wrap(integer);\n\
              impl Eq<Wrap> for Wrap {\n\
-               fn eq(self, rhs: Wrap) -> Bool { return true; }\n\
+               fn eq(rhs: Wrap) -> Bool { return true; }\n\
              }\n\
              entity Device { input: Bool in, output: Bool out }\n\
              impl Device { output = input; }\n\
@@ -12898,20 +13590,20 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; pub enum Ordering { Less, Equal, Greater } \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             pub trait Not<Out> { fn not(self) -> Out; } attr lang for Not = \"not\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
-             impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } } \
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             pub trait Not<Out> { fn not() -> Out; } attr lang for Not = \"not\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } } \
+             impl Not<Bool> for Bool { fn not() -> Bool { return self; } } \
              impl<T: Not<T>> Not<T> for T[] { \
-               fn not(self) -> T[] { let result: T[] = self; \
+               fn not() -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
-             pub trait Suffix<symbol: string, input> { fn suffix(data: input) -> Self {} } \
+             pub trait Suffix<symbol: string, input> { static fn suffix(data: input) -> Self {} } \
              attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::{Boolean, Not};",
             "module std::sim; use std::ops::Suffix; pub struct time(integer); attr lang for time = \"time\"; \
              impl Suffix<\"ns\", integer> for time { \
-               fn suffix(value: integer) -> time { return time(value * 37); } \
+               static fn suffix(value: integer) -> time { return time(value * 37); } \
              }",
         ];
         let mut sink = DiagnosticSink::new();
@@ -13304,8 +13996,8 @@ mod tests {
              }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::text; pub type string = Char[];",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::Boolean; pub use std::text::string;",
@@ -13410,8 +14102,8 @@ mod tests {
              }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::Boolean;",
         ];
@@ -13470,8 +14162,8 @@ mod tests {
             "module gates; entity Gate { input: Bool in, output: Bool out } \
              impl Gate { output = input; }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::ops::Boolean;",
         ];
         let mut sink = DiagnosticSink::new();
@@ -13548,8 +14240,8 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; \
              pub use std::attrs::test; pub use std::ops::Boolean;",
         ];
@@ -13628,8 +14320,8 @@ mod tests {
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+             pub trait Boolean { fn as_bool() -> Bool; } attr lang for Boolean = \"boolean\"; \
+             impl Boolean for Bool { fn as_bool() -> Bool { return self; } }",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -13725,7 +14417,7 @@ mod tests {
     fn process_function_index_canonicalizes_families_and_defaults() {
         let sources = [
             "module std::bits; pub struct unsigned(integer);",
-            "module tests; trait Meter { fn label(self) -> integer { return 7; } } \
+            "module tests; trait Meter { fn label() -> integer { return 7; } } \
              struct Plain(integer); impl Meter for Plain {}",
         ];
         let mut sink = DiagnosticSink::new();
@@ -13783,13 +14475,95 @@ mod tests {
     }
 
     #[test]
+    fn suffix_contracts_borrow_source_and_preserve_alias_identity() {
+        let sources = [
+            "module left;
+             pub struct Measure(integer);
+             type Alias = Measure;
+             type Amount = integer;
+             impl Suffix<\"ticks\", integer> for Alias {
+                 static fn helper(value: Amount) -> Alias { return Alias(value + 99); }
+                 static fn suffix(value: Amount) -> Alias { return Alias(value * 37); }
+             }
+             impl Suffix<\"wrong\", integer> for Measure {
+                 static fn suffix(value: integer) -> Measure { return right::Measure(value * 37); }
+             }
+             pub struct Rate(real);
+             type RateAlias = Rate;
+             type Scalar = real;
+             impl Suffix<\"cycles\", real> for RateAlias {
+                 static fn suffix(value: Scalar) -> RateAlias { return RateAlias(value * 1000.0); }
+             }",
+            "module right; pub struct Measure(integer);",
+        ];
+        for reversed in [false, true] {
+            let mut sink = DiagnosticSink::new();
+            let mut modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect();
+            if reversed {
+                modules.reverse();
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            let mut functions = crate::ir::FunctionIndex::new(&resolved);
+            for item in modules.iter().flat_map(|module| &module.items) {
+                functions.insert_declaration(item);
+            }
+            let suffixes = constant_suffixes(&modules, &functions);
+            assert_eq!(suffixes.len(), 3);
+            let [ticks] = suffixes["ticks"].as_slice() else {
+                panic!("only the suffix method is a literal implementation");
+            };
+            assert!(matches!(ticks.domain, SuffixDomain::Integer));
+            assert_eq!(eval_suffix_block(ticks.body, ticks, 2), Some(74));
+            let source = modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .filter_map(|item| match item {
+                    ast::Item::Impl(implementation) => Some(implementation),
+                    _ => None,
+                })
+                .flat_map(|implementation| &implementation.items)
+                .find_map(|item| match item {
+                    ast::ImplItem::Fn(function) if std::ptr::eq(function, ticks.function) => {
+                        Some(function)
+                    }
+                    _ => None,
+                })
+                .expect("the suffix function is borrowed from source");
+            assert!(std::ptr::eq(source.body.as_ref().unwrap(), ticks.body));
+            assert!(std::ptr::eq(
+                source.params[0].name.as_ref().unwrap().text.as_str(),
+                ticks.parameter,
+            ));
+            let [wrong] = suffixes["wrong"].as_slice() else {
+                panic!("one wrong-owner constructor probe");
+            };
+            assert_eq!(eval_suffix_block(wrong.body, wrong, 2), None);
+            let [cycles] = suffixes["cycles"].as_slice() else {
+                panic!("one real suffix implementation");
+            };
+            assert!(matches!(cycles.domain, SuffixDomain::Real));
+            assert_eq!(
+                eval_real_suffix_block(cycles.body, cycles, 2.5),
+                Some(2500.0)
+            );
+        }
+    }
+
+    #[test]
     /// A suffix implementation over `real` is folded from its std source body
     /// just like integer time units, retaining the exact IEEE-754 payload in
     /// canonical Process IR.
     fn real_suffix_body_folds_to_process_number() {
         let source = "module units; struct frequency(real); \
             impl Suffix<\"MHz\", real> for frequency { \
-                fn suffix(value: real) -> frequency { \
+                static fn suffix(value: real) -> frequency { \
                     return frequency(value * 1000000.0); \
                 } \
             }";
@@ -13798,7 +14572,11 @@ mod tests {
         let resolved = crate::resolve::resolve(&modules, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
-        let suffixes = constant_suffixes(&modules, &resolved);
+        let mut functions = crate::ir::FunctionIndex::new(&resolved);
+        for item in modules.iter().flat_map(|module| &module.items) {
+            functions.insert_declaration(item);
+        }
+        let suffixes = constant_suffixes(&modules, &functions);
         let [suffix] = suffixes
             .get("MHz")
             .map(Vec::as_slice)
@@ -13808,7 +14586,7 @@ mod tests {
         };
         assert!(matches!(suffix.domain, SuffixDomain::Real));
         assert_eq!(
-            eval_real_suffix_block(&suffix.body, suffix, 2.5),
+            eval_real_suffix_block(suffix.body, suffix, 2.5),
             Some(2_500_000.0)
         );
     }

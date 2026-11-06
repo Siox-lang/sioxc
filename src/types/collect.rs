@@ -97,6 +97,7 @@ impl<'a> Checker<'a> {
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
             void_extern_fns: HashSet::new(),
+            aggregate_extern_fns: HashSet::new(),
             current_fn: std::cell::Cell::new(None),
             testbench_only_fns: Default::default(),
             fn_callees: Default::default(),
@@ -123,6 +124,8 @@ impl<'a> Checker<'a> {
             type_attr_reads: HashMap::new(),
             metadata_constants: HashMap::new(),
             promotions: HashMap::new(),
+            into_sigs: HashMap::new(),
+            conversions: HashMap::new(),
         }
     }
 
@@ -134,12 +137,13 @@ impl<'a> Checker<'a> {
             type_attr_reads: self.type_attr_reads,
             metadata_constants: self.metadata_constants,
             promotions: self.promotions,
+            conversions: self.conversions,
             covered_tuple_matches: self.covered_tuple_matches,
         }
     }
 
     /// First pass: record entity port types and declared attribute targets.
-    pub(super) fn collect(&mut self, modules: &[Module]) {
+    pub(super) fn collect(&mut self, modules: &'a [Module]) {
         // Two passes: gather type declarations (structs, enums, aliases,
         // attrs, impls) first, so entity-port typing below can already see
         // e.g. `struct unsigned : Logic[]` regardless of module/item order.
@@ -197,6 +201,37 @@ impl<'a> Checker<'a> {
         }
         self.resolve_array_families();
         self.resolve_array_elements();
+        // Checked contracts need every array family and element resolved,
+        // independent of where the implementation appeared in the source.
+        for item in modules.iter().flat_map(|module| &module.items) {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            if implementation
+                .trait_
+                .as_ref()
+                .and_then(|path| self.trait_key(path))
+                .as_deref()
+                != Some("Into")
+            {
+                continue;
+            }
+            let target = implementation
+                .trait_args
+                .first()
+                .and_then(GenericArg::as_type)
+                .map(|ty| self.ast_ty(&ty));
+            let source = self.ast_ty(&implementation.target);
+            let function = implementation.items.iter().find_map(|item| match item {
+                ImplItem::Fn(function) if function.name.text == "into" => {
+                    self.resolved.declared(function.name.span)
+                }
+                _ => None,
+            });
+            if let (Some(target), Some(function)) = (target, function) {
+                self.into_sigs.insert(function, (target, source));
+            }
+        }
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
@@ -231,7 +266,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Collect one non-entity type declaration.
-    pub(super) fn collect_decl(&mut self, item: &Item) {
+    pub(super) fn collect_decl(&mut self, item: &'a Item) {
         match item {
             Item::AttrDecl(a) => {
                 let Some(id) = self.resolved.declared(a.name.span) else {
@@ -343,13 +378,15 @@ impl<'a> Checker<'a> {
                     let trait_name = self.trait_key(tr);
                     let target = self.type_key(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
+                        // A sized argument (`From<unsigned[8]>`) parses as an
+                        // expression; `as_type` reads it as the type it spells,
+                        // here and for the operator and comparison traits (#334).
                         if t == "From" {
-                            let source =
-                                im.trait_args.first().and_then(|argument| match argument {
-                                    GenericArg::Positional(Expr::Path(path)) => self.path_key(path),
-                                    GenericArg::PositionalType(ty) => self.type_key(ty),
-                                    _ => None,
-                                });
+                            let source = im
+                                .trait_args
+                                .first()
+                                .and_then(GenericArg::as_type)
+                                .and_then(|ty| self.type_key(&ty));
                             if let Some(source) = source {
                                 self.conversion_sigs.insert((ty.clone(), source));
                             }
@@ -467,7 +504,7 @@ impl<'a> Checker<'a> {
                                 } else {
                                     &mut self.prefix_types
                                 };
-                                table.entry(text.clone()).or_default().push(ty.clone());
+                                table.entry(text.clone()).or_default().push(&im.target);
                             }
                         }
                         // Operator overload signature: `input`/`output` are the
@@ -479,11 +516,10 @@ impl<'a> Checker<'a> {
                             let skip = usize::from(custom);
                             let arg_name = |index: usize| {
                                 let index = if unary { index.checked_sub(1)? } else { index };
-                                im.trait_args.get(index + skip).and_then(|a| match a {
-                                    GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
-                                    GenericArg::PositionalType(ty) => self.type_key(ty),
-                                    _ => None,
-                                })
+                                im.trait_args
+                                    .get(index + skip)
+                                    .and_then(GenericArg::as_type)
+                                    .and_then(|ty| self.type_key(&ty))
                             };
                             let input = arg_name(0).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
@@ -525,11 +561,11 @@ impl<'a> Checker<'a> {
                         // comparisons, keyed by their representative symbol
                         // (`==` covers `!=`; `<` covers the other three).
                         if t == "Eq" || t == "Ord" {
-                            let input = im.trait_args.first().and_then(|a| match a {
-                                GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
-                                GenericArg::PositionalType(ty) => self.type_key(ty),
-                                _ => None,
-                            });
+                            let input = im
+                                .trait_args
+                                .first()
+                                .and_then(GenericArg::as_type)
+                                .and_then(|ty| self.type_key(&ty));
                             let symbol = if t == "Eq" { "==" } else { "<" };
                             self.operator_sigs
                                 .entry((symbol.to_string(), ty.clone()))

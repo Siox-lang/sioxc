@@ -3,6 +3,114 @@
 use super::*;
 
 #[test]
+fn declared_array_labels_preserve_indexed_element_types() {
+    let source = "module labels;
+        struct Holder { pub data: integer[10..11] }
+        fn field(value: Holder) -> integer { return value.data[10]; }
+        fn nested(value: integer[2][10..11]) -> integer { return value[10][1]; }
+        fn negative(value: integer[-2..-1][10..11]) -> integer { return value[11][-1]; }
+        fn descending(value: integer[2][11..10]) -> integer { return value[10][1]; }
+        fn maximum(value: integer[9223372036854775807..9223372036854775807]) -> integer {
+            return value[9223372036854775807];
+        }
+        fn minimum(value: integer[-9223372036854775808..-9223372036854775808]) -> integer {
+            return value[-9223372036854775808];
+        }";
+    let mut sink = DiagnosticSink::new();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = check(&modules, &resolved, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut checked = 0;
+    for function in modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| {
+            if let Item::Fn(function) = item {
+                Some(function)
+            } else {
+                None
+            }
+        })
+    {
+        let Stmt::Return {
+            value: Some(value), ..
+        } = &function.body.as_ref().unwrap().stmts[0]
+        else {
+            panic!("return")
+        };
+        assert_eq!(
+            typed.expr_type(expr_span(value)),
+            Some(&Ty::Integer),
+            "{}",
+            function.name.text
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 6);
+    assert_eq!(
+        check_src(
+            "module missing;
+        struct Cell { pub value: integer }
+        fn bad(cells: Cell[10..11]) -> integer { return cells[10].missing; }"
+        ),
+        1,
+        "a valid nonzero index must not suppress the missing-field diagnostic"
+    );
+}
+
+#[test]
+fn instance_array_indices_follow_the_declared_labels() {
+    for (range, first, last, below, above) in [
+        ("3..1", "1", "3", "0", "4"),
+        ("1..3", "1", "3", "0", "4"),
+        ("-1..-3", "-3", "-1", "-4", "0"),
+        ("3", "0", "2", "-1", "3"),
+        (
+            "9223372036854775807..9223372036854775807",
+            "9223372036854775807",
+            "9223372036854775807",
+            "0",
+            "9223372036854775806",
+        ),
+        (
+            "-9223372036854775808..-9223372036854775808",
+            "-9223372036854775808",
+            "-9223372036854775808",
+            "0",
+            "-9223372036854775807",
+        ),
+    ] {
+        for (left, right, errors) in [(first, last, 0), (below, above, 2)] {
+            let source = format!(
+                "module bounds;
+                entity Cell {{ data: integer out }}
+                impl Cell {{ data = 1; }}
+                entity E {{ a: integer out, b: integer out }}
+                impl E {{ let cells: Cell[{range}];
+                    a = cells[{left}].data;
+                    b = cells[{right}].data;
+                }}"
+            );
+            assert_eq!(check_src(&source), errors, "{range}: {left}, {right}");
+        }
+    }
+    assert!(
+        check_src(
+            "module too_wide;
+        entity Cell { data: integer out } impl Cell { data = 1; }
+        entity E { data: integer out }
+        impl E {
+            let cells: Cell[-9223372036854775808..9223372036854775807];
+            data = cells[0].data;
+        }"
+        ) > 0,
+        "an invalid range must be diagnosed without overflowing its bounds check"
+    );
+}
+
+#[test]
 /// A loop variable shadows an outer binding and takes the element type.
 fn loop_variables_shadow_outer_types_with_element_types() {
     let errors = check_src(
@@ -108,7 +216,7 @@ fn an_entity_cannot_be_instantiated_outside_a_generate() {
     let shadowed_method = count(
         "module m;\nentity T { i: unsigned[8] in, o: unsigned[8] out }\nimpl T { o = i; }\n\
              struct Box<T> { v: T }\n\
-             impl<T> Box<T> { fn get(self) -> T { let held: T = self.v; return held; } }\n",
+             impl<T> Box<T> { fn get() -> T { let held: T = self.v; return held; } }\n",
     );
     assert_eq!(shadowed_method, 0, "`T` here is the impl's parameter");
 
@@ -172,7 +280,7 @@ fn a_statement_with_no_effect_is_reported() {
     assert_eq!(body(""), 0, "the same body without the dead statement");
     let call = no_effect(
         "module m;\nstruct S { v: unsigned[8] }\n\
-             impl S { fn bump(self) { self.v = self.v + 1; } }\n\
+             impl S { fn bump() { self.v = self.v + 1; } }\n\
              entity E { y: unsigned[8] out }\n\
              impl E { let s: S = { .v = 3 }; s.bump(); y = s.v; }\n",
     );

@@ -17,6 +17,40 @@ impl<'a> Lowering<'a> {
     /// Lower one statement under an optional guard, which accumulates as
     /// branches nest.
     pub(super) fn lower_stmt_at(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        // `dout[i][0..1] = v`: a slice of a row a runtime index selects is
+        // written row by row, each a constant-row slice write (#320).
+        if let ast::Stmt::Assign {
+            target,
+            value,
+            after: None,
+            span,
+            ..
+        } = stmt
+        {
+            if let Some(chain) = self.runtime_row_slice_write(target, value, *span) {
+                return self.lower_stmt_at(&chain, cond);
+            }
+        }
+        // `sub = arr[2..]` is `sub = arr[2..3]` (#296).
+        if let ast::Stmt::Assign {
+            label,
+            target,
+            value,
+            after,
+            span,
+        } = stmt
+        {
+            if let Some(value) = self.full_range_slice(value) {
+                let full = ast::Stmt::Assign {
+                    label: label.clone(),
+                    target: target.clone(),
+                    value,
+                    after: after.clone(),
+                    span: *span,
+                };
+                return self.lower_stmt_at(&full, cond);
+            }
+        }
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
         //
@@ -393,9 +427,6 @@ impl<'a> Lowering<'a> {
                         });
                         off -= w;
                     }
-                } else if self.record_unelaborated_instance_use(target) {
-                    // The concrete child does not exist, so there is no port
-                    // signal to drive. The queued E-P022 names the real cause.
                 } else {
                     self.report_bad_assign_target(target);
                 }
@@ -516,18 +547,6 @@ impl<'a> Lowering<'a> {
                 for arm in &m.arms {
                     let mc =
                         self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, &HashMap::new());
-                    // A wildcard arm is the match's default branch: its direct
-                    // assignments cover "everything else", so those targets are
-                    // not latches even though the lowered driver is conditional.
-                    if mc.is_none() {
-                        for s in &arm.body.stmts {
-                            if let ast::Stmt::Assign { target, .. } = s {
-                                if let Some(id) = self.target_signal(target) {
-                                    self.lint_defaulted.insert(id.0);
-                                }
-                            }
-                        }
-                    }
                     let fire = match &mc {
                         Some(c) => Some(self.source_and(remaining.clone(), c.clone(), arm.span)),
                         None => remaining.clone(),
@@ -559,6 +578,21 @@ impl<'a> Lowering<'a> {
                 self.lower_free_stmt(callee, args, cond);
             }
             ast::Stmt::Let(declaration) => self.declare_block_local(declaration),
+            // A process a generate block builds, the loop value already written
+            // in: its own driver context, as a process at implementation level.
+            ast::Stmt::Process(process) => {
+                let saved = self.cur_ctx;
+                self.next_ctx();
+                self.ctx_span.insert(self.cur_ctx, process.span);
+                if let Some(label) = &process.label {
+                    self.out.process_labels.insert(
+                        self.cur_ctx,
+                        format!("{}::{}", self.cur_instance_path, label.text),
+                    );
+                }
+                self.lower_combinational_block(&process.body, cond);
+                self.cur_ctx = saved;
+            }
             // Other statement forms (bare expr and return) are not hardware
             // statements; the frontend diagnoses them when applicable.
             _ => {}
@@ -739,12 +773,69 @@ impl<'a> Lowering<'a> {
             ast::Pattern::Bounds { lo, hi, span } => {
                 let (mut low, mut high) = (lo.as_deref(), hi.as_deref());
                 if let (Some(l), Some(h)) = (low, high) {
-                    if let (Some(l), Some(h)) = (
-                        self.eval_const(l, &self.cur_env),
-                        self.eval_const(h, &self.cur_env),
+                    use crate::types::consteval::RangeOrder;
+                    let owner = self
+                        .expr_types
+                        .get(&ast::expr_span(scrutinee))
+                        .and_then(|ty| match ty {
+                            crate::types::Ty::Named(owner)
+                                if self.resolved.kind_of(*owner)
+                                    == Some(crate::resolve::DefKind::Enum) =>
+                            {
+                                Some(*owner)
+                            }
+                            _ => None,
+                        });
+                    let constants = self.source_call_constants(&self.cur_env);
+                    match eval_range_order_fns(
+                        l,
+                        h,
+                        constants.as_ref().unwrap_or(&self.cur_env),
+                        &self.free_fns,
+                        owner,
                     ) {
-                        if l > h {
-                            std::mem::swap(&mut low, &mut high);
+                        Some(RangeOrder::Forward) => {}
+                        Some(RangeOrder::Reversed) => std::mem::swap(&mut low, &mut high),
+                        Some(RangeOrder::Unordered) => return Some(Expr::Const(0)),
+                        None => {
+                            // Bounds that are not scalar constants still use
+                            // their source order, including partial orders.
+                            let interval = |lower, upper| {
+                                let above = self.pattern_bound_compare(
+                                    ast::BinOp::Ge,
+                                    scrutinee,
+                                    scrut,
+                                    lower,
+                                    env,
+                                    *span,
+                                );
+                                let below = self.pattern_bound_compare(
+                                    ast::BinOp::Le,
+                                    scrutinee,
+                                    scrut,
+                                    upper,
+                                    env,
+                                    *span,
+                                );
+                                self.source_binary(BinOp::And, &above, &below, *span)
+                            };
+                            let left = self.lower_scalar_env(l, env);
+                            let right = self.lower_scalar_env(h, env);
+                            let forward =
+                                self.pattern_bound_compare(ast::BinOp::Le, l, &left, h, env, *span);
+                            let reversed = self.pattern_bound_compare(
+                                ast::BinOp::Le,
+                                h,
+                                &right,
+                                l,
+                                env,
+                                *span,
+                            );
+                            let forward =
+                                self.source_binary(BinOp::And, &forward, &interval(l, h), *span);
+                            let reversed =
+                                self.source_binary(BinOp::And, &reversed, &interval(h, l), *span);
+                            return Some(self.source_binary(BinOp::Or, &forward, &reversed, *span));
                         }
                     }
                 }
@@ -936,6 +1027,45 @@ impl<'a> Lowering<'a> {
                 self.report_bad_indices(bad);
             }
             match s {
+                // `sub = arr[2..]` is `sub = arr[2..3]` under a clock too (#353).
+                ast::Stmt::Assign {
+                    label,
+                    target,
+                    value,
+                    after,
+                    span,
+                } if self.full_range_slice(value).is_some() => {
+                    let full = ast::Block {
+                        stmts: vec![ast::Stmt::Assign {
+                            label: label.clone(),
+                            target: target.clone(),
+                            value: self
+                                .full_range_slice(value)
+                                .unwrap_or_else(|| value.clone()),
+                            after: after.clone(),
+                            span: *span,
+                        }],
+                        span: *span,
+                    };
+                    self.lower_event_block(&full, cond.clone(), out);
+                }
+                // `mem[i][0..1] = v` under a clock (#320).
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } if self.runtime_row_slice_write(target, value, *span).is_some() => {
+                    let chain = ast::Block {
+                        stmts: self
+                            .runtime_row_slice_write(target, value, *span)
+                            .into_iter()
+                            .collect(),
+                        span: *span,
+                    };
+                    self.lower_event_block(&chain, cond.clone(), out);
+                }
                 ast::Stmt::Assign {
                     target,
                     value,
@@ -1108,9 +1238,6 @@ impl<'a> Lowering<'a> {
                             });
                             off -= w;
                         }
-                    } else if self.record_unelaborated_instance_use(target) {
-                        // As above, suppress the generic assign-target error;
-                        // E-P022 identifies the absent concrete child.
                     } else {
                         self.report_bad_assign_target(target);
                     }
@@ -1316,4 +1443,52 @@ pub(super) fn tuple_literal_parts(target: &ast::Expr, value: &ast::Expr) -> Opti
             })
             .collect(),
     )
+}
+
+impl Lowering<'_> {
+    /// `target = value` as a chain over the rows of the array a runtime index
+    /// selects in, when what is written is a slice of that row (#320).
+    fn runtime_row_slice_write(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        span: crate::diag::Span,
+    ) -> Option<ast::Stmt> {
+        let ast::Expr::Index {
+            base: row,
+            index: slice,
+            ..
+        } = target
+        else {
+            return None;
+        };
+        if !matches!(
+            slice.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return None;
+        }
+        // The first runtime index from the root.
+        let mut steps = Vec::new();
+        let mut walk = row.as_ref();
+        loop {
+            match walk {
+                ast::Expr::Field { base, .. } => walk = base,
+                ast::Expr::Index { base, index, .. } => {
+                    steps.push((base.as_ref(), index.as_ref()));
+                    walk = base;
+                }
+                _ => break,
+            }
+        }
+        let (array, index) = steps.into_iter().rev().find(|(_, index)| {
+            !matches!(
+                index,
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) && self.eval_const(index, &self.cur_env).is_none()
+        })?;
+        let path = self.folded_elem_path(array).or_else(|| expr_path(array))?;
+        let labels = self.local_array.get(&path)?.clone();
+        crate::ir::lower_helpers::label_chain(target, value, index, &labels, span)
+    }
 }

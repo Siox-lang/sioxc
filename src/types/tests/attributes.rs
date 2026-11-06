@@ -3,6 +3,49 @@
 use super::*;
 
 #[test]
+fn type_attribute_widths_follow_entity_identity_and_borrowed_alias_layouts() {
+    let left = "module left;
+        pub type Labels = integer[9..7];
+        pub entity Device<W: integer> {
+            x: Labels in, y: integer[x'length] out,
+            a: integer[W] in, b: integer[a'length] out
+        }
+        impl<W: integer> Device<W> {
+            let tmp: integer[x'high];
+            let templated: integer[a'length];
+            let lanes: integer[W];
+            let copied: integer[lanes'length];
+        }";
+    let right = "module right;
+        pub entity Device { x: integer[11] in, y: integer[x'length] out }
+        impl Device { let tmp: integer[x'high]; }";
+    for sources in [[left, right], [right, left]] {
+        let mut sink = DiagnosticSink::new();
+        let mut modules: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        fold_type_attributes(&mut modules, &resolved);
+        for module in &modules {
+            let text = crate::syntax::pretty::print_module(module);
+            if text.contains("module left;") {
+                assert!(text.contains("y: integer[3]"), "{text}");
+                assert!(text.contains("tmp: integer[9]"), "{text}");
+                assert!(text.contains("b: integer[W]"), "{text}");
+                assert!(text.contains("templated: integer[W]"), "{text}");
+                assert!(text.contains("copied: integer[W]"), "{text}");
+            } else {
+                assert!(text.contains("y: integer[11]"), "{text}");
+                assert!(text.contains("tmp: integer[11 - 1]"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
 fn const_context_integer_metadata_converts_shared_enum_values() {
     let (modules, sink) = checked_metadata(&["module model;
         enum Code { First = 9, Next }
@@ -525,7 +568,7 @@ fn attributes_with_no_effect_are_flagged() {
 fn type_attributes_are_shape_facts() {
     let base = "module m;\nstruct Q(Logic[7..0]);\n\
                 impl Q {\n  pub attr ints: integer = self'high + 1;\n  ATTR\n  \
-                pub fn get(v: Q) -> integer { return Self'ints + v'ints; }\n}\n\
+                pub static fn get(v: Q) -> integer { return Self'ints + v'ints; }\n}\n\
                 entity E { q: Q in, y: integer out, }\nimpl E {\n  y = READ;\n}\n";
     let codes =
         |attr: &str, read: &str| diag_codes(&base.replace("ATTR", attr).replace("READ", read));

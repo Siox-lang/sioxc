@@ -48,7 +48,9 @@ pub(super) fn collect_char_patterns(p: &Pattern, out: &mut Vec<(char, Span)>) {
 pub(super) fn pattern_covers(p: &Pattern) -> (Vec<String>, bool) {
     match p {
         Pattern::Wildcard => (Vec::new(), true),
-        Pattern::Path(pp) if pp.segments.len() >= 2 => (vec![pp.segments[1].text.clone()], false),
+        Pattern::Path(pp) if pp.segments.len() >= 2 => {
+            (vec![pp.segments.last().unwrap().text.clone()], false)
+        }
         // A char-valued enum declares its variants as character literals
         // (`enum Logic { '0', '1', … }`), so the pattern names one directly.
         Pattern::CharLit { ch, .. } => (vec![format!("'{ch}'")], false),

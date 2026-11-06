@@ -56,7 +56,7 @@ fn conversion_help_names_only_a_defined_conversion() {
         let src = format!(
             "module m;\n\
              struct P {{ v: Bit }}\n\
-             impl From<Bool> for P {{ fn from(b: Bool) -> P {{ return P {{ .v = '1' }}; }} }}\n\
+             impl From<Bool> for P {{ static fn from(b: Bool) -> P {{ return P {{ .v = '1' }}; }} }}\n\
              struct Q {{ v: Bit }}\n\
              entity E {{ p: P out, q: Q out }}\n\
              impl E {{ {body} }}\n{VEC}"
@@ -274,7 +274,7 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     // `ready` is an input for the Source role.
     assert_eq!(
         count(&format!(
-            "{BUS}impl Stream StreamSource {{ fn bad(self) {{ self.ready = '1'; }} }}\n"
+            "{BUS}impl Stream StreamSource {{ fn bad() {{ self.ready = '1'; }} }}\n"
         )),
         1,
         "a Source method driving `ready`"
@@ -282,7 +282,7 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     // The Sink role has the opposite polarity, so `valid` is its input.
     assert_eq!(
         count(&format!(
-            "{BUS}impl Stream StreamSink {{ fn bad(self) {{ self.valid = '1'; }} }}\n"
+            "{BUS}impl Stream StreamSink {{ fn bad() {{ self.valid = '1'; }} }}\n"
         )),
         1,
         "a Sink method driving `valid`"
@@ -291,7 +291,7 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     assert_eq!(
         count(&format!(
             "{BUS}impl Stream StreamSource {{ \
-                 fn bad(self, e: Bit) {{ if e == '1' {{ self.ready = '1'; }} }} }}\n"
+                 fn bad(e: Bit) {{ if e == '1' {{ self.ready = '1'; }} }} }}\n"
         )),
         1,
         "and one hidden inside an `if`"
@@ -301,14 +301,14 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     assert_eq!(
         count(&format!(
             "{BUS}impl Stream StreamSource {{ \
-                 fn send(self, v: unsigned[8]) {{ self.valid = '1'; self.data = v; }} }}\n"
+                 fn send(v: unsigned[8]) {{ self.valid = '1'; self.data = v; }} }}\n"
         )),
         0,
         "a Source may drive `valid` and `data`"
     );
     assert_eq!(
         count(&format!(
-            "{BUS}impl Stream StreamSink {{ fn accept(self) {{ self.ready = '1'; }} }}\n"
+            "{BUS}impl Stream StreamSink {{ fn accept() {{ self.ready = '1'; }} }}\n"
         )),
         0,
         "and a Sink may drive `ready`"
@@ -318,7 +318,7 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     assert_eq!(
         count(
             "module m;\nstruct Pair { a: unsigned[8], b: unsigned[8] }\n\
-                 impl Pair { fn set(self) { self.a = 1; self.b = 2; } }\n"
+                 impl Pair { fn set() { self.a = 1; self.b = 2; } }\n"
         ),
         0,
         "a plain struct method writes any field"
@@ -332,14 +332,14 @@ fn a_view_method_cannot_drive_an_input_leaf() {
             entity E { a: unsigned[8] in, y: unsigned[8] out }\n";
     assert_eq!(
         count(&format!(
-            "{ENT}impl E {{ fn writes() {{ a = 99; }} y = a; }}\n"
+            "{ENT}impl E {{ static fn writes() {{ a = 99; }} y = a; }}\n"
         )),
         1,
         "an entity function driving an `in` port"
     );
     assert_eq!(
         count(&format!(
-            "{ENT}impl E {{ fn deep(e: Bit) {{ if e == '1' {{ a = 99; }} }} y = a; }}\n"
+            "{ENT}impl E {{ static fn deep(e: Bit) {{ if e == '1' {{ a = 99; }} }} y = a; }}\n"
         )),
         1,
         "and one nested in control flow"
@@ -347,7 +347,7 @@ fn a_view_method_cannot_drive_an_input_leaf() {
     // Outputs and locals stay writable, or a helper could not do anything.
     assert_eq!(
         count(&format!(
-            "{ENT}impl E {{ fn plus(n: unsigned[8]) -> unsigned[8] {{ return n + 1; }}\n\
+            "{ENT}impl E {{ static fn plus(n: unsigned[8]) -> unsigned[8] {{ return n + 1; }}\n\
                  y = E::plus(a); }}\n"
         )),
         0,
@@ -375,7 +375,7 @@ fn an_impl_function_cannot_assign_to_a_const() {
     assert_eq!(
         count(
             "module m;\nentity E { y: unsigned[8] out }\n\
-                 impl E { const K: unsigned[8] = 5; fn bad() { K = 1; } y = K; }\n"
+                 impl E { const K: unsigned[8] = 5; static fn bad() { K = 1; } y = K; }\n"
         ),
         1,
         "a function assigning to its impl's `const`"
@@ -383,7 +383,7 @@ fn an_impl_function_cannot_assign_to_a_const() {
     assert_eq!(
         count(
             "module m;\nentity E { y: unsigned[8] out }\n\
-                 impl E { const K: unsigned[8] = 5; fn ok() -> unsigned[8] { return K; } \
+                 impl E { const K: unsigned[8] = 5; static fn ok() -> unsigned[8] { return K; } \
                  y = E::ok(); }\n"
         ),
         0,
@@ -396,7 +396,7 @@ fn an_impl_function_cannot_assign_to_a_const() {
         count(
             "module m;\nentity E { y: unsigned[8] out }\n\
                  impl E { const K: unsigned[8] = 5; \
-                 fn shadow(K: unsigned[8]) -> unsigned[8] { K = K + 1; return K; } \
+                 static fn shadow(K: unsigned[8]) -> unsigned[8] { K = K + 1; return K; } \
                  y = E::shadow(1); }\n"
         ),
         0,
@@ -425,7 +425,7 @@ fn an_impl_function_checks_ranged_assignments() {
     assert_eq!(
         count(
             "module m;\nentity E { y: integer<0..7> out }\n\
-                 impl E { fn drive() { y = 20; } }\n"
+                 impl E { static fn drive() { y = 20; } }\n"
         ),
         1,
         "an out-of-range constant inside a function"
@@ -433,7 +433,7 @@ fn an_impl_function_checks_ranged_assignments() {
     assert_eq!(
         count(
             "module m;\nentity E { y: integer<0..7> out }\n\
-                 impl E { fn drive(e: Bit) { if e == '1' { y = 20; } } }\n"
+                 impl E { static fn drive(e: Bit) { if e == '1' { y = 20; } } }\n"
         ),
         1,
         "and one nested in control flow"
@@ -441,7 +441,7 @@ fn an_impl_function_checks_ranged_assignments() {
     assert_eq!(
         count(
             "module m;\nentity E { y: integer<0..7> out }\n\
-                 impl E { fn drive() { y = 5; } }\n"
+                 impl E { static fn drive() { y = 5; } }\n"
         ),
         0,
         "a value inside the range is fine"
@@ -450,7 +450,7 @@ fn an_impl_function_checks_ranged_assignments() {
     assert_eq!(
         count(
             "module m;\nentity E { y: integer<0..7> out }\n\
-                 impl E { fn wide(y: unsigned[8]) -> unsigned[8] { y = 20; return y; } }\n"
+                 impl E { static fn wide(y: unsigned[8]) -> unsigned[8] { y = 20; return y; } }\n"
         ),
         0,
         "a parameter named `y` is not the ranged port"
@@ -479,7 +479,7 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
     assert_eq!(
         count(
             "module m;\nstruct S { }\n\
-                 impl S { fn f(self, wide: unsigned[16], narrow: unsigned[8]) \
+                 impl S { fn f(wide: unsigned[16], narrow: unsigned[8]) \
                  { narrow = wide; } }\n"
         ),
         1,
@@ -488,7 +488,7 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
     assert_eq!(
         count(
             "module m;\nstruct S { }\n\
-                 impl S { fn f(self, a: unsigned[8], b: unsigned[8]) { b = a; } }\n"
+                 impl S { fn f(a: unsigned[8], b: unsigned[8]) { b = a; } }\n"
         ),
         0,
         "matching widths are fine"
@@ -496,7 +496,7 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
     assert_eq!(
         count(
             "module m;\nstruct S { }\n\
-                 impl S { fn f(self, wide: unsigned[16], narrow: unsigned[8]) \
+                 impl S { fn f(wide: unsigned[16], narrow: unsigned[8]) \
                  { narrow = unsigned[8](wide); } }\n"
         ),
         0,
@@ -511,7 +511,7 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
             struct Bus { data: unsigned[8], flag: Bit, inner: Inner }\n";
     assert_eq!(
         count(&format!(
-            "{BUS}impl Bus {{ fn load(self, wide: unsigned[16]) {{ self.data = wide; }} }}\n"
+            "{BUS}impl Bus {{ fn load(wide: unsigned[16]) {{ self.data = wide; }} }}\n"
         )),
         1,
         "a wide parameter into a narrow field"
@@ -519,14 +519,14 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
     assert_eq!(
         count(&format!(
             "{BUS}view BusOut for Bus {{ data out, flag out, inner out }}\n\
-                 impl Bus BusOut {{ fn load(self, wide: unsigned[16]) {{ self.data = wide; }} }}\n"
+                 impl Bus BusOut {{ fn load(wide: unsigned[16]) {{ self.data = wide; }} }}\n"
         )),
         1,
         "and the same through a view, where `self` is the backing struct"
     );
     assert_eq!(
         count(&format!(
-            "{BUS}impl Bus {{ fn deep(self, wide: unsigned[16]) {{ self.inner.v = wide; }} }}\n"
+            "{BUS}impl Bus {{ fn deep(wide: unsigned[16]) {{ self.inner.v = wide; }} }}\n"
         )),
         1,
         "a nested field types too"
@@ -535,10 +535,10 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
     // Legitimate field writes must stay legal, or every method breaks.
     assert_eq!(
         count(&format!(
-            "{BUS}impl Bus {{ fn ok(self, v: unsigned[8]) {{ self.data = v; }}\n\
-                 fn conv(self, w: unsigned[16]) {{ self.data = unsigned[8](w); }}\n\
-                 fn nest(self, v: unsigned[8]) {{ self.inner.v = v; }}\n\
-                 fn lit(self) {{ self.data = 200; self.flag = '1'; }} }}\n"
+            "{BUS}impl Bus {{ fn ok(v: unsigned[8]) {{ self.data = v; }}\n\
+                 fn conv(w: unsigned[16]) {{ self.data = unsigned[8](w); }}\n\
+                 fn nest(v: unsigned[8]) {{ self.inner.v = v; }}\n\
+                 fn lit() {{ self.data = 200; self.flag = '1'; }} }}\n"
         )),
         0,
         "matching widths, conversions, nesting and literals are all fine"

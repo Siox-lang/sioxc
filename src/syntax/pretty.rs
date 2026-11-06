@@ -310,6 +310,10 @@ impl Printer {
     /// Print a `struct`. A newtype (`struct B(A);`) never carries a body, so it
     /// prints on one line.
     fn struct_decl(&mut self, s: &StructDecl) {
+        if !s.derives.is_empty() {
+            let traits: Vec<&str> = s.derives.iter().map(|t| t.text.as_str()).collect();
+            self.line(&format!("#[derive({})]", traits.join(", ")));
+        }
         let kw = pub_kw(s.is_pub);
         // Newtype: `struct B(A);` — it never carries a body.
         if let Some(t) = &s.base {
@@ -468,16 +472,7 @@ impl Printer {
             ImplItem::ModeField { dir, name, .. } => {
                 self.line(&format!("{} {};", dir_str(*dir), name.text));
             }
-            ImplItem::Process(process) => {
-                self.line(&format!("{}process {{", label_prefix(&process.label)));
-                self.indent += 1;
-                for statement in &process.body.stmts {
-                    self.stmt(statement);
-                }
-                self.flush_lets();
-                self.indent -= 1;
-                self.line("}");
-            }
+            ImplItem::Process(process) => self.process(process),
             ImplItem::Stmt(s) => self.stmt(s),
             ImplItem::AttrBinding(b) => self.attr_binding(b),
             ImplItem::Attr(a) => self.attr_decl(a),
@@ -548,8 +543,19 @@ impl Printer {
             Inline::Always => self.line("#[inline(always)]"),
             Inline::Never => self.line("#[inline(never)]"),
         }
-        let kw = pub_kw(f.is_pub);
-        let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
+        let kw = format!(
+            "{}{}",
+            pub_kw(f.is_pub),
+            if f.is_static { "static " } else { "" }
+        );
+        // A receiver is implicit; `static fn` says when there is none.
+        let ps = f
+            .params
+            .iter()
+            .filter(|param| !param.is_self)
+            .map(fn_param)
+            .collect::<Vec<_>>()
+            .join(", ");
         let ret = match &f.ret {
             Some(t) => format!(" -> {}", type_str(t)),
             None => String::new(),
@@ -579,6 +585,18 @@ impl Printer {
 
     // --- statements ---------------------------------------------------------
 
+    /// Print a process, at implementation level or inside a generate block.
+    fn process(&mut self, process: &ProcessDecl) {
+        self.line(&format!("{}process {{", label_prefix(&process.label)));
+        self.indent += 1;
+        for statement in &process.body.stmts {
+            self.stmt(statement);
+        }
+        self.flush_lets();
+        self.indent -= 1;
+        self.line("}");
+    }
+
     /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
         match s {
@@ -604,6 +622,7 @@ impl Printer {
         self.flush_lets();
         self.lint_directives(stmt_span(s), false);
         match s {
+            Stmt::Process(process) => self.process(process),
             Stmt::Use(u) => self.line(&using_text(u)),
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
             Stmt::Assign {
@@ -639,6 +658,11 @@ impl Printer {
                     var.text,
                     expr(range)
                 ));
+                self.block_body(body);
+                self.line("}");
+            }
+            Stmt::While { cond, body, .. } => {
+                self.line(&format!("while {} {{", expr(cond)));
                 self.block_body(body);
                 self.line("}");
             }
@@ -981,7 +1005,7 @@ fn trait_name_str(name: &str) -> String {
 }
 
 /// Render a parameter list as `<W: integer>`; empty when there are none.
-fn params(p: &Params) -> String {
+pub(crate) fn params(p: &Params) -> String {
     if p.params.is_empty() {
         return String::new();
     }
@@ -1015,6 +1039,9 @@ fn let_decl(l: &LetDecl) -> String {
     for a in &l.attrs {
         s.push_str(&attr(a));
         s.push(' ');
+    }
+    if l.is_static {
+        s.push_str("static ");
     }
     s.push_str(&format!("let {}", l.name.text));
     if let Some(t) = &l.ty {
@@ -1287,6 +1314,20 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                     POSTFIX_PREC,
                 );
             }
+            // The timing primitive prints as written: `await x;`, `await c for t;`.
+            if let (Expr::Path(path), false) = (callee.as_ref(), *bang) {
+                if let ([segment], [awaited, rest @ ..]) =
+                    (path.segments.as_slice(), args.as_slice())
+                {
+                    if segment.text == "await" && rest.len() <= 1 {
+                        let timeout = rest
+                            .first()
+                            .map(|timeout| format!(" for {}", expr(timeout)))
+                            .unwrap_or_default();
+                        return (format!("await {}{timeout}", expr(awaited)), 0);
+                    }
+                }
+            }
             if *bang {
                 if let Some(args) = macro_call_args(*span) {
                     return (
@@ -1481,7 +1522,7 @@ mod tests {
     /// Member visibility is preserved on both fields and functions.
     fn roundtrips_member_visibility() {
         roundtrip(
-            "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value(self) -> integer { return self.value; } }\n",
+            "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value() -> integer { return self.value; } }\n",
         );
     }
 
@@ -1489,7 +1530,7 @@ mod tests {
     /// A trait's type arguments survive (`impl Add<integer> for C`).
     fn roundtrips_trait_type_args() {
         roundtrip(
-            "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
+            "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(rhs: integer) -> C {\n        return self;\n    }\n}\n",
         );
     }
 
@@ -1528,11 +1569,11 @@ mod tests {
         roundtrip(
             "module m;\n\
              pub trait Add2 {\n\
-               fn apply(self, rhs: Self) -> Self;\n\
+               fn apply(rhs: Self) -> Self;\n\
              }\n\
              struct V { x: Bit }\n\
              impl Add2 for V {\n\
-               fn apply(self, rhs: V) -> V {\n\
+               fn apply(rhs: V) -> V {\n\
                  return self;\n\
                }\n\
              }\n",
@@ -1553,6 +1594,34 @@ mod tests {
                await 1ns;\n\
              }\n",
         );
+    }
+
+    #[test]
+    /// `static fn` and `static let` keep their marker.
+    fn roundtrips_static() {
+        roundtrip(
+            "module m;\nfn next() -> integer {\n    static let n: integer = 0;\n    n = n + 1;\n    return n;\n}\nstruct C {\n    pub v: integer,\n}\nimpl C {\n    pub static fn at(v: integer) -> C {\n        return C { .v = v };\n    }\n}\n",
+        );
+    }
+
+    #[test]
+    /// A `while` loop keeps its condition and body.
+    fn roundtrips_while() {
+        roundtrip(
+            "module m;\n#[test]\nentity T {\n}\nimpl T {\n    p: process {\n        let i: integer = 0;\n        while i < 3 {\n            i = i + 1;\n        }\n    }\n}\n",
+        );
+    }
+
+    #[test]
+    /// `await` prints as the statement it is, its timeout included; a call
+    /// form would read back as a tuple.
+    fn prints_await_with_its_timeout() {
+        let source = "module m;\n#[test]\nentity T {}\nimpl T {\n  let done: Bit;\n  p: process {\n    await 1ns;\n    await done == '1' for 8us;\n  }\n}\n";
+        let mut sink = DiagnosticSink::new();
+        let printed = print_module(&crate::syntax::parse_module(FileId(0), source, &mut sink));
+        assert!(printed.contains("await 1ns;"), "{printed}");
+        assert!(printed.contains("await done == '1' for 8us;"), "{printed}");
+        roundtrip(source);
     }
 
     #[test]
@@ -1615,9 +1684,9 @@ mod tests {
     fn roundtrips_trait_match_and_construct() {
         roundtrip(
             "module m;\n\
-             trait ClockLike { fn rising(self); }\n\
+             trait ClockLike { fn rising(); }\n\
              impl ClockLike for Logic {\n\
-               fn rising(self) {\n\
+               fn rising() {\n\
                  return self'event and self'old == '0' and self == '1';\n\
                }\n\
              }\n\
@@ -1645,10 +1714,10 @@ mod tests {
         // Custom precedence composes with core and/or; `not` is prefix.
         roundtrip(
             "module m;\n\
-             trait CustomOperator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
-             impl CustomOperator<\"xor\", M, M> for M { attr precedence = 35; fn apply(self, rhs: M) -> M { return self; } }\n\
-             impl CustomOperator<\"nand\", M, M> for M { attr precedence = 40; fn apply(self, rhs: M) -> M { return self; } }\n\
-             impl CustomOperator<\"nor\", M, M> for M { attr precedence = 30; fn apply(self, rhs: M) -> M { return self; } }\n\
+             trait CustomOperator<op, I, O> { fn apply(rhs: I) -> O; }\n\
+             impl CustomOperator<\"xor\", M, M> for M { attr precedence = 35; fn apply(rhs: M) -> M { return self; } }\n\
+             impl CustomOperator<\"nand\", M, M> for M { attr precedence = 40; fn apply(rhs: M) -> M { return self; } }\n\
+             impl CustomOperator<\"nor\", M, M> for M { attr precedence = 30; fn apply(rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }

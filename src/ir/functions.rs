@@ -47,6 +47,8 @@ pub struct FunctionIndex<'a> {
     /// Exact `impl From<Source> for Target` bodies, keyed by both nominal
     /// identities so equal leaves in different modules cannot collide.
     conversions: HashMap<(String, String), &'a ast::FnDecl>,
+    /// `into` bodies by the declaration ID selected by semantic checking.
+    intos: HashMap<DefId, &'a ast::FnDecl>,
     /// Functions of an `extern "intrinsic"` block (`core::intrinsics`): the
     /// compiler emits them natively instead of calling a foreign symbol.
     intrinsics: std::collections::HashSet<DefId>,
@@ -63,6 +65,7 @@ impl<'a> FunctionIndex<'a> {
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
+            intos: HashMap::new(),
             intrinsics: std::collections::HashSet::new(),
         }
     }
@@ -91,6 +94,10 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_path) = implementation.trait_.as_ref() else {
             return;
         };
+        if self.trait_path_key(trait_path).as_deref() == Some("Into") {
+            self.insert_into_impl(implementation);
+            return;
+        }
         if self.trait_path_key(trait_path).as_deref() != Some("From") {
             return;
         }
@@ -114,6 +121,23 @@ impl<'a> FunctionIndex<'a> {
         }) {
             self.conversions.insert((target, source), function);
         }
+    }
+
+    /// Register the body by identity, without reinterpreting its type contract.
+    fn insert_into_impl(&mut self, implementation: &'a ast::ImplDecl) {
+        if let Some(function) = implementation.items.iter().find_map(|item| match item {
+            ast::ImplItem::Fn(function) if function.name.text == "into" => Some(function),
+            _ => None,
+        }) {
+            if let Some(id) = self.resolved.declared(function.name.span) {
+                self.intos.insert(id, function);
+            }
+        }
+    }
+
+    /// The exact `into` body selected before lowering.
+    pub fn get_into(&self, definition: DefId) -> Option<&'a ast::FnDecl> {
+        self.intos.get(&definition).copied()
     }
 
     /// Select the exact source/target conversion body.
@@ -520,6 +544,20 @@ impl<'a> FunctionIndex<'a> {
                 if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Fn) {
                     return self.declarations.function(id);
                 }
+                // An impl's own function called unqualified from that impl's
+                // body (`double(x)` in `impl Top`): the impl scope binds the
+                // name as a local at the function's declaration (#292).
+                if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Local) {
+                    let declared = self.resolved.def(id).and_then(|def| def.span);
+                    if let Some(function) = declared.and_then(|span| {
+                        self.associated
+                            .values()
+                            .flat_map(|functions| functions.values())
+                            .find(|function| function.name.span == span)
+                    }) {
+                        return Some(*function);
+                    }
+                }
             }
             if let Some(key) = self.associated_path_key(path) {
                 let (owner, name) = split_associated_key(&key);
@@ -711,7 +749,7 @@ impl<'a> FunctionIndex<'a> {
             .resolved(path.span)
             .and_then(type_key)
             .or_else(|| {
-                (path.segments.last()?.text == "new").then_some(())?;
+                matches!(path.segments.last()?.text.as_str(), "default" | "new").then_some(())?;
                 let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
                 self.resolved.resolved(owner.span).and_then(type_key)
             })

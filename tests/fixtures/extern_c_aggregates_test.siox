@@ -1,0 +1,40 @@
+// Structs and fixed arrays cross to C by pointer, laid out as C lays them
+// out, and a process-local variable passed so receives what C writes. Each
+// libc call below returns a wrong value if either half is wrong.
+module ffi_aggregates;
+
+use std::ffi::{c_int, c_uchar, c_double};
+
+struct TimeVal { pub sec: integer, pub usec: integer, }
+struct Mixed { pub tag: c_uchar, pub count: c_int, pub scale: real, }
+
+extern "C" {
+    fn frexp(x: c_double, exponent: c_int[1]) -> c_double;
+    fn modf(x: c_double, whole: real[1]) -> c_double;
+    fn gettimeofday(tv: TimeVal, zone: natural) -> c_int;
+    fn memset(buffer: integer[2], byte: c_int, count: natural) -> natural;
+    fn memcpy(dst: c_uchar[16], src: Mixed, count: natural) -> natural;
+}
+
+#[test]
+entity AggregatesTest {}
+impl AggregatesTest {
+    process {
+        let e: c_int[1] = [0];
+        assert!(frexp(8.0, e) == 0.5 and e[0] == 4, "an int written through a pointer");
+        let w: real[1] = [0.0];
+        assert!(modf(3.25, w) == 0.25 and w[0] == 3.0, "a double written through a pointer");
+        let tv: TimeVal = TimeVal { .sec = 0, .usec = 0 };
+        assert!(gettimeofday(tv, 0) == 0 and tv.sec > 1700000000, "a struct filled by C");
+        let bytes: integer[2] = [0, 0];
+        memset(bytes, 7, 16);
+        assert!(bytes[1] == 506381209866536711, "a void-ish call writes back too");
+        // `{ uchar; int; double }`: three bytes of padding, then the int at
+        // byte 4 and the double at byte 8.
+        let m: Mixed = Mixed { .tag = 171, .count = 258, .scale = 1.0 };
+        let b: c_uchar[16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        memcpy(b, m, 16);
+        assert!(b[0] == 171 and b[3] == 0 and b[4] == 2 and b[5] == 1, "natural alignment");
+        assert!(b[14] == 240 and b[15] == 63, "1.0 as a little-endian double");
+    }
+}

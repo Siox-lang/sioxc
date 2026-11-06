@@ -112,11 +112,11 @@ impl TB {
             r#"module test_trait_ambiguity;
 
 trait A {
-    fn ping(self) -> integer;
+    fn ping() -> integer;
 }
 
 trait B {
-    fn ping(self) -> real;
+    fn ping() -> real;
 }
 
 struct Foo {
@@ -124,11 +124,11 @@ struct Foo {
 }
 
 impl A for Foo {
-    fn ping(self) -> integer { return 1; }
+    fn ping() -> integer { return 1; }
 }
 
 impl B for Foo {
-    fn ping(self) -> real { return 2.0; }
+    fn ping() -> real { return 2.0; }
 }
 
 #[test] entity TB {}
@@ -414,11 +414,11 @@ impl TB {
             r#"module test_trait_ambiguity;
 
 trait A {
-    fn ping(self) -> integer;
+    fn ping() -> integer;
 }
 
 trait B {
-    fn ping(self) -> real;
+    fn ping() -> real;
 }
 
 struct Foo {
@@ -426,11 +426,11 @@ struct Foo {
 }
 
 impl A for Foo {
-    fn ping(self) -> integer { return 1; }
+    fn ping() -> integer { return 1; }
 }
 
 impl B for Foo {
-    fn ping(self) -> real { return 2.0; }
+    fn ping() -> real { return 2.0; }
 }
 
 #[test] entity TB {}

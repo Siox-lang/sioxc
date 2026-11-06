@@ -35,6 +35,8 @@ impl<'a> Lowering<'a> {
             resolved,
             expr_types: HashMap::new(),
             promotions: HashMap::new(),
+            conversions: HashMap::new(),
+            covered_matches: std::collections::HashSet::new(),
             widening: std::cell::RefCell::new(HashSet::new()),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),
@@ -72,7 +74,6 @@ impl<'a> Lowering<'a> {
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             instance_array_facts: HashMap::new(),
             cur_instance_path: String::new(),
-            unelaborated_instance_uses: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             param_integers: std::cell::RefCell::new(HashSet::new()),
@@ -163,6 +164,18 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
+                        // A struct's or enum's impl constants are module
+                        // constants scoped by name resolution; an entity's
+                        // fold per instance (`fold_impl_constants`).
+                        let target_kind = type_def_id(&im.target, self.resolved)
+                            .and_then(|id| self.resolved.kind_of(id));
+                        if target_kind != Some(crate::resolve::DefKind::Entity) {
+                            for item in &im.items {
+                                if let ast::ImplItem::Const(c) = item {
+                                    constant_decls.push((self.free_fns.constant_decl_key(c), c));
+                                }
+                            }
+                        }
                         if let Some(key) = self.free_fns.type_head_key(&im.target) {
                             self.inherent_impls.entry(key).or_default().push(im);
                         }
@@ -176,6 +189,7 @@ impl<'a> Lowering<'a> {
                     // argument, its `suffix` method inlined at the use site
                     // (spec 3.24).
                     ast::Item::Impl(im) => {
+                        self.free_fns.insert_conversion_impl(im);
                         let trait_path = im.trait_.as_ref();
                         let trait_key =
                             trait_path.and_then(|path| self.free_fns.trait_path_key(path));
@@ -201,8 +215,9 @@ impl<'a> Lowering<'a> {
                                 if let Some(symbol) = symbol {
                                     for it in &im.items {
                                         if let ast::ImplItem::Fn(f) = it {
-                                            self.suffix_impls
-                                                .insert(symbol.clone(), (ty.clone(), f));
+                                            if f.name.text == "suffix" {
+                                                self.suffix_impls.insert(symbol.clone(), f);
+                                            }
                                         }
                                     }
                                 }
@@ -487,6 +502,21 @@ impl<'a> Lowering<'a> {
             for item in &im.items {
                 match item {
                     ast::ImplItem::Let(l) => {
+                        // Declared array slots exist even before port wiring.
+                        if let Some(ty) = l.ty.as_ref().filter(|_| l.value.is_none()) {
+                            if let Some((base, slots)) = crate::elab::instance_array_slots(
+                                ty,
+                                env,
+                                self.free_fns.constant_source(),
+                            ) {
+                                if self.free_fns.entity_type_id(base).is_some() {
+                                    instances.extend(slots.into_iter().map(|slot| {
+                                        (format!("{}{slot}", l.name.text), base.clone(), Vec::new())
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some((ty, args)) = instance_let_parts(l, &self.free_fns) {
                             instances.push((l.name.text.clone(), ty, args));
                         }
@@ -554,6 +584,36 @@ impl<'a> Lowering<'a> {
                         // belongs in the canonical hardware graph:
                         // flatten it against the child's retained
                         // leaves instead of silently dropping it.
+                        let mut leaves: Vec<_> = sub_ports
+                            .iter()
+                            .filter(|(name, _)| {
+                                name.strip_prefix(&port).is_some_and(|rest| {
+                                    rest.starts_with('.') || rest.starts_with('[')
+                                })
+                            })
+                            .map(|(name, &(signal, direction))| (name.clone(), signal, direction))
+                            .collect();
+                        leaves.sort_by(|a, b| a.0.cmp(&b.0));
+                        if let Some(values) = self.port_literal_leaves(&value, &leaves, &port) {
+                            for (name, signal, direction) in &leaves {
+                                if *direction == Some(ast::Direction::Out) {
+                                    continue;
+                                }
+                                let Some(expression) = values.get(&name[port.len()..]) else {
+                                    continue;
+                                };
+                                let ctx = self.next_ctx_at(ast::expr_span(&value));
+                                self.hardware.drivers.push(Driver {
+                                    span: Some(ast::expr_span(&value)),
+                                    target: *signal,
+                                    cond: None,
+                                    expr: expression.clone(),
+                                    meta: None,
+                                    ctx,
+                                });
+                            }
+                            continue;
+                        }
                         if let ast::Expr::Construct {
                             args, spread: None, ..
                         } = &value
@@ -802,6 +862,147 @@ impl<'a> Lowering<'a> {
         constant: &ast::ConstDecl,
         scope: &HashMap<String, i64>,
     ) -> bool {
+        self.fold_const_literal(name, constant, scope)
+            || (!self.has_const_leaves(name) && self.fold_aggregate_const(name, constant, scope))
+    }
+
+    /// Whether a constant is already folded, whole or as leaves (`K.a`,
+    /// `M[0][1]`).
+    fn has_const_leaves(&self, name: &str) -> bool {
+        let member = |key: &String| {
+            key.strip_prefix(name).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')
+            })
+        };
+        if self.consts.contains_key(name)
+            || self.consts_real.contains_key(name)
+            || self.const_ranges.contains_key(name)
+        {
+            return true;
+        }
+        self.const_values.keys().any(member) || self.const_arrays.keys().any(member)
+    }
+
+    /// Any other constant of an aggregate type: an alias (`P2 = P1`), a call
+    /// that returns one, a nested table or a table of structs (#284, #286,
+    /// #287). It is lowered as a value and kept when no leaf reads a signal.
+    /// Each leaf goes where a read looks it up: `K.a` and `M[0][1]` in the
+    /// value table, and every run of scalar elements (`A`, `M[0]`) also as a
+    /// table, which a runtime index selects from.
+    fn fold_aggregate_const(
+        &mut self,
+        name: &str,
+        constant: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        let layout = self.source_layout(&constant.ty, scope);
+        if !matches!(
+            layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+        ) {
+            return false;
+        }
+        // An operand not folded yet defers to the next fixed-point round, so
+        // what this attempt reports about it is dropped.
+        let reported = (
+            self.unresolved_names.borrow().len(),
+            self.unsupported_exprs.borrow().len(),
+            self.depth_exceeded.borrow().len(),
+            self.bad_operators.borrow().len(),
+            self.bad_conversions.borrow().len(),
+        );
+        let value = self.lower_shaped_source(&constant.value, &HashMap::new(), &layout);
+        let leaves = match value {
+            Val::Fields(leaves)
+                if !leaves.is_empty() && leaves.iter().all(|(_, v)| is_constant_value(v)) =>
+            {
+                leaves
+            }
+            _ => {
+                self.unresolved_names.borrow_mut().truncate(reported.0);
+                self.unsupported_exprs.borrow_mut().truncate(reported.1);
+                self.depth_exceeded.borrow_mut().truncate(reported.2);
+                self.bad_operators.borrow_mut().truncate(reported.3);
+                self.bad_conversions.borrow_mut().truncate(reported.4);
+                return false;
+            }
+        };
+        let mut tables: HashMap<String, Vec<(i64, Expr)>> = HashMap::new();
+        for (leaf, value) in leaves {
+            let separator = if leaf.starts_with('[') { "" } else { "." };
+            let key = format!("{name}{separator}{leaf}");
+            if let Some((table, label)) = key
+                .strip_suffix(']')
+                .and_then(|rest| rest.rsplit_once('['))
+                .and_then(|(table, label)| Some((table, label.parse::<i64>().ok()?)))
+            {
+                tables
+                    .entry(table.to_string())
+                    .or_default()
+                    .push((label, value.clone()));
+            }
+            if let Expr::Const(word) = &value {
+                if let Ok(narrow) = i64::try_from(*word) {
+                    self.consts.insert(key.clone(), narrow);
+                }
+            }
+            self.const_values.insert(key, value);
+        }
+        for (table, mut elements) in tables {
+            elements.sort_by_key(|(label, _)| *label);
+            // ponytail: zero-based tables only, as the table reads index by
+            // position; a table over another range keeps its leaves alone.
+            if elements
+                .iter()
+                .enumerate()
+                .all(|(position, (label, _))| usize::try_from(*label) == Ok(position))
+            {
+                self.const_arrays.insert(
+                    table,
+                    elements.into_iter().map(|(_, value)| value).collect(),
+                );
+            }
+        }
+        true
+    }
+
+    /// A struct literal's fields, each a scalar constant, or nothing: a field
+    /// that is itself an aggregate (`.payload = [7, 8, 9]`) leaves the whole
+    /// constant to the aggregate fold (#293).
+    fn insert_const_fields(
+        &mut self,
+        name: &str,
+        fields: Vec<(String, ast::Expr)>,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        let mut folded = Vec::new();
+        for (field, value) in fields {
+            let Some(lowered) = self.lower_const_value(&value, scope) else {
+                return false;
+            };
+            folded.push((
+                format!("{name}.{field}"),
+                self.eval_const(&value, scope),
+                lowered,
+            ));
+        }
+        for (key, narrow, lowered) in folded {
+            if let Some(narrow) = narrow {
+                self.consts.insert(key.clone(), narrow);
+            }
+            self.const_values.insert(key, lowered);
+        }
+        true
+    }
+
+    /// The constant forms written out in source: literals, tables, struct
+    /// literals, aliases and table slices.
+    fn fold_const_literal(
+        &mut self,
+        name: &str,
+        constant: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
         if self.const_ranges.contains_key(name)
             || self.consts.contains_key(name)
             || self.consts_real.contains_key(name)
@@ -919,17 +1120,7 @@ impl<'a> Lowering<'a> {
             let Some(fields) = self.const_struct_fields(&constant.ty, &args) else {
                 return false;
             };
-            for (field, value) in fields {
-                let key = format!("{name}.{field}");
-                if let Some(narrow) = self.eval_const(&value, scope) {
-                    self.consts.insert(key.clone(), narrow);
-                }
-                let Some(lowered) = self.lower_const_value(&value, scope) else {
-                    return false;
-                };
-                self.const_values.insert(key, lowered);
-            }
-            return true;
+            return self.insert_const_fields(name, fields, scope);
         } else if let ast::Expr::Construct { args, .. } = &constant.value {
             // `const K: Pair = { .a = 4, .b = 5 };` — a struct constant is one
             // folded value per field, keyed by the dotted path a read spells.
@@ -941,17 +1132,7 @@ impl<'a> Lowering<'a> {
             let Some(fields) = self.const_struct_fields(&constant.ty, args) else {
                 return false;
             };
-            for (field, value) in fields {
-                let key = format!("{name}.{field}");
-                if let Some(narrow) = self.eval_const(&value, scope) {
-                    self.consts.insert(key.clone(), narrow);
-                }
-                let Some(lowered) = self.lower_const_value(&value, scope) else {
-                    return false;
-                };
-                self.const_values.insert(key, lowered);
-            }
-            return true;
+            return self.insert_const_fields(name, fields, scope);
         } else if let ast::Expr::Int { text, .. } = &constant.value {
             if text.contains('.') {
                 if let Ok(value) = text.replace('_', "").parse::<f64>() {
@@ -1045,6 +1226,19 @@ impl<'a> Lowering<'a> {
         match index.as_ref() {
             ast::Expr::Range { lo, hi, .. } => {
                 loop_range(self.eval_const(lo, scope)?, self.eval_const(hi, scope)?)
+                    .into_iter()
+                    .map(element)
+                    .collect::<Option<Vec<_>>>()
+                    .map(Ok)
+            }
+            // `TABLE[2..]`: an open end is the table's own (#357).
+            ast::Expr::PartialRange { lo, hi, .. } => {
+                let bound = |given: &Option<Box<ast::Expr>>, open: i64| match given {
+                    Some(given) => self.eval_const(given, scope),
+                    None => Some(open),
+                };
+                let last = i64::try_from(table.len()).ok()? - 1;
+                loop_range(bound(lo, 0)?, bound(hi, last)?)
                     .into_iter()
                     .map(element)
                     .collect::<Option<Vec<_>>>()
@@ -1156,5 +1350,21 @@ fn connection_value_is_static(expression: &ast::Expr, resolved: &Resolved) -> bo
         | ast::Expr::Construct {
             spread: Some(_), ..
         } => false,
+    }
+}
+
+/// Whether a lowered value needs no signal: built from literals, and from
+/// canonical values that read none.
+fn is_constant_value(value: &Expr) -> bool {
+    match value {
+        Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) => true,
+        Expr::Canonical { reads, .. } => reads.is_empty(),
+        Expr::Unary { rhs, .. } => is_constant_value(rhs),
+        Expr::Binary { lhs, rhs, .. } => is_constant_value(lhs) && is_constant_value(rhs),
+        Expr::Slice { base, .. } => is_constant_value(base),
+        Expr::Select { cond, then, els } => {
+            is_constant_value(cond) && is_constant_value(then) && is_constant_value(els)
+        }
+        _ => false,
     }
 }

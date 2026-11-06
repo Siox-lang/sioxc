@@ -1,7 +1,24 @@
 # Public methods on entities
 
-Status: **partially implemented**. Tier 1 associated functions are complete;
-tiers 2 and 3 receiver methods remain a proposal and are rejected (`E-P024`).
+Status: **implemented for hardware callers** (owner-approved design,
+2026-11-03). Tier 1 associated functions are `pub static fn`. A `pub fn` (with
+its implicit receiver, sioxc #375) is a method called on a direct child,
+`fifo.push(x)` / `fifo.is_full()`. Before resolution, `syntax::methods`
+turns each into ports on the child (`m#called`, one `m#p` per parameter,
+`m#ret`), a process `m#call` that runs the body while it is called, and
+hidden wiring in the parent. A method's writes are combinational strobes,
+active only while it is called (a SystemVerilog interface function): when it
+is not called each written signal falls back to its default, so
+`push(v) { wr_en = '1'; din = v; }` drives a vendor FIFO's write port. The
+state lives in the child, and the result comes back in the same cycle.
+Rules: one call site per method per instance (a call in a loop counts as
+several); a direct child only; no testbench callers yet (when the strobe drops
+is undecided); a function cannot return an entity (owner rule, E-P020).
+Not built: a clocked write inside a method body that needs per-clock merging
+of several methods, arbitration between callers, and calls through an
+instance-array element.
+
+The text below is the design discussion this grew from.
 
 An entity's interface is its ports. Reaching a child instance therefore means
 declaring a port for every value that crosses the boundary and wiring each one
@@ -161,7 +178,39 @@ purely additive.
    the intermediate levels' ports.
 4. **Generic entities.** A method on `Fifo<W>` materialises ports whose widths
    depend on the specialization, so port generation must happen after
-   parameter substitution.
+   parameter substitution. Const-generic functions already do this per call
+   (#349); see *Since this was written*.
+5. **Spelling.** Whether to land tiers 2 and 3 only together with
+   [implicit receivers](implicit-receivers-and-static.md), so entity methods
+   never take a `self` parameter, which was the reason for deferring them.
+
+## Since this was written
+
+What landed after 2026-09-28 that a receiver-method design has to fit:
+
+- **Instance arrays** (sioxc #290, #308). `let stage: Cell[4];` builds every
+  slot, and `stage[i] = { .. }` is connection sugar. A method call through a
+  constant index, `stage[2].write(v)`, is a call on one element: one call site
+  for that element. A runtime index, `stage[sel].write(v)`, calls whichever
+  element `sel` selects: each element's enable is the call's enable and
+  `sel == k`, its arguments are the call's, and the result is a mux over the
+  elements' results by `sel`. Every element still has exactly one caller, so
+  this fits the one-call-site rule without arbitration. It is the same label
+  chain a runtime-indexed write already lowers to.
+- **Unwired instances** (W-P021). A slot left unconnected warns. Ports that a
+  method call generates are connected by that call, so an instance used only
+  through its methods must not warn, and a declared slot no method reaches
+  still does.
+- **Const generics** (#349). Generic functions are now instantiated per call
+  with their integer parameters written in. A method on `Fifo<W>` gets its
+  port widths the same way, after the instance's parameters are substituted,
+  which settles open question 4 in principle.
+- **Testbench callers.** A testbench process that calls `dut.write(v)` would
+  drive the generated enable and argument ports at that point in the process
+  and read the result after the delta settles, exactly as writing the ports by
+  hand does today, and `await` sequences successive calls. The one-call-site
+  rule applies per process. This needs no new runtime machinery, but it is a
+  new call form for the testbench lowering and is not designed in detail here.
 
 ## Status of the current rejection
 

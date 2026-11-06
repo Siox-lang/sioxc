@@ -2,6 +2,11 @@
 
 Status: **proposal**. Nothing here is implemented.
 
+Related: [implicit receivers and static declarations](implicit-receivers-and-static.md)
+proposes explicit process-local `static let` state. The temporary-local rules
+below describe ordinary process `let`; that separate proposal would add a
+distinct persistent variable without changing scoped signals into variables.
+
 ## Problem
 
 State that lasts across clock cycles is a signal declared at implementation

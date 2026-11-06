@@ -43,8 +43,18 @@ The type checker is directory-backed the same way:
 - `mod.rs` is the stable `siox::types::*` facade (`Ty`, `Typed`, `check`) and
   owns the private `Checker` state, so its fields stay private to the stage;
 - `collect.rs` builds the declaration registries before checking begins;
+  `Into` contracts retain checked source/target types after array-family
+  discovery. Each converted storage site records the selected method's `DefId`;
+  hardware and procedural lowering fetch that body directly, without choosing
+  it again from unqualified type names;
+- Affix targets and suffix bodies borrow source contracts. Suffix lowering
+  compares nominal target IDs and uses checked result types; generic checking's
+  memo key uses function/binder IDs and full checked types, not display names;
 - `items.rs`, `impls.rs`, and `members.rs` check items, trait contracts and
   impl bodies, and field/method access;
+- `ast_types.rs` retains the lowest declared label for plain and nominal arrays,
+  including nested fields. Inference and diagnostics use `indexing.rs`'s shared
+  known-bounds query, so valid nonzero/negative indices keep their element type;
 - `layouts.rs` validates direct and applied type widths with the shared
   evaluator and declaration-ID template bindings. The resolver retains name
   and argument-count checks, not a second width interpreter. A root-type mode

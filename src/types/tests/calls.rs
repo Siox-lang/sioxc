@@ -3,6 +3,64 @@
 use super::*;
 
 #[test]
+fn generic_instantiation_cache_keeps_nominal_arguments_distinct() {
+    for arrays in [false, true] {
+        let declarations = if arrays {
+            "pub enum Cell { Low, High } pub struct Token(Cell[]);"
+        } else {
+            "pub struct Token {}"
+        };
+        let left = format!(
+            "module left; {declarations}
+            impl Token {{ pub fn value() -> integer {{ return 1; }} }}"
+        );
+        let right = format!("module right; {declarations}");
+        let shape = if arrays { "[2]" } else { "" };
+        for bad_first in [false, true] {
+            let calls = if bad_first {
+                "inspect(bad); inspect(good); inspect(again);"
+            } else {
+                "inspect(good); inspect(bad); inspect(again);"
+            };
+            let caller = format!(
+                "module caller;
+                use Good = left::Token; use Bad = right::Token;
+                type Again = Bad;
+                fn inspect<T>(value: T) -> integer {{ return value.value(); }}
+                fn check(good: Good{shape}, bad: Bad{shape}, again: Again{shape}) {{ {calls} }}"
+            );
+            for reversed in [false, true] {
+                let mut sources = [
+                    (caller.as_str(), FileId(0)),
+                    (left.as_str(), FileId(1)),
+                    (right.as_str(), FileId(2)),
+                ];
+                if reversed {
+                    sources.reverse();
+                }
+                let sink = check_modules(&sources);
+                let errors: Vec<_> = sink
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+                    .collect();
+                assert_eq!(
+                    errors.len(),
+                    1,
+                    "arrays={arrays} bad_first={bad_first} reversed={reversed}: {:?}",
+                    sink.diagnostics()
+                );
+                assert!(
+                    errors[0].message.contains("has no method `value`"),
+                    "{:?}",
+                    errors[0]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn aliased_enum_conversions_check_the_selected_domain() {
     let provider = "module model;
         pub enum Base { Low = 3, High = 9 }
@@ -50,8 +108,8 @@ fn default_enum_new_does_not_override_a_declared_constructor() {
         enum DefaultMode { Low = 9, High = 17 }
         enum CustomMode { Low = 3, High = 4 }
         impl CustomMode {
-            pub fn new(value: integer) -> CustomMode { return CustomMode::High; }
-            pub fn forwarded(value: integer) -> Self { return Self::new(value); }
+            pub static fn new(value: integer) -> CustomMode { return CustomMode::High; }
+            pub static fn forwarded(value: integer) -> Self { return Self::new(value); }
         }
         type Alias = CustomMode;
         fn default_value() -> DefaultMode { return DefaultMode::new(); }
@@ -148,10 +206,10 @@ fn method_calls_check_argument_count_and_types() {
     let errors = check_src(
         "module m;\n\
              struct Device { pub value: unsigned[8] }\n\
-             impl Device { pub fn take(self, value: unsigned[8]) {} }\n\
+             impl Device { pub fn take(value: unsigned[8]) {} }\n\
              struct DefaultDevice { pub value: unsigned[8] }\n\
              trait Takes {\n\
-               fn take(self, value: unsigned[8]) {\n\
+               fn take(value: unsigned[8]) {\n\
                  let copy: unsigned[8] = value;\n\
                }\n\
              }\n\
@@ -183,13 +241,13 @@ fn associated_and_instance_method_call_forms_are_distinct() {
              struct Thing { pub value: Bit }\n\
              struct Other { pub value: Bit }\n\
              trait Factory {\n\
-               fn make(value: integer) -> integer { return value; }\n\
+               static fn make(value: integer) -> integer { return value; }\n\
              }\n\
              impl Factory for Other {}\n\
              impl Thing {\n\
-               pub fn static_value(value: integer) -> integer { return value; }\n\
-               pub fn logic_value() -> Logic { return 'X'; }\n\
-               pub fn instance_value(self) -> integer { return 1; }\n\
+               pub static fn static_value(value: integer) -> integer { return value; }\n\
+               pub static fn logic_value() -> Logic { return 'X'; }\n\
+               pub fn instance_value() -> integer { return 1; }\n\
              }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
@@ -260,9 +318,9 @@ fn value_returning_methods_cannot_fall_through() {
     let errors = check_src(
         "module m;\n\
              struct S { value: unsigned[8] }\n\
-             impl S { fn bad(self) -> unsigned[8] {} }\n\
+             impl S { fn bad() -> unsigned[8] {} }\n\
              trait Defaulted {\n\
-               fn partial(self, flag: Bool) -> unsigned[8] {\n\
+               fn partial(flag: Bool) -> unsigned[8] {\n\
                  if flag { return 1; }\n\
                }\n\
              }\n",
@@ -280,7 +338,7 @@ fn method_return_type_propagates() {
     // (Logic isn't Boolean), proving the return type flows into checks.
     let bad = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { pub fn ready(self) -> Logic { return self.v; } }\n\
+            impl S { pub fn ready() -> Logic { return self.v; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
     assert_eq!(
@@ -292,7 +350,7 @@ fn method_return_type_propagates() {
     // A `Bool`-returning method is a valid condition — no error.
     let good = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { pub fn ready(self) -> Bool { return true; } }\n\
+            impl S { pub fn ready() -> Bool { return true; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
     assert_eq!(
@@ -396,21 +454,21 @@ fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn wide(x: unsigned[65]) -> integer; }\n"),
-        1,
-        "a packed argument wider than the C ABI word must be rejected"
+        0,
+        "a packed argument wider than the C ABI word crosses as words by pointer"
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn aggregate(x: unsigned[8][2]) -> integer; }\n"),
-        1,
-        "an array has no scalar C ABI mapping"
+        0,
+        "an array of C scalars crosses by pointer"
     );
     assert_eq!(
         check_src(
             "module m;\nstruct Pair { a: integer, b: integer }\n\
                  extern \"C\" { fn record() -> Pair; }\n"
         ),
-        1,
-        "a struct return has no C layout mapping"
+        0,
+        "a struct return follows the platform's struct-return rules"
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn side_effect(x: integer); }\n"),
@@ -464,7 +522,7 @@ fn procedures_cannot_be_used_as_values() {
                    fn procedure() {}\n\
                    fn consume(value: integer) {}\n\
                    struct Device { pub value: Bit }\n\
-                   impl Device { pub fn procedure(self) {} }\n\
+                   impl Device { pub fn procedure() {} }\n\
                    entity E { y: Bit out }\n\
                    impl E {\n\
                      let device: Device = { .value = '0' };\n\
@@ -631,7 +689,7 @@ fn return_outside_a_function_is_reported() {
     assert_eq!(free_fn, 0, "a free function may return");
     let method = check_src(
         "module m;\nstruct S { pub v: unsigned[8] }\n\
-             impl S { pub fn get(self) -> unsigned[8] { return self.v; } }\n\
+             impl S { pub fn get() -> unsigned[8] { return self.v; } }\n\
              entity E { y: unsigned[8] out }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
     );
     assert_eq!(method, 0, "a method may return");

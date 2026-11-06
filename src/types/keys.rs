@@ -232,6 +232,17 @@ impl<'a> Checker<'a> {
             })
     }
 
+    /// A converted value's layout name. Selection uses checked contracts and
+    /// declaration IDs; retain qualifiers here for source-layout construction.
+    pub(super) fn conversion_key(&self, t: &Ty) -> Option<String> {
+        match t {
+            Ty::Array {
+                family: None, elem, ..
+            } => Some(format!("{}[]", self.ty_head(elem)?)),
+            other => self.ty_head(other),
+        }
+    }
+
     /// The head name of a checked type, for diagnostics and impl lookup.
     pub(super) fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {

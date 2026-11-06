@@ -102,6 +102,13 @@ impl<'a> Checker<'a> {
                         self.check_function_block(f, b, None, true);
                     }
                 } else if let Some(body) = &f.body {
+                    for statement in &body.stmts {
+                        if let Stmt::Let(declaration) = statement {
+                            if declaration.is_static {
+                                self.reject_generic_static(declaration);
+                            }
+                        }
+                    }
                     // Operator/type checks wait for monomorphization, but
                     // reaching the end without a value is independent of the
                     // concrete type arguments and is already invalid here.
@@ -188,10 +195,127 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Record each `extern "C"` function taking a struct or array, before
+    /// any call to one is checked.
+    pub(super) fn collect_aggregate_extern_fns(&mut self, modules: &[Module]) {
+        for module in modules {
+            for item in &module.items {
+                let Item::ExternBlock { fns, .. } = item else {
+                    continue;
+                };
+                for function in fns {
+                    let aggregate = function
+                        .params
+                        .iter()
+                        .filter_map(|p| p.ty.as_ref())
+                        .chain(function.ret.as_ref())
+                        .any(|ty| {
+                            let checked = self.ast_ty(ty);
+                            checked.is_c_aggregate()
+                                && !self.is_c_handle(&checked)
+                                && self.c_aggregate_problem(ty, 0).is_none()
+                        });
+                    if let Some(id) = self
+                        .resolved
+                        .declared(function.name.span)
+                        .filter(|_| aggregate)
+                    {
+                        self.aggregate_extern_fns.insert(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether `ty` is `std::ffi::Handle`, an opaque C pointer passed by
+    /// value.
+    pub(super) fn is_c_handle(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named(id) if self.resolved.lang_of(*id) == Some("c_handle"))
+    }
+
+    /// Why `ty` cannot cross to C as an aggregate, or `None`: a struct or
+    /// fixed array whose leaves are `integer`, `natural`, `real`, ranged
+    /// integers or packed values of up to 64 bits.
+    fn c_aggregate_problem(&self, ty: &Type, depth: usize) -> Option<String> {
+        if depth > 16 {
+            return Some("it nests too deeply".to_string());
+        }
+        match self.ast_ty(ty) {
+            Ty::Integer | Ty::Natural | Ty::Real | Ty::Error => None,
+            // A packed value: one word, or little-endian words by pointer.
+            Ty::Array {
+                len: 1..,
+                family: Some(_),
+                ..
+            } => None,
+            Ty::Array {
+                len, family: None, ..
+            } if len > 0 => match ty {
+                Type::Indexed { base, .. } => self.c_aggregate_problem(base, depth + 1),
+                _ => Some("an array needs a declared length".to_string()),
+            },
+            Ty::Named(id) => {
+                let key = self.definition_key(id)?;
+                if self
+                    .structs
+                    .get(&key)
+                    .is_some_and(|(base, _)| base.is_some())
+                {
+                    return Some(format!("`{key}` derives from another type"));
+                }
+                let Some(fields) = self.struct_field_types.get(&key) else {
+                    return Some(format!("`{key}` is not a struct of C scalars"));
+                };
+                if fields.is_empty() {
+                    return Some(format!("`{key}` has no fields"));
+                }
+                let types = self.field_decl_types.get(&key)?;
+                fields.iter().find_map(|(name, _, _)| {
+                    let field = types.get(name)?;
+                    self.c_aggregate_problem(field, depth + 1)
+                        .map(|problem| format!("field `{name}`: {problem}"))
+                })
+            }
+            Ty::Char => Some("Char has no declared C character ABI".to_string()),
+            other => Some(format!("`{}` has no C layout", self.ty_display(&other))),
+        }
+    }
+
     /// Check that an `extern "C"` parameter or result has a representable ABI
     /// type: `real` maps to `double`, integer-shaped types to 64-bit words.
     pub(super) fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
         let checked = self.ast_ty(ty);
+        // `std::ffi::Handle` is the C pointer itself.
+        if self.is_c_handle(&checked) {
+            return;
+        }
+        // A struct or fixed array of C scalars crosses by pointer, laid out
+        // as C lays it out; the call is then testbench-only, since hardware
+        // holds an aggregate as separate leaves.
+        if checked.is_c_aggregate() {
+            match self.c_aggregate_problem(ty, 0) {
+                // A parameter crosses by pointer; a result is returned by the
+                // platform's struct-return rules.
+                None => {
+                    if let Some(id) = self.resolved.declared(function.name.span) {
+                        self.aggregate_extern_fns.insert(id);
+                    }
+                    return;
+                }
+                Some(problem) => {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        type_head_span(ty).unwrap_or(function.name.span),
+                        format!(
+                            "unsupported extern C {position} `{}` in `{}`: {problem}",
+                            crate::syntax::pretty::type_str(ty),
+                            function.name.text
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
         let supported = matches!(checked, Ty::Integer | Ty::Natural | Ty::Real)
             || matches!(
                 checked,
@@ -310,6 +434,18 @@ impl<'a> Checker<'a> {
         let target = &implementation.target;
         let supported = match target {
             Type::Tuple { .. } => false,
+            // `impl Into<unsigned> for Logic[]`: an implicit conversion is
+            // filed under `Logic[]`, apart from `Logic` (conversions proposal).
+            Type::Indexed { index: None, .. }
+                if implementation
+                    .trait_
+                    .as_ref()
+                    .and_then(|path| self.trait_key(path))
+                    .as_deref()
+                    == Some("Into") =>
+            {
+                true
+            }
             Type::Indexed { base, .. } => {
                 let generic = type_head_name(base).is_some_and(|name| {
                     implementation
@@ -408,9 +544,37 @@ impl<'a> Checker<'a> {
                 if path.segments.last().is_some_and(|s| s.text == "Char")))
     }
 
+    /// A function returns values, not structural hardware instances.
+    fn reject_entity_return(&mut self, function: &FnDecl) {
+        let Some(ret) = &function.ret else { return };
+        if self.declarations.entity_type_id(ret).is_none() {
+            return;
+        }
+        self.error_with_help(
+            codes::INSTANCE_PLACEMENT,
+            type_span(ret),
+            format!("`{}` cannot return an entity", function.name.text),
+            "an instance is hardware, built once where it is declared: instantiate it at the \
+             top of an entity body and wire it through ports, or return the values it \
+             would compute"
+                .to_string(),
+        );
+    }
+
     /// Representation checks beyond the shared source-layout pass.
     pub(super) fn check_item_shapes(&mut self, item: &Item) {
         match item {
+            Item::Fn(function) => self.reject_entity_return(function),
+            Item::Trait(declaration) => {
+                for function in &declaration.items {
+                    self.reject_entity_return(function);
+                }
+            }
+            Item::ExternBlock { fns, .. } => {
+                for function in fns {
+                    self.reject_entity_return(function);
+                }
+            }
             Item::Struct(structure) => {
                 if let Some(base) = &structure.base {
                     // `struct Box<T>(T)` derives from a type it does not know:
@@ -520,6 +684,9 @@ impl<'a> Checker<'a> {
                     self.check_struct_resolve(implementation);
                 }
                 for item in &implementation.items {
+                    if let ImplItem::Fn(function) = item {
+                        self.reject_entity_return(function);
+                    }
                     if let ImplItem::Let(declaration) = item {
                         if let Some(ty) = &declaration.ty {
                             self.check_storable(ty);

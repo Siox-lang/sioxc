@@ -43,6 +43,7 @@ fn declare_let_pattern(pattern: LetPattern, whole: Option<&Type>, lets: &mut Vec
                     ty: ty.or_else(|| whole.cloned()),
                     value: None,
                     span: name.span,
+                    is_static: false,
                 });
             }
             Expr::Path(Path {
@@ -239,6 +240,11 @@ pub struct Parser<'a> {
     /// Inside a process or function body, where `for` and `if` are control
     /// flow rather than structure and so take no label.
     sequential: u32,
+    /// Nesting depth of the statements directly in the innermost process or
+    /// function body, where a `static let` may stand.
+    body_depth: u32,
+    /// Set by `static` for the `let` it introduces.
+    static_let: bool,
     /// Each token's text, for a parser over macro tokens: they come from
     /// several files, and hygiene may have renamed an identifier.
     texts: Option<Vec<String>>,
@@ -283,6 +289,8 @@ impl<'a> Parser<'a> {
             depth: 0,
             depth_reported: false,
             sequential: 0,
+            body_depth: 0,
+            static_let: false,
             texts: None,
             last: 0,
             macro_args: HashMap::new(),
@@ -519,6 +527,7 @@ impl<'a> Parser<'a> {
             lints: std::mem::take(&mut self.lints),
             span,
             macro_args: std::mem::take(&mut self.macro_args),
+            derived_files: Vec::new(),
         }
     }
 
@@ -641,10 +650,43 @@ impl<'a> Parser<'a> {
                 .collect::<Vec<_>>();
             (Inline::Auto, attrs)
         };
+        // `#[derive(Eq, Ord)]` belongs to the struct that follows (derive
+        // proposal); every other directive stays on entities and impls.
+        let mut derives = Vec::new();
+        let mut kept = Vec::new();
+        for attr in attrs {
+            if path_text(&attr.name) != "derive" {
+                kept.push(attr);
+                continue;
+            }
+            if !self.at(TokenKind::Struct) {
+                self.error_at(attr.span, "`#[derive(...)]` applies to a struct");
+            }
+            if let Some(Expr::Tuple { elems, .. }) = &attr.value {
+                derives.extend(elems.iter().filter_map(|elem| match elem {
+                    Expr::Path(path) => path.segments.last().cloned(),
+                    _ => None,
+                }));
+            }
+        }
+        let attrs = kept;
         if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Impl) {
             self.error_here("attributes are only allowed on entities and implementations");
         }
 
+        if self.at(TokenKind::Static) {
+            let marker = self.bump().span;
+            let help = if self.at(TokenKind::Fn) {
+                "a module function never has a receiver; remove `static`"
+            } else {
+                "module-level state is not available; declare it in a process or function"
+            };
+            self.sink.emit(
+                Diagnostic::error("`static` belongs to implementation members and locals")
+                    .at(marker)
+                    .help(help),
+            );
+        }
         let item = match self.kind() {
             TokenKind::Use => Item::Using(self.parse_use(is_pub)),
             TokenKind::Type => Item::Using(self.parse_type_alias(is_pub)),
@@ -658,7 +700,11 @@ impl<'a> Parser<'a> {
                 function.inline = inline;
                 Item::Fn(function)
             }
-            TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
+            TokenKind::Struct => {
+                let mut declaration = self.parse_struct(is_pub);
+                declaration.derives = derives;
+                Item::Struct(declaration)
+            }
             TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => {
@@ -768,6 +814,29 @@ impl<'a> Parser<'a> {
             let name = self.parse_path();
             if let Some(directive) = self.parse_lint_directive(start, &name) {
                 self.pending_lints.push(directive);
+                continue;
+            }
+            // `#[derive(Eq, Ord)]`: the traits, kept as a tuple of paths.
+            if path_text(&name) == "derive" && self.eat(TokenKind::LParen) {
+                let list = self.span();
+                let mut elems = Vec::new();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    elems.push(Expr::Path(self.parse_path()));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "to close `#[derive(...)]`");
+                self.expect(TokenKind::RBracket, "to close an attribute");
+                attrs.push(Attr {
+                    name,
+                    value: Some(Expr::Tuple {
+                        elems,
+                        span: list.to(self.prev_span()),
+                    }),
+                    span: start.to(self.prev_span()),
+                    directive: true,
+                });
                 continue;
             }
             // `#[inline(always)]`: the mode is kept as a path value.
@@ -1177,6 +1246,7 @@ impl<'a> Parser<'a> {
                 params,
                 base: Some(base),
                 fields: Vec::new(),
+                derives: Vec::new(),
                 span: start.to(self.prev_span()),
             };
         } else {
@@ -1210,6 +1280,7 @@ impl<'a> Parser<'a> {
             params,
             base,
             fields,
+            derives: Vec::new(),
             span: start.to(self.prev_span()),
         }
     }
@@ -1621,7 +1692,12 @@ impl<'a> Parser<'a> {
         // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
         let at_fn = self.at(TokenKind::Fn)
-            || self.at(TokenKind::Pub) && matches!(self.kind_at(self.pos + 1), TokenKind::Fn);
+            || self.at(TokenKind::Static) && matches!(self.kind_at(self.pos + 1), TokenKind::Fn)
+            || self.at(TokenKind::Pub)
+                && matches!(
+                    self.kind_at(self.pos + 1),
+                    TokenKind::Fn | TokenKind::Static
+                );
         let (inline, attrs) = if at_fn {
             self.take_inline(attrs)
         } else {
@@ -1636,7 +1712,11 @@ impl<'a> Parser<'a> {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
         let is_pub = self.eat(TokenKind::Pub);
-        if is_pub && !self.at(TokenKind::Fn) && !self.at(TokenKind::Attr) {
+        if is_pub
+            && !self.at(TokenKind::Fn)
+            && !self.at(TokenKind::Static)
+            && !self.at(TokenKind::Attr)
+        {
             self.error_at(
                 self.prev_span(),
                 "only functions and attributes may be `pub` inside an implementation",
@@ -1690,43 +1770,28 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 let mut function = self.parse_fn_after_name(start, name, is_pub);
                 function.inline = inline;
+                self.implicit_receiver(&mut function);
                 Some(ImplItem::Fn(function))
             }
-            TokenKind::Process => {
-                let start = label.as_ref().map_or(self.span(), |label| label.span);
-                let keyword = self.bump().span;
-                let mut label = label;
-                if self.at(TokenKind::Ident) {
-                    // The removed `process update { ... }` spelling: say what
-                    // replaces it and keep the name as the label.
-                    let old = self.parse_ident();
-                    let mut diagnostic =
-                        Diagnostic::error("a process name goes in front, as a label")
-                            .at(old.span)
-                            .help(format!("write `{}: process {{ ... }}`", old.text));
-                    if label.is_none() && self.texts.is_none() {
-                        if let Some(between) =
-                            self.src.get(keyword.end as usize..old.span.start as usize)
-                        {
-                            diagnostic = diagnostic.suggest(
-                                keyword.to(old.span),
-                                format!("{}:{between}process", old.text),
-                                Applicability::MachineApplicable,
-                            );
-                        }
-                    }
-                    self.sink.emit(diagnostic);
-                    label.get_or_insert(old);
-                }
-                self.sequential += 1;
-                let body = self.parse_block();
-                self.sequential -= 1;
-                Some(ImplItem::Process(ProcessDecl {
-                    label,
-                    span: start.to(body.span),
-                    body,
-                }))
+            TokenKind::Static if self.kind_at(self.pos + 1) == &TokenKind::Fn => {
+                let mut function = self.parse_static_fn();
+                function.is_pub = is_pub;
+                function.inline = inline;
+                Some(ImplItem::Fn(function))
             }
+            TokenKind::Static if self.kind_at(self.pos + 1) == &TokenKind::Let => {
+                self.sink.emit(
+                    Diagnostic::error("`static let` is only available in processes and functions")
+                        .at(self.span())
+                        .help(
+                            "every `let` in an entity body is already declared once; remove \
+                             `static`",
+                        ),
+                );
+                self.bump();
+                self.parse_impl_item()
+            }
+            TokenKind::Process => Some(ImplItem::Process(self.parse_process(label))),
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
                 let start = self.span();
@@ -1756,7 +1821,98 @@ impl<'a> Parser<'a> {
     /// Parse the statement after `label:`. A structural `for` or `if` and any
     /// assignment keep the label; anything else reports it and parses on
     /// without it.
+    /// A process inside a generate `for`/`if`: one per iteration or branch.
+    /// Inside a process or function there is no structure to hold one.
+    fn process_stmt(&mut self, label: Option<Ident>) -> Stmt {
+        if self.sequential > 0 {
+            self.error_here("a process cannot be declared inside a process or function");
+        }
+        Stmt::Process(self.parse_process(label))
+    }
+
+    /// `label: process { ... }`, at `process`, with the label already read.
+    fn parse_process(&mut self, label: Option<Ident>) -> ProcessDecl {
+        let start = label.as_ref().map_or(self.span(), |label| label.span);
+        let keyword = self.bump().span;
+        let mut label = label;
+        if self.at(TokenKind::Ident) {
+            // The removed `process update { ... }` spelling: say what
+            // replaces it and keep the name as the label.
+            let old = self.parse_ident();
+            let mut diagnostic = Diagnostic::error("a process name goes in front, as a label")
+                .at(old.span)
+                .help(format!("write `{}: process {{ ... }}`", old.text));
+            if label.is_none() && self.texts.is_none() {
+                if let Some(between) = self.src.get(keyword.end as usize..old.span.start as usize) {
+                    diagnostic = diagnostic.suggest(
+                        keyword.to(old.span),
+                        format!("{}:{between}process", old.text),
+                        Applicability::MachineApplicable,
+                    );
+                }
+            }
+            self.sink.emit(diagnostic);
+            label.get_or_insert(old);
+        }
+        self.sequential += 1;
+        let saved = std::mem::replace(&mut self.body_depth, self.depth + 1);
+        let body = self.parse_block();
+        self.body_depth = saved;
+        self.sequential -= 1;
+        ProcessDecl {
+            label,
+            span: start.to(body.span),
+            body,
+        }
+    }
+
+    /// `static let x: T = v;` in a process or function body: a local that
+    /// keeps its value between activations and calls. Anywhere else, and
+    /// `static` before anything but `let`, is an error.
+    fn parse_static_stmt(&mut self) -> Stmt {
+        let marker = self.bump().span;
+        if self.at(TokenKind::Fn) {
+            self.error_at(
+                marker,
+                "`static fn` declares an implementation or trait member without a receiver",
+            );
+        } else if !self.at(TokenKind::Let) {
+            self.error_at(marker, "expected `let` after `static`");
+            return self.parse_stmt();
+        } else if self.sequential == 0 {
+            self.sink.emit(
+                Diagnostic::error("`static let` is only available in processes and functions")
+                    .at(marker)
+                    .help(
+                        "every `let` in an entity body is already declared once; remove `static`",
+                    ),
+            );
+        } else if self.depth != self.body_depth {
+            self.sink.emit(
+                Diagnostic::error("`static let` stands directly in a process or function body")
+                    .at(marker)
+                    .help(
+                        "declare it before the `if`, loop or `match`, so it is initialized once \
+                     whatever path runs first",
+                    ),
+            );
+        } else if self.kind_at(self.pos + 1) == &TokenKind::LParen {
+            self.error_at(
+                marker,
+                "a tuple `let` cannot be `static`; declare each name",
+            );
+        } else {
+            self.static_let = true;
+        }
+        let stmt = self.parse_stmt();
+        self.static_let = false;
+        stmt
+    }
+
     fn parse_labelled_stmt(&mut self, label: Ident) -> Stmt {
+        if self.at(TokenKind::Process) {
+            return self.process_stmt(Some(label));
+        }
         if self.sequential > 0 && (self.at(TokenKind::For) || self.at(TokenKind::If)) {
             self.sink.emit(
                 Diagnostic::error("a `for` or `if` inside a process or function takes no label")
@@ -1827,6 +1983,7 @@ impl<'a> Parser<'a> {
             ty,
             value,
             span: start.to(self.prev_span()),
+            is_static: std::mem::take(&mut self.static_let),
         };
         // Each further name's diagnostics point at it, not at the `let`.
         self.grouped_lets.extend(others.into_iter().map(|name| {
@@ -1922,7 +2079,9 @@ impl<'a> Parser<'a> {
         self.parse_where_into(&mut generics);
         let body = if self.at(TokenKind::LBrace) {
             self.sequential += 1;
+            let saved = std::mem::replace(&mut self.body_depth, self.depth + 1);
             let body = self.parse_block();
+            self.body_depth = saved;
             self.sequential -= 1;
             Some(body)
         } else {
@@ -1938,7 +2097,61 @@ impl<'a> Parser<'a> {
             body,
             span: start.to(self.prev_span()),
             inline: Inline::Auto,
+            is_static: false,
         }
+    }
+
+    /// An implementation or trait member without `static` has a receiver,
+    /// implicit as C++'s `this`: it is recorded as the leading `self`
+    /// parameter later stages already understand, at a zero-width span of its
+    /// own. Writing `self` is the old spelling: it still means the receiver,
+    /// and warns with the migration, so code written before the change keeps
+    /// compiling while it moves over.
+    fn implicit_receiver(&mut self, function: &mut FnDecl) {
+        if let Some(receiver) = function.params.iter().find(|param| param.is_self) {
+            self.sink.emit(
+                Diagnostic::warning("the receiver is implicit: remove the `self` parameter")
+                    .at(receiver.span)
+                    .help(format!(
+                        "write `fn {}(...)`; a member without a receiver is `static fn {}(...)`",
+                        function.name.text, function.name.text
+                    )),
+            );
+            return;
+        }
+        let at = function.name.span.end;
+        function.params.insert(
+            0,
+            FnParam {
+                is_self: true,
+                name: None,
+                ty: None,
+                span: Span {
+                    file: function.name.span.file,
+                    start: at,
+                    end: at,
+                },
+            },
+        );
+    }
+
+    /// `static fn name(...)`: a member without a receiver. A `self`
+    /// parameter contradicts the marker.
+    fn parse_static_fn(&mut self) -> FnDecl {
+        let start = self.span();
+        self.bump(); // `static`
+        self.bump(); // `fn`
+        let name = self.parse_ident();
+        let mut function = self.parse_fn_after_name(start, name, false);
+        function.is_static = true;
+        if let Some(receiver) = function.params.iter().find(|param| param.is_self) {
+            self.sink.emit(
+                Diagnostic::error("a `static fn` has no receiver")
+                    .at(receiver.span)
+                    .help("remove `self`, or remove `static` to make it a method"),
+            );
+        }
+        function
     }
 
     /// Split `#[inline]`, `#[inline(always)]` and `#[inline(never)]` off a
@@ -2087,12 +2300,21 @@ impl<'a> Parser<'a> {
                     "trait methods inherit the trait's visibility; remove `pub`",
                 );
             }
+            if self.at(TokenKind::Static) && self.kind_at(self.pos + 1) == &TokenKind::Fn {
+                items.push(self.parse_static_fn());
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            }
             if !self.eat(TokenKind::Fn) {
                 self.error_here("expected a `fn` method signature in trait body");
                 break;
             }
             let mname = self.parse_ident();
-            items.push(self.parse_fn_after_name(istart, mname, false));
+            let mut function = self.parse_fn_after_name(istart, mname, false);
+            self.implicit_receiver(&mut function);
+            items.push(function);
             if self.pos == before {
                 self.bump();
             }
@@ -2246,9 +2468,22 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 Stmt::Let(self.parse_let_after_name(start, name))
             }
+            TokenKind::Static => self.parse_static_stmt(),
             TokenKind::If => Stmt::If(self.parse_if()),
+            TokenKind::Process => self.process_stmt(None),
             TokenKind::Match => Stmt::Match(self.parse_match()),
             TokenKind::For => self.parse_for(),
+            TokenKind::While => {
+                let start = self.span();
+                self.bump(); // `while`
+                let cond = self.parse_expr(true);
+                let body = self.parse_block();
+                Stmt::While {
+                    cond,
+                    body,
+                    span: start.to(self.prev_span()),
+                }
+            }
             TokenKind::Return => {
                 let start = self.span();
                 self.bump();
@@ -2279,14 +2514,19 @@ impl<'a> Parser<'a> {
                     segments: vec![ident],
                     span: start,
                 });
-                let arg = self.parse_expr(false);
+                let mut args = vec![self.parse_expr(false)];
+                // `await <condition> for <time>;`: VHDL's `wait until … for …`,
+                // a second argument.
+                if self.eat(TokenKind::For) {
+                    args.push(self.parse_expr(false));
+                }
                 self.expect(TokenKind::Semi, "after a timing primitive");
                 let span = start.to(self.prev_span());
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
                     qualifier: None,
-                    args: vec![arg],
+                    args,
                     bang: false,
                     span,
                 })
@@ -2660,7 +2900,14 @@ impl<'a> Parser<'a> {
             lo.clone()
         } else if matches!(
             self.kind(),
-            TokenKind::FatArrow | TokenKind::Pipe | TokenKind::Comma | TokenKind::RBrace
+            // `)` closes an open range ending a tuple pattern (`(..0, 1..)`,
+            // #302); `if` starts an arm's guard.
+            TokenKind::FatArrow
+                | TokenKind::Pipe
+                | TokenKind::Comma
+                | TokenKind::RBrace
+                | TokenKind::RParen
+                | TokenKind::If
         ) {
             None
         } else {
@@ -2790,7 +3037,12 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let mut lhs = self.parse_unary(no_struct);
         loop {
+            // A declared operator spelled across several punctuation tokens
+            // (`++`, `**`, `+-`) wins over the one-token core operator it
+            // starts with: the longest operator is taken, as Rust's lexer does.
+            let custom = self.custom_operator_at().filter(|found| found.3 > 1);
             let (op, lbp, rbp, consumed) = match self.kind() {
+                _ if custom.is_some() => custom.expect("checked"),
                 TokenKind::Star => (BinOp::Mul, 90, 91, 1),
                 TokenKind::Slash => (BinOp::Div, 90, 91, 1),
                 TokenKind::Percent => (BinOp::Rem, 90, 91, 1),
@@ -4486,7 +4738,7 @@ mod tests {
     /// methods, and the printer writes them back.
     #[test]
     fn inline_directives_attach_to_functions() {
-        let src = "module m;\n\n#[inline(never)]\nfn big() -> integer {\n    return 1;\n}\n\nimpl Add<T, T> for T {\n    #[inline(always)]\n    fn add(self, rhs: T) -> T {\n        return self;\n    }\n    #[inline]\n    pub fn hint(self) -> T {\n        return self;\n    }\n}\n";
+        let src = "module m;\n\n#[inline(never)]\nfn big() -> integer {\n    return 1;\n}\n\nimpl Add<T, T> for T {\n    #[inline(always)]\n    fn add(rhs: T) -> T {\n        return self;\n    }\n    #[inline]\n    pub fn hint() -> T {\n        return self;\n    }\n}\n";
         let m = parse_ok(src);
         let Item::Fn(big) = &m.items[0] else {
             panic!("expected fn")
@@ -4959,7 +5211,7 @@ mod tests {
     /// Visibility is retained on functions, fields and methods alike.
     fn visibility_is_retained_on_functions_fields_and_methods() {
         let m = parse_ok(
-            "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get(self) -> integer { return self.open; } fn secret(self) -> integer { return self.closed; } }\n",
+            "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get() -> integer { return self.open; } fn secret() -> integer { return self.closed; } }\n",
         );
         assert!(matches!(&m.items[0], Item::Fn(function) if function.is_pub));
         assert!(matches!(&m.items[1], Item::Fn(function) if !function.is_pub));
@@ -4982,7 +5234,7 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         crate::syntax::parse_module(
             FileId(0),
-            "module m;\nentity E { pub value: integer out }\ntrait T { pub fn value(self) -> integer; }\n",
+            "module m;\nentity E { pub value: integer out }\ntrait T { pub fn value() -> integer; }\n",
             &mut sink,
         );
         let messages: Vec<&str> = sink
@@ -5005,7 +5257,7 @@ mod tests {
         let m = parse_ok(
             "module m;\n\
              impl<T: Resolve> Resolve for T[] {\n\
-               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+               fn resolve(rhs: T[]) -> T[] { return self; }\n\
              }\n",
         );
         let Item::Impl(im) = &m.items[0] else {
@@ -5097,7 +5349,7 @@ mod tests {
     /// A trait and an impl of it parse together.
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self'event;\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  fn rising();\n  fn edge();\n}\nimpl ClockLike for Logic {\n  fn rising() {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge() {\n    return self'event;\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else {
             panic!("expected trait")
@@ -5133,7 +5385,7 @@ mod tests {
     /// Bus modes and construction expressions parse.
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready() -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
         );
         let Item::View(v) = &m.items[1] else {
             panic!("expected view")
@@ -5195,7 +5447,7 @@ mod tests {
         // `>>` token is split so one `>` closes `Bar<Bit>` and the other the
         // param list. A plain shift expression still parses as a shift.
         parse_ok("module m;\nfn f<T: Bar<Bit>>(x: T) -> Bit { return x.b(); }\n");
-        parse_ok("module m;\ntrait Foo<U> { fn g(self) -> Bar<U>; }\n");
+        parse_ok("module m;\ntrait Foo<U> { fn g() -> Bar<U>; }\n");
         let m = parse_ok("module m;\nimpl M {\n  y = a >> b;\n}\n");
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else {
@@ -5498,7 +5750,7 @@ mod tests {
     /// precedence bound inside the impl body, not only `#[precedence = N]`.
     #[test]
     fn precedence_is_discovered_from_a_body_binding() {
-        let src = "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(self, rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl CustomOperator<\"~~\", Bit, Bit> for Bit {}\n";
+        let src = "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl CustomOperator<\"~~\", Bit, Bit> for Bit {}\n";
         let mut sink = DiagnosticSink::new();
         let tokens = crate::syntax::lexer::Lexer::new(FileId(0), src).tokenize(&mut sink);
         let operators = discover_custom_operators(src, &tokens);

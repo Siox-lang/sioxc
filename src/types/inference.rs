@@ -54,19 +54,11 @@ impl<'a> Checker<'a> {
             // A suffix defined by `impl Suffix for T` types the literal as T;
             // the fixed fs/Hz table backs bare files as integer.
             Expr::SuffixLit { suffix, .. } => {
-                if let Some([ty]) = self.suffix_types.get(&suffix.text).map(|v| v.as_slice()) {
-                    return self
-                        .resolved
-                        .defs()
-                        .iter()
-                        .enumerate()
-                        .find(|(index, definition)| {
-                            matches!(definition.kind, DefKind::Struct | DefKind::Enum)
-                                && self.definition_key_str(DefId(*index as u32))
-                                    == Some(ty.as_str())
-                        })
-                        .map(|(index, _)| Ty::Named(DefId(index as u32)))
-                        .unwrap_or(Ty::Error);
+                if let Some(targets) = self.suffix_types.get(&suffix.text) {
+                    return match targets.as_slice() {
+                        [ty] => self.ast_ty(ty),
+                        _ => Ty::Error,
+                    };
                 }
                 if suffix_scale(&suffix.text).is_some() {
                     Ty::Integer
@@ -123,7 +115,14 @@ impl<'a> Checker<'a> {
                 // `'event` has the registered Boolean type.
                 "event" => self.bool_ty(),
                 "old" => self.type_of(base, sym),
-                "length" | "high" | "low" | "left" | "right" => Ty::Integer,
+                "length" | "high" | "low" | "left" | "right" => {
+                    // A computed base's type is what `fold_value_lengths`
+                    // reads its length from: `(a + b)'length` recorded none.
+                    if !matches!(base.as_ref(), Expr::Path(_)) {
+                        self.type_of(base, sym);
+                    }
+                    Ty::Integer
+                }
                 "ascending" => self.bool_ty(),
                 name => self
                     .type_attr(base, name, sym)
@@ -414,18 +413,46 @@ impl<'a> Checker<'a> {
                         // one-element vector, as `v(0 downto 0)` is in VHDL and
                         // `&v[0..1]` in Rust; `v[0]` is the element. Decaying
                         // it broke generic code at `W = 1` (#199).
+                        // A fixed or float format's slice keeps its binary
+                        // point: `x[0..-2]` of a `ufixed<8, 4>` is a
+                        // `ufixed<3, 2>`, its lowest label `-2` (#301).
+                        let low = if *base_low < 0 && width > 0 {
+                            let bounds = match index.as_ref() {
+                                Expr::Range { lo, hi, .. } => signed_lit(lo).zip(signed_lit(hi)),
+                                Expr::PartialRange { lo, hi, .. } => {
+                                    declared_labels_of(base, &self.array_bounds).and_then(
+                                        |(left, right)| {
+                                            let left = match lo {
+                                                Some(lo) => signed_lit(lo)?,
+                                                None => left,
+                                            };
+                                            let right = match hi {
+                                                Some(hi) => signed_lit(hi)?,
+                                                None => right,
+                                            };
+                                            Some((left, right))
+                                        },
+                                    )
+                                }
+                                _ => None,
+                            };
+                            bounds.map_or(0, |(left, right)| left.min(right))
+                        } else {
+                            0
+                        };
                         Ty::Array {
                             elem: elem.clone(),
                             family: family.clone(),
                             len: width,
-                            low: 0,
+                            low,
                         }
                     }
-                    Ty::Array { elem, len, .. } if !is_range => {
+                    Ty::Array { elem, .. } if !is_range => {
                         // An unconstrained array (`len` 0: a runtime string or
                         // `T[]`) checks its bounds when the test runs.
                         if signed_lit(index)
-                            .is_some_and(|i| i < 0 || *len != 0 && i as u64 >= *len as u64)
+                            .zip(self.known_index_bounds(base, &base_ty))
+                            .is_some_and(|(index, (low, high))| index < low || index > high)
                         {
                             Ty::Error
                         } else {
@@ -504,7 +531,7 @@ impl<'a> Checker<'a> {
                     "integer" => Ty::Integer,
                     "natural" => Ty::Natural,
                     "Char" => self.ty_from_head("Char"),
-                    // resize keeps the argument's family at the new width.
+                    // Resize keeps the argument's element and nominal family.
                     "resize" => {
                         // A named width too: `resize(v, WIDTH)` (#239).
                         let w = args
@@ -512,12 +539,12 @@ impl<'a> Checker<'a> {
                             .and_then(|width| self.constant_value(width))
                             .unwrap_or(0)
                             .max(0) as u32;
-                        let family = match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Array { family, .. }) => family,
-                            _ => None,
+                        let (elem, family) = match args.first().map(|a| self.type_of(a, sym)) {
+                            Some(Ty::Array { elem, family, .. }) => (elem, family),
+                            _ => (Box::new(self.ty_from_head("Logic")), None),
                         };
                         Ty::Array {
-                            elem: Box::new(self.ty_from_head("Logic")),
+                            elem,
                             family,
                             len: w,
                             low: 0,
@@ -550,7 +577,7 @@ impl<'a> Checker<'a> {
                             &self.associated_owner_ty(path).unwrap_or(Ty::Error),
                         ),
                         Some(None) => Ty::Void,
-                        None if name == "new" => self
+                        None if matches!(name.as_str(), "default" | "new") => self
                             .associated_conversion_ty(path)
                             .unwrap_or_else(|| self.free_call_return_type(path, args, sym)),
                         None => self.free_call_return_type(path, args, sym),

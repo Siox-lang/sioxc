@@ -332,6 +332,60 @@ impl<'a> Checker<'a> {
                     }
                     return;
                 }
+                // `u + arr`: an `unsigned` and a `Logic[]` are different
+                // types, and an operator's operand never converts implicitly
+                // (conversions proposal), so one is converted by hand.
+                let literal = |e: &Expr| {
+                    matches!(
+                        e,
+                        Expr::StrLit { .. }
+                            | Expr::BitStrLit { .. }
+                            | Expr::Array { .. }
+                            | Expr::Concat { .. }
+                            | Expr::Int { .. }
+                            | Expr::CharLit { .. }
+                    )
+                };
+                if !literal(lhs) && !literal(rhs) {
+                    let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
+                    if let (
+                        Ty::Array {
+                            family: a,
+                            elem: ea,
+                            ..
+                        },
+                        Ty::Array {
+                            family: b,
+                            elem: eb,
+                            ..
+                        },
+                    ) = (&left, &right)
+                    {
+                        if a.is_some() != b.is_some() && ea == eb {
+                            let (family, plain) = if a.is_some() {
+                                (&left, rhs)
+                            } else {
+                                (&right, lhs)
+                            };
+                            self.error_with_help(
+                                codes::TYPE_MISMATCH,
+                                expr_span(plain),
+                                format!(
+                                    "`{}` mixes {} and {}",
+                                    crate::syntax::pretty::bin_op(op),
+                                    self.ty_display(&left),
+                                    self.ty_display(&right)
+                                ),
+                                format!(
+                                    "an operand is not converted implicitly; write `{}({})`",
+                                    self.ty_display(family),
+                                    crate::syntax::pretty::expr_string(plain)
+                                ),
+                            );
+                            return;
+                        }
+                    }
+                }
                 // Mixed numbers: each operand that is not already of the
                 // promoted type widens to it (spec 3.17).
                 if !matches!(
@@ -571,7 +625,10 @@ impl<'a> Checker<'a> {
                         .resolved
                         .resolved(path.span)
                         .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn));
-                    let void = callee_id.is_some_and(|id| self.void_extern_fns.contains(&id));
+                    let aggregate =
+                        callee_id.is_some_and(|id| self.aggregate_extern_fns.contains(&id));
+                    let void =
+                        callee_id.is_some_and(|id| self.void_extern_fns.contains(&id)) || aggregate;
                     match (callee_id, self.current_fn.get()) {
                         (Some(id), Some(current)) if self.in_fn_body.get() => {
                             if void {
@@ -602,14 +659,23 @@ impl<'a> Checker<'a> {
                         _ => {}
                     }
                     if void && !self.in_testbench.get() && !self.in_fn_body.get() {
+                        let name = crate::syntax::pretty::expr_string(callee);
+                        let (message, help) = if aggregate {
+                            (
+                                format!("`{name}` passes a struct or array to or from C, so it can only be called in a testbench"),
+                                "hardware holds a struct or array as separate signals; pass C scalars instead",
+                            )
+                        } else {
+                            (
+                                format!("`{name}` returns nothing, so it can only be called in a testbench"),
+                                "give the C function a scalar result to use it in hardware",
+                            )
+                        };
                         self.error_with_help(
                             codes::INVALID_METHOD_CALL,
                             expr_span(callee),
-                            format!(
-                                "`{}` returns nothing, so it can only be called in a testbench",
-                                crate::syntax::pretty::expr_string(callee)
-                            ),
-                            "give the C function a scalar result to use it in hardware".to_string(),
+                            message,
+                            help.to_string(),
                         );
                     }
                 }
@@ -720,7 +786,20 @@ impl<'a> Checker<'a> {
                                     .get(key)
                                     .is_some_and(|(_, fields)| !fields.is_empty())
                             });
-                            if kernel || record {
+                            // `Bit[4](x)`, `Logic[4](x)`: an array of an enum
+                            // has no constructor either (#324). A `Logic[]`
+                            // takes a vector family implicitly, by `Into`.
+                            let enumeration = self.is_enum_ty(&self.path_ty(path));
+                            if kernel || record || enumeration {
+                                let help = if enumeration && path.segments[0].text == "Logic" {
+                                    "store the vector into a `Logic[N]` (`let v: Logic[4] = u;`), \
+                                     which converts it, or slice or build the array"
+                                        .to_string()
+                                } else {
+                                    "slice the array (`x[0..1]`) or build one from its elements \
+                                     (`[x[0], x[1]]`)"
+                                        .to_string()
+                                };
                                 self.error_with_help(
                                     codes::TYPE_MISMATCH,
                                     expr_span(callee),
@@ -728,9 +807,7 @@ impl<'a> Checker<'a> {
                                         "`{}` is an array, not a vector family, and has no constructor",
                                         crate::syntax::pretty::expr_string(callee)
                                     ),
-                                    "slice the array (`x[0..1]`) or build one from its elements \
-                                     (`[x[0], x[1]]`)"
-                                        .to_string(),
+                                    help,
                                 );
                             }
                         }
@@ -821,6 +898,7 @@ impl<'a> Checker<'a> {
                 self.check_conversion_fit(callee, args, e);
                 self.check_conversion_arity(callee, args);
                 self.check_conversion_route(callee, args, sym);
+                self.check_composite_conversion(callee, args, sym);
                 self.check_generic_bounds(callee, args, sym);
                 // A `name!(..)` still here is a macro expansion already
                 // reported (no matching form, or no such macro): it also
@@ -886,7 +964,12 @@ impl<'a> Checker<'a> {
                     Some(tys) => {
                         let list = tys
                             .iter()
-                            .map(|t| format!("{t}::{}", suffix.text))
+                            .map(|t| {
+                                let ty = self.ast_ty(t);
+                                let name =
+                                    self.ty_head(&ty).unwrap_or_else(|| self.ty_display(&ty));
+                                format!("{name}::{}", suffix.text)
+                            })
                             .collect::<Vec<_>>()
                             .join(", ");
                         self.error(
