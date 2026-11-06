@@ -267,6 +267,37 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
+                // `r = 10..25` into a `Range` signal: the struct literal it
+                // stands for, `{ .left = 10, .right = 25 }` (#445).
+                let range_struct;
+                let value = match value {
+                    ast::Expr::Range { lo, hi, span }
+                        if self
+                            .folded_elem_path(target)
+                            .or_else(|| expr_path(target))
+                            .and_then(|path| self.persisted_layout(&path))
+                            .is_some_and(|layout| {
+                                matches!(layout.kind, LayoutKind::Struct { .. })
+                            }) =>
+                    {
+                        let field = |name: &str, value: &ast::Expr| ast::ConnectArg {
+                            field: Some(ast::Ident {
+                                text: name.to_string(),
+                                span: *span,
+                            }),
+                            value: Some(value.clone()),
+                            span: *span,
+                        };
+                        range_struct = ast::Expr::Construct {
+                            ty: None,
+                            args: vec![field("left", lo), field("right", hi)],
+                            spread: None,
+                            span: *span,
+                        };
+                        &range_struct
+                    }
+                    value => value,
+                };
                 // Array and struct stores share one recursive canonical
                 // value path, including nested and returned aggregates.
                 if let Some(leaves) = self.aggregate_assign_leaves(target, value) {
