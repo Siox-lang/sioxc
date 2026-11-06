@@ -6527,6 +6527,19 @@ fn lower_for(
             return lower_statements(&statements, context, process, block);
         }
     }
+    // `for b in f()`, `v[3..0]`, `(v and m)`: a packed iterable that is not a
+    // name is evaluated once into a hidden local, and `b` is a local given
+    // each element in turn. It left the process unlowered (#483).
+    if !matches!(iterable, ast::Expr::Range { .. }) {
+        if let Some(
+            ty @ crate::types::Ty::Array {
+                family: Some(_), ..
+            },
+        ) = context.typed.expr_type(ast::expr_span(iterable)).cloned()
+        {
+            return lower_packed_for(variable, iterable, ty, body, span, context, process, block);
+        }
+    }
     let local = ProcessLocalId(process.locals.len() as u32);
     let ty = if matches!(iterable, ast::Expr::Range { .. }) {
         Some(crate::types::Ty::Integer)
@@ -6576,6 +6589,121 @@ fn lower_for(
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(header);
     }
     Some(exit)
+}
+
+/// `for b in <packed expression>`: the expression is evaluated once into a
+/// hidden local, then the body is unrolled once per element label with `b`
+/// a local holding that element.
+#[allow(clippy::too_many_arguments)]
+fn lower_packed_for(
+    variable: &ast::Ident,
+    iterable: &ast::Expr,
+    ty: crate::types::Ty,
+    body: &ast::Block,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let crate::types::Ty::Array { elem, len, low, .. } = &ty else {
+        return Some(block);
+    };
+    let elem = (**elem).clone();
+    // An operator's result (`v and 15`) has no layout of its own: it runs
+    // up from its low label, as a vector declared with a count
+    // (`unsigned[8]`) does.
+    let typed_range = crate::ir::LayoutRange {
+        left: *low,
+        right: low + i64::from(*len) - 1,
+    };
+    let value = value_ref(iterable, process, context);
+    let (mut block, value) = cfg_calls::lower_loop_iterable(value, block, process, context);
+    let layout = context.process_ir.value_layouts[value.0 as usize].clone();
+    let range = match process_value_source_layout(value, context.process_ir).map(|l| &l.kind) {
+        Some(LayoutKind::Packed {
+            range: Some(range), ..
+        }) => *range,
+        _ => typed_range,
+    };
+    let width = context.process_ir.values[value.0 as usize].bit_width;
+    let mut local = |name: String, source, ty, layout| {
+        let id = ProcessLocalId(process.locals.len() as u32);
+        process.locals.push(ProcessLocal {
+            id,
+            name,
+            source,
+            span,
+            scope: Some(span),
+            ty,
+            layout,
+        });
+        id
+    };
+    let snapshot = local(
+        "<for-vector>".to_string(),
+        None,
+        Some(ty.clone()),
+        layout.clone(),
+    );
+    let process_id = process.id;
+    let cursor = local(
+        variable.text.clone(),
+        context.resolved.declared(variable.span),
+        Some(elem.clone()),
+        None,
+    );
+    let local_value =
+        |local, ty, width, layout: Option<SourceLayout>, context: &mut LoweringContext<'_>| {
+            let id = push_value(
+                span,
+                ty,
+                width,
+                ProcessValueKind::Local {
+                    process: process_id,
+                    local,
+                },
+                context,
+            );
+            if layout.is_some() {
+                context.process_ir.value_layouts[id.0 as usize] = layout;
+            }
+            id
+        };
+    let target = local_value(snapshot, Some(ty.clone()), width, layout.clone(), context);
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Assign {
+            semantics: ProcessAssignment::ImmediateLocal,
+            driver_context: None,
+            target,
+            value,
+            span,
+        });
+    for label in crate::ir::loop_range(range.left, range.right) {
+        let base = local_value(snapshot, Some(ty.clone()), width, layout.clone(), context);
+        let index = push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![label as u64])),
+            context,
+        );
+        let kind = ProcessValueKind::Index { base, index };
+        let element_width = source_value_width(&kind, Some(&elem), process, context).or(Some(1));
+        let element = push_value(span, Some(elem.clone()), element_width, kind, context);
+        let target = local_value(cursor, Some(elem.clone()), element_width, None, context);
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateLocal,
+                driver_context: None,
+                target,
+                value: element,
+                span,
+            });
+        block = lower_statements(&body.stmts, context, process, block)?;
+    }
+    Some(block)
 }
 
 /// A range loop inside a recursive function's frame. The native loop keeps
