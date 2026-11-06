@@ -63,6 +63,42 @@ impl<'a> Checker<'a> {
         value: bool,
     ) {
         let Some((lo, hi)) = self.numeric_domain(ty) else {
+            // An unbounded scalar (`integer`, `real`, `Char`) has values no
+            // list of closed arms covers: it needs a catch-all, or arms open
+            // at both ends (`..-1`, `0..9`, `10..`). Without either, an
+            // unmatched value took the last arm (#478).
+            // ponytail: with both ends open the gaps between arms are not
+            // checked; compare constant bounds if that ever matters.
+            fn open_end(p: &Pattern, low: bool) -> bool {
+                match p {
+                    Pattern::Bounds { lo, hi, .. } => {
+                        if low {
+                            lo.is_none()
+                        } else {
+                            hi.is_none()
+                        }
+                    }
+                    Pattern::Or { alts, .. } => alts.iter().any(|alt| open_end(alt, low)),
+                    _ => false,
+                }
+            }
+            let open = |low: bool| arms.iter().any(|arm| open_end(&arm.pattern, low));
+            if matches!(ty, Ty::Integer | Ty::Natural | Ty::Real | Ty::Char)
+                && !arms.iter().any(|arm| pattern_covers(&arm.pattern).1)
+                && !(open(true) && open(false))
+            {
+                self.sink.emit(
+                    self.non_exhaustive(
+                        value,
+                        format!(
+                            "non-exhaustive match: a `{}` has values no arm covers",
+                            self.ty_display(ty)
+                        ),
+                    )
+                    .at(span)
+                    .help("add a `_` arm for the remaining values"),
+                );
+            }
             return;
         };
         // Collect covered intervals. A bit pattern carries don't-cares, whose
