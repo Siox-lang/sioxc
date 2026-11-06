@@ -10313,12 +10313,26 @@ fn expand_process_function(
     let generic_return =
         generic_argument.and_then(|argument| process_value_type(argument, context));
 
+    // `fn width<W: integer>(x: unsigned[W])`: `W` is the argument's length,
+    // as a statement-body call already binds it. Unbound, `return W;` read
+    // the parameter's definition and did not lower (#415).
+    let lengths = cfg_calls::length_generics(
+        function,
+        &parameters,
+        arguments,
+        function.span,
+        process,
+        context,
+    );
     let mut bindings = std::collections::HashMap::new();
     for (parameter, argument) in parameters.into_iter().zip(arguments.iter().copied()) {
         let name = parameter.name.as_ref()?;
         let definition = context.resolved.declared(name.span)?;
         give_literal_parameter_layout(parameter, argument, process, context);
         bindings.insert(definition, argument);
+    }
+    for (definition, value) in lengths {
+        bindings.entry(definition).or_insert(value);
     }
     if !context.inline_functions.insert(function.span) {
         return None;
