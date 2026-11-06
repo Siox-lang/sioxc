@@ -56,11 +56,13 @@ impl<'a> Checker<'a> {
                         family: None,
                         low,
                     },
+                    // An array of elements keeps its declared lowest label:
+                    // `integer[2][10..11]` is indexed 10 and 11 (#448).
                     other => Ty::Array {
                         elem: Box::new(other),
                         len: width,
                         family: None,
-                        low: 0,
+                        low,
                     },
                 }
             }
