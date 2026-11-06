@@ -1911,16 +1911,24 @@ fn render_expr(e: &Expr) -> String {
 
 /// Parse an integer literal, honouring `0x`/`0b` prefixes and `_`
 /// separators. `None` when the text is not a literal.
+/// A literal's value as the elaborator holds it. One from `2^63` to
+/// `u64::MAX` (`0x8000_0000_0000_0000`) is its 64-bit pattern, as lowering
+/// keeps constants; it read as unknown, so a parameter given it was missing
+/// and a generate `if` on it became a process (#484).
+// ponytail: such a value is negative as an `i64`, so an ordered comparison
+// of it during elaboration (`MASK > 5`) reads it below zero; widen the
+// elaborator's values to `i128` if that is ever needed.
 fn parse_int(text: &str) -> Option<i64> {
     let normalized = text.trim().replace('_', "");
     let t = normalized.as_str();
-    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        i64::from_str_radix(h, 16).ok()
+    let wide = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16).ok()
     } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
-        i64::from_str_radix(b, 2).ok()
+        u64::from_str_radix(b, 2).ok()
     } else {
-        t.parse().ok()
-    }
+        t.parse::<u64>().ok()
+    };
+    wide.map(|value| value as i64)
 }
 
 /// Render the local signal a port connects to. Bare paths render as their name;
