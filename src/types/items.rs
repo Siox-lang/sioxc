@@ -623,11 +623,14 @@ impl<'a> Checker<'a> {
                     return;
                 };
                 match index {
+                    // A named constant or constant expression is checked as
+                    // its value, as a literal is (#453).
                     Expr::Range { lo, hi, .. } => {
-                        let (Some(left), Some(right)) = (signed_lit(lo), signed_lit(hi)) else {
+                        let (Some(left), Some(right)) = (self.const_int(lo), self.const_int(hi))
+                        else {
                             return;
                         };
-                        let length = (i128::from(left) - i128::from(right)).unsigned_abs() + 1;
+                        let length = (left - right).unsigned_abs() + 1;
                         if length > u128::from(u32::MAX) {
                             self.error(
                                 codes::TYPE_MISMATCH,
@@ -641,7 +644,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     _ => {
-                        let Some(width) = signed_lit(index) else {
+                        let Some(width) = self.const_int(index) else {
                             // A literal past every machine word is past the
                             // layout maximum too; it used to pass silently
                             // (#149).
