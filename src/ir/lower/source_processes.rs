@@ -2973,7 +2973,7 @@ fn array_slice_elements(
             base: source,
             index: source_index,
             ..
-        } => {
+        } if matches!(source_index.as_ref(), ast::Expr::Range { .. }) => {
             let ast::Expr::Range { lo, hi, .. } = source_index.as_ref() else {
                 return None;
             };
@@ -2992,13 +2992,36 @@ fn array_slice_elements(
             );
             (indexed(source, labels), Some(source.as_ref()))
         }
-        ast::Expr::Path(path) if !path.segments.is_empty() => {
+        // A whole array named by a path, a field (`c.pair`) or an element
+        // of an outer array (`matrix[1]`): read element by element, which a
+        // place may be (#442, #451).
+        ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
             let source_value = value_ref(value, process, context);
             let source = operand_source_layout(source_value, process, context)?.index_range()?;
             (
                 indexed(value, crate::ir::loop_range(source.left, source.right)),
                 Some(value),
             )
+        }
+        // `s[0..4] = "HELLO"`: its characters (#451).
+        ast::Expr::StrLit { text, span } => (
+            text.chars()
+                .map(|ch| ast::Expr::CharLit { ch, span: *span })
+                .collect(),
+            None,
+        ),
+        // A call read per element would run once per element.
+        ast::Expr::Call { .. } => {
+            context.rejected.borrow_mut().push(
+                crate::diag::Diagnostic::error(format!(
+                    "a slice cannot be assigned the call `{}` directly",
+                    crate::syntax::pretty::expr_string(value)
+                ))
+                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                .at(ast::expr_span(value))
+                .help("assign the call to a local first, then assign the local to the slice"),
+            );
+            return Some(Vec::new());
         }
         _ => return None,
     };
