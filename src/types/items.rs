@@ -41,18 +41,38 @@ impl<'a> Checker<'a> {
                                 // An integer literal no 64-bit value holds
                                 // (`0x1_0000_0000_0000_0000`) is past a
                                 // discriminant's range, not unknown (#475).
-                                if let Expr::Int { text, .. } = val {
-                                    if !text.contains('.') && unsigned_lit_text(text).is_none() {
-                                        self.error(
-                                            codes::TYPE_MISMATCH,
-                                            expr_span(val),
-                                            format!(
-                                                "`{}::{}` has the discriminant {text}, past the \
-                                                 64 bits a discriminant holds",
-                                                e.name.text, v.name.text
-                                            ),
-                                        );
-                                    }
+                                let wide = matches!(val, Expr::Int { text, .. }
+                                    if !text.contains('.') && unsigned_lit_text(text).is_none());
+                                if wide {
+                                    self.error(
+                                        codes::TYPE_MISMATCH,
+                                        expr_span(val),
+                                        format!(
+                                            "`{}::{}` has the discriminant {}, past the 64 \
+                                             bits a discriminant holds",
+                                            e.name.text,
+                                            v.name.text,
+                                            crate::syntax::pretty::expr_string(val)
+                                        ),
+                                    );
+                                } else {
+                                    // A string, a real, an array or a runtime
+                                    // call was skipped and numbering counted on
+                                    // past it, colliding with later ones (#480).
+                                    self.error_with_help(
+                                        codes::TYPE_MISMATCH,
+                                        expr_span(val),
+                                        format!(
+                                            "`{}::{}` has the discriminant `{}`, which is not \
+                                             a constant integer",
+                                            e.name.text,
+                                            v.name.text,
+                                            crate::syntax::pretty::expr_string(val)
+                                        ),
+                                        "a discriminant is an integer literal or a constant \
+                                         integer expression"
+                                            .to_string(),
+                                    );
                                 }
                                 // Not a literal: the count is unknown from here.
                                 next = None;
