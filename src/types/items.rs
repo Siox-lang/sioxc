@@ -35,6 +35,22 @@ impl<'a> Checker<'a> {
                         Some(val) => match Self::fit_literal(val).or_else(|| self.const_int(val)) {
                             Some(n) => n,
                             None => {
+                                // An integer literal no 64-bit value holds
+                                // (`0x1_0000_0000_0000_0000`) is past a
+                                // discriminant's range, not unknown (#475).
+                                if let Expr::Int { text, .. } = val {
+                                    if !text.contains('.') && unsigned_lit_text(text).is_none() {
+                                        self.error(
+                                            codes::TYPE_MISMATCH,
+                                            expr_span(val),
+                                            format!(
+                                                "`{}::{}` has the discriminant {text}, past the \
+                                                 64 bits a discriminant holds",
+                                                e.name.text, v.name.text
+                                            ),
+                                        );
+                                    }
+                                }
                                 // Not a literal: the count is unknown from here.
                                 next = None;
                                 continue;
