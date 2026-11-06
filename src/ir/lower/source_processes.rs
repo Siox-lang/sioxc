@@ -3007,20 +3007,16 @@ fn array_slice_elements(
     }
     let target_span = empty(*target_span);
     let mut pairs = targets.into_iter().zip(elements).collect::<Vec<_>>();
-    // `a[1..2] = a[0..1]` copies within one array: element by element it
-    // must go from the far end, or it reads what it just wrote.
-    let same_array = |a: &ast::Expr, b: &ast::Expr| match (a, b) {
-        (ast::Expr::Path(a), ast::Expr::Path(b)) => a
-            .segments
-            .iter()
-            .map(|s| &s.text)
-            .eq(b.segments.iter().map(|s| &s.text)),
-        _ => false,
-    };
-    if let (Some(source), Some((first, ast::Expr::Index { index, .. }))) =
-        (source_base, pairs.first())
-    {
-        let from = match index.as_ref() {
+    // A copy within one array (`a[1..2] = a[0..1]`, `c.arr[1..2] =
+    // c.arr[0..1]`, `d[1..0] = d[2..1]`) goes in an order that reads no
+    // element after writing it. Only a forward shift of a plain name was
+    // ordered, so a field's array, a descending range or a backward source
+    // read values it had just written (#443).
+    let same_array = source_base.is_some_and(|source| {
+        crate::syntax::pretty::expr_string(base) == crate::syntax::pretty::expr_string(source)
+    });
+    if same_array {
+        let literal = |index: &ast::Expr| match index {
             ast::Expr::Int { text, .. } => text.parse::<i64>().ok(),
             ast::Expr::Unary {
                 op: ast::UnOp::Neg,
@@ -3032,9 +3028,41 @@ fn array_slice_elements(
             },
             _ => None,
         };
-        if same_array(base, source) && from.is_some_and(|from| from < *first) {
-            pairs.reverse();
+        let read = |element: &ast::Expr| match element {
+            ast::Expr::Index { index, .. } => literal(index),
+            _ => None,
+        };
+        // Emit a copy once no copy still to come reads its target.
+        let mut pending = pairs;
+        let mut ordered = Vec::with_capacity(pending.len());
+        while !pending.is_empty() {
+            let free = (0..pending.len()).find(|&candidate| {
+                let target = pending[candidate].0;
+                pending.iter().enumerate().all(|(other, (_, element))| {
+                    other == candidate || read(element) != Some(target)
+                })
+            });
+            match free {
+                Some(index) => ordered.push(pending.remove(index)),
+                None => {
+                    // A permutation (`r[1..2] = r[2..1]`): every order reads
+                    // a written element, so no element-wise copy is right.
+                    context.rejected.borrow_mut().push(
+                        crate::diag::Diagnostic::error(format!(
+                            "`{}` moves elements of `{}` within itself in a cycle, which an \
+                             element-by-element copy cannot keep",
+                            crate::syntax::pretty::expr_string(value),
+                            crate::syntax::pretty::expr_string(base)
+                        ))
+                        .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                        .at(span)
+                        .help("copy the slice into a local first, then assign it"),
+                    );
+                    return Some(Vec::new());
+                }
+            }
         }
+        pairs = ordered;
     }
     Some(
         pairs
