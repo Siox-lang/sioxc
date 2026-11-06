@@ -5390,10 +5390,21 @@ fn lower_tuple_assign(
                     _ => None,
                 })
                 .collect();
+            // By root name: `(arr[0], arr[1]) = (arr[1], arr[0])` and
+            // `(s.a, s.b) = (s.b, s.a)` read what they write, which the
+            // whole target's text (`arr[0]`) never matched as a word (#450).
+            // Staging a pair that does not overlap only costs a local.
+            let root = |text: &str| -> String {
+                text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            };
             let read = crate::syntax::pretty::expr_string(value);
             let overlaps = written.iter().any(|name| {
-                read.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-                    .any(|word| word == name)
+                let name = root(name);
+                read.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .any(|word| !word.is_empty() && word == name)
             });
             if !overlaps {
                 let mut block = block;
