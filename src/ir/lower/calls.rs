@@ -1864,8 +1864,135 @@ impl<'a> Lowering<'a> {
 
     /// Statements that only bind and assign, applied to `env` in order: a
     /// loop body, a return-free branch, or one such statement of a body.
+    /// A write to a part of an aggregate local below its first level
+    /// (`pts[0].x`, `s.arr[0]`, `m[0][1]`, a whole `pts[0]`). The local is
+    /// one entry of flattened leaves keyed by their path past its name
+    /// (`[0].x`, `arr[0]`, `[0][1]`); the target's own path past the name
+    /// selects one leaf, or the leaves of one sub-aggregate, which the value
+    /// replaces. Each shape was split at its first `.` as if that were the
+    /// local's name, which none of these are (#456). `None` leaves the write
+    /// to the other forms.
+    fn nested_leaf_assign(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        env: &mut HashMap<String, Val>,
+    ) -> Option<()> {
+        // `arr[idx] = v` at a run-time index of an array of scalars: each
+        // element keeps its value unless `idx` names it (#456).
+        if let ast::Expr::Index { base, index, span } = target {
+            let slice = matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            );
+            if let (ast::Expr::Path(root), None, false) = (base.as_ref(), expr_path(target), slice)
+            {
+                let [name] = root.segments.as_slice() else {
+                    return None;
+                };
+                let Some(Val::Fields(fields)) = env.get(&name.text) else {
+                    return None;
+                };
+                let labels = fields
+                    .iter()
+                    .map(|(key, _)| {
+                        key.strip_prefix('[')?
+                            .strip_suffix(']')?
+                            .parse::<i64>()
+                            .ok()
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let mut fields = fields.clone();
+                let written = self.lower_scalar_env(value, env);
+                for (slot, label) in fields.iter_mut().zip(labels) {
+                    let selects = ast::Expr::Binary {
+                        op: ast::BinOp::Eq,
+                        lhs: index.clone(),
+                        rhs: Box::new(ast::Expr::Int {
+                            text: label.to_string(),
+                            span: *span,
+                        }),
+                        span: *span,
+                    };
+                    let condition = self.lower_scalar_env(&selects, env);
+                    let Val::Scalar(merged) = self.source_select_value(
+                        condition,
+                        Val::Scalar(written.clone()),
+                        Val::Scalar(slot.1.clone()),
+                        *span,
+                    ) else {
+                        return None;
+                    };
+                    slot.1 = merged;
+                }
+                env.insert(name.text.clone(), Val::Fields(fields));
+                return Some(());
+            }
+        }
+        let path = expr_path(target)?;
+        let split = path.find(['.', '['])?;
+        let (root, rest) = path.split_at(split);
+        let suffix = rest.strip_prefix('.').unwrap_or(rest);
+        // A single field (`s.a`) stays with the field form, which also
+        // shapes a vector literal; an element or a deeper path is here.
+        let steps = rest.matches(['.', '[']).count();
+        if steps < 2 && !rest.starts_with('[') {
+            return None;
+        }
+        let Some(Val::Fields(fields)) = env.get(root) else {
+            return None;
+        };
+        let exact = fields.iter().any(|(key, _)| key == suffix);
+        let below = |key: &str| {
+            key.strip_prefix(suffix)
+                .is_some_and(|after| after.starts_with(['.', '[']))
+        };
+        if !exact && !fields.iter().any(|(key, _)| below(key)) {
+            return None;
+        }
+        let mut fields = fields.clone();
+        if exact {
+            if matches!(
+                value,
+                ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+            ) {
+                return None;
+            }
+            let lowered = self.lower_scalar_env(value, env);
+            let slot = fields.iter_mut().find(|(key, _)| key == suffix)?;
+            slot.1 = lowered;
+        } else {
+            let layout = self.source_operand_layout(target, env)?;
+            let Val::Fields(parts) = self.lower_shaped_source(value, env, &layout) else {
+                return None;
+            };
+            for (part, expression) in parts {
+                let key = if part.starts_with('[') {
+                    format!("{suffix}{part}")
+                } else {
+                    format!("{suffix}.{part}")
+                };
+                let slot = fields.iter_mut().find(|(name, _)| *name == key)?;
+                slot.1 = expression;
+            }
+        }
+        env.insert(root.to_string(), Val::Fields(fields));
+        Some(())
+    }
+
     fn inline_effects(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
         for stmt in stmts {
+            if let ast::Stmt::Assign {
+                target,
+                value,
+                after: None,
+                ..
+            } = stmt
+            {
+                if self.nested_leaf_assign(target, value, env).is_some() {
+                    continue;
+                }
+            }
             match stmt {
                 ast::Stmt::Use(_) => {}
                 // `let r: Logic[8];` takes its type's default, element by
