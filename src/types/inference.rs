@@ -470,12 +470,16 @@ impl<'a> Checker<'a> {
                             low,
                         }
                     }
-                    Ty::Array { elem, len, .. } if !is_range => {
+                    Ty::Array { elem, len, low, .. } if !is_range => {
                         // An unconstrained array (`len` 0: a runtime string or
-                        // `T[]`) checks its bounds when the test runs.
-                        if signed_lit(index)
-                            .is_some_and(|i| i < 0 || *len != 0 && i as u64 >= *len as u64)
-                        {
+                        // `T[]`) checks its bounds when the test runs. A
+                        // bounded one runs from its lowest label: `[10..11]`
+                        // holds 10 and 11, not 0 (#448).
+                        let (low, len) = (i128::from(*low), i128::from(*len));
+                        if signed_lit(index).is_some_and(|i| {
+                            let i = i128::from(i);
+                            i < low || len != 0 && i >= low + len
+                        }) {
                             Ty::Error
                         } else {
                             elem.as_ref().clone()
