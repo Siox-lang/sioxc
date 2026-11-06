@@ -84,6 +84,9 @@ impl<'a> Checker<'a> {
         let saved = self
             .current_fn
             .replace(self.resolved.declared(function.name.span));
+        // The block, not the signature: a parameter aliases the caller's
+        // place and may be delayed.
+        let saved_body = self.body_span.replace(Some(body.span));
         self.check_block_with(
             body,
             &PortDirs::default(),
@@ -92,6 +95,7 @@ impl<'a> Checker<'a> {
             &index_bounds,
             expected.as_ref(),
         );
+        self.body_span.set(saved_body);
         self.current_fn.set(saved);
     }
 
@@ -464,6 +468,7 @@ impl<'a> Checker<'a> {
                 self.check_expr(value, sym);
                 if let Some(delay) = after {
                     self.check_expr(delay, sym);
+                    self.check_delayed_target(target);
                 }
             }
             Stmt::If(i) => self.check_if(i, dirs, sym, ranged, expected_return),
@@ -752,6 +757,41 @@ impl<'a> Checker<'a> {
     /// stimulus to run. Lowering handles them only in a testbench and its
     /// catch-all dropped them elsewhere, so an assertion written into a design
     /// silently never ran.
+    /// `x = v after 1ns;` schedules a signal's update; a `let` declared in
+    /// the process or function has no update to delay. It passed the checker
+    /// and failed native codegen (#473). A parameter aliases the caller's
+    /// place, which may be a signal, so it may be delayed.
+    fn check_delayed_target(&mut self, target: &Expr) {
+        let mut root = target;
+        while let Expr::Field { base, .. } | Expr::Index { base, .. } = root {
+            root = base;
+        }
+        let Expr::Path(path) = root else {
+            return;
+        };
+        let (Some(body), Some(declared)) = (
+            self.body_span.get(),
+            self.resolved
+                .resolved(path.span)
+                .and_then(|id| self.resolved.def(id))
+                .and_then(|definition| definition.span),
+        ) else {
+            return;
+        };
+        if declared.file == body.file && body.start <= declared.start && declared.end <= body.end {
+            self.error_with_help(
+                codes::INVALID_ASSIGN_TARGET,
+                expr_span(target),
+                format!(
+                    "`{}` is a variable of this body, so `after` has no update to delay",
+                    crate::syntax::pretty::expr_string(target)
+                ),
+                "assign it directly, or delay a signal: `after` schedules a signal's update"
+                    .to_string(),
+            );
+        }
+    }
+
     pub(super) fn check_stimulus_context(&mut self, e: &Expr) {
         if self.in_testbench.get() {
             return;

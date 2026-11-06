@@ -310,7 +310,9 @@ impl<'a> Checker<'a> {
     ) {
         let saved_index_bounds = self.array_bounds.replace(index_bounds.clone());
         let saved_process = self.in_process.replace(true);
+        let saved_body = self.body_span.replace(Some(block.span));
         self.check_stmt_sequence(&block.stmts, view_dirs, names, bounds, None);
+        self.body_span.set(saved_body);
         self.in_process.set(saved_process);
         self.array_bounds.replace(saved_index_bounds);
     }
