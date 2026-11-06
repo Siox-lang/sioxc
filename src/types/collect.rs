@@ -108,6 +108,7 @@ impl<'a> Checker<'a> {
             in_testbench: std::cell::Cell::new(false),
             in_initializer: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),
+            body_span: std::cell::Cell::new(None),
             in_match_arm: std::cell::Cell::new(false),
             in_process: std::cell::Cell::new(false),
             type_params: std::cell::RefCell::new(HashSet::new()),
