@@ -2926,9 +2926,23 @@ fn array_slice_elements(
         reject_runtime_slice(target, index, span, process, context);
         return Some(Vec::new());
     };
-    let label = |n: i64, span| ast::Expr::Int {
-        text: n.to_string(),
-        span,
+    // A negative label is a negation of its magnitude, as the parser writes
+    // it: an `Int` holds digits only, and `"-2"` read as `0`, so a slice of
+    // `integer[-2..0]` copied element 0 (#452, #444).
+    let label = |n: i64, span| {
+        let digits = ast::Expr::Int {
+            text: n.unsigned_abs().to_string(),
+            span,
+        };
+        if n < 0 {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs: Box::new(digits),
+                span,
+            }
+        } else {
+            digits
+        }
     };
     // The checker typed these spans as the whole slice and array; empty
     // spans at their ends carry no checked type, so each element is typed
@@ -2988,7 +3002,7 @@ fn array_slice_elements(
         }
         _ => return None,
     };
-    if targets.len() != elements.len() || targets.iter().any(|label| *label < 0) {
+    if targets.len() != elements.len() {
         return None;
     }
     let target_span = empty(*target_span);
@@ -3008,6 +3022,14 @@ fn array_slice_elements(
     {
         let from = match index.as_ref() {
             ast::Expr::Int { text, .. } => text.parse::<i64>().ok(),
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs,
+                ..
+            } => match rhs.as_ref() {
+                ast::Expr::Int { text, .. } => text.parse::<i64>().ok().map(|n| -n),
+                _ => None,
+            },
             _ => None,
         };
         if same_array(base, source) && from.is_some_and(|from| from < *first) {
