@@ -13,6 +13,9 @@ impl<'a> Checker<'a> {
             Item::Const(c) => {
                 self.check_const_not_entity(c);
                 self.check_expr(&c.value, sym);
+                // A constant is checked against its declared type, as a `let`
+                // initializer is; `const X: integer = "hello";` passed (#487).
+                self.check_init(Some(&c.ty), &c.value, sym);
             }
             Item::Enum(e) => {
                 self.check_enum(e);

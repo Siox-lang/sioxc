@@ -153,6 +153,7 @@ impl<'a> Checker<'a> {
                 ImplItem::Const(c) => {
                     self.check_const_not_entity(c);
                     self.check_expr(&c.value, &sym);
+                    self.check_init(Some(&c.ty), &c.value, &sym);
                 }
                 ImplItem::Let(l) => {
                     // A signal named like one of the entity's ports: reads
