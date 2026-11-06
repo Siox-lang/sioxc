@@ -11834,6 +11834,39 @@ fn value_ref_with_type_inner(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    // `let r: Range = 0..3;`, a `Range` parameter, `rf[0..1] = v` through
+    // `IndexAssign<Range, _>`: where a struct is expected, a range literal is
+    // the `Range { left, right }` value, as an `Index<Range, _>` argument
+    // already was. As a bare range it had no width (#445). A slice index is
+    // lowered with no expected type and stays a range.
+    if let (ast::Expr::Range { lo, hi, span }, Some(range_type @ crate::types::Ty::Named(_))) =
+        (expression, contextual_type)
+    {
+        let range_type = range_type.clone();
+        let integer = Some(crate::types::Ty::Integer);
+        let left = value_ref_with_type(lo, process, context, integer.as_ref());
+        let right = value_ref_with_type(hi, process, context, integer.as_ref());
+        let field = |name: &str, value| ProcessAggregateField {
+            name: Some(name.to_string()),
+            value: Some(value),
+            span: *span,
+        };
+        let layout = process_aggregate_layout_for_type(&range_type, *span, context);
+        let width = layout.as_ref().and_then(|layout| layout.packed_width());
+        let value = push_value(
+            *span,
+            Some(range_type.clone()),
+            width,
+            ProcessValueKind::Construct {
+                ty: Some(range_type),
+                fields: vec![field("left", left), field("right", right)],
+                spread: None,
+            },
+            context,
+        );
+        context.process_ir.value_layouts[value.0 as usize] = layout;
+        return value;
+    }
     if let ast::Expr::Call {
         callee,
         type_args,
