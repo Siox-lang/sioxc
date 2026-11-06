@@ -6831,9 +6831,13 @@ fn generic_struct_layout(
                 &crate::ir::subst_type_params(&field.ty, &types),
                 &values,
             );
-            let layout = generic_struct_layout(&ty, span, context).or_else(|| {
+            let mut layout = generic_struct_layout(&ty, span, context).or_else(|| {
                 process_layout_for_type(&process_declared_type(&ty, context)?, span, context)
             })?;
+            // `data: integer[5..N]` as `integer[5..6]`: its declared labels,
+            // which a layout built from the type alone numbers from 0 (#449).
+            let _ =
+                apply_process_declared_ranges(&mut layout, &ty, context, &mut Default::default());
             Some(crate::ir::LayoutField {
                 name: field.name.text.clone(),
                 direction: None,
