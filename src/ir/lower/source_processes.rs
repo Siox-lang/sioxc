@@ -3754,7 +3754,17 @@ fn inline_process_procedure_call(
     // writes or suspension. Places themselves remain aliases, so later reads
     // observe immediate local writes but not uncommitted signal writes.
     let receiver = receiver.map(|value| capture_call_argument(value, context, process, block));
+    // `swap(arr[0..1], arr[2..3])`: a slice of an unpacked array has no
+    // element place to alias, so the parameter is a copy, written back
+    // element by element when the call returns (#446).
+    let mut write_backs = Vec::new();
     for (_, value) in &mut bindings {
+        if let Some(back) = unpacked_slice_argument(*value, context) {
+            let copy = capture_into_local(*value, context, process, block);
+            write_backs.push((back, copy));
+            *value = copy;
+            continue;
+        }
         *value = capture_call_argument(*value, context, process, block);
     }
     let bindings = bindings.into_iter().collect();
@@ -3805,7 +3815,64 @@ fn inline_process_procedure_call(
     if let Some(tail) = tail {
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(resume);
     }
+    for ((places, semantics), copy) in write_backs {
+        let copied = process_value_source_layout(copy, context.process_ir)
+            .and_then(SourceLayout::index_range)
+            .map(|range| crate::ir::loop_range(range.left, range.right))
+            .unwrap_or_default();
+        for (target, from) in places.into_iter().zip(copied) {
+            let node = context.process_ir.values[target.0 as usize].clone();
+            let layout = context.process_ir.value_layouts[target.0 as usize].clone();
+            let index = push_value(
+                node.span,
+                Some(crate::types::Ty::Integer),
+                Some(64),
+                ProcessValueKind::Number(ProcessNumber::Integer(vec![from as u64])),
+                context,
+            );
+            let value = push_value(
+                node.span,
+                node.ty.clone(),
+                node.bit_width,
+                ProcessValueKind::Index { base: copy, index },
+                context,
+            );
+            context.process_ir.value_layouts[value.0 as usize] = layout;
+            process.blocks[resume.0 as usize]
+                .instructions
+                .push(ProcessInstruction::Assign {
+                    semantics,
+                    driver_context: None,
+                    target,
+                    value,
+                    span: node.span,
+                });
+        }
+    }
     Some(resume)
+}
+
+/// A slice of an unpacked array place passed to a procedure (`arr[0..1]` of
+/// an `integer[4]`): lowered as its element reads (`[arr[0], arr[1]]`), each
+/// itself a place. Those places, in order, and how they are assigned.
+fn unpacked_slice_argument(
+    value: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<(Vec<ProcessValueId>, ProcessAssignment)> {
+    let ProcessValueKind::Array(elements) = &context.process_ir.values[value.0 as usize].kind
+    else {
+        return None;
+    };
+    let mut semantics = None;
+    for element in elements {
+        let ProcessValueKind::Index { base, .. } =
+            context.process_ir.values[element.0 as usize].kind
+        else {
+            return None;
+        };
+        semantics = Some(process_place_assignment(base, context.process_ir)?);
+    }
+    Some((elements.clone(), semantics?))
 }
 
 fn begin_inline_call(
