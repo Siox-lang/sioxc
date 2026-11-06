@@ -246,13 +246,19 @@ impl<'a> Checker<'a> {
                 if !head.is_some_and(|key| self.array_families.contains(&key)) {
                     return;
                 }
-                match signed_lit(index) {
+                // A named constant or constant expression (`unsigned[W]`)
+                // is checked as its value is: only a literal was (#438).
+                match self.const_int(index).and_then(|w| i64::try_from(w).ok()) {
                     Some(w) => w,
                     None => return,
                 }
             }
             Expr::Path(p) if p.segments.last().is_some_and(|name| name.text == "resize") => {
-                match args.get(1).and_then(signed_lit) {
+                match args
+                    .get(1)
+                    .and_then(|width| self.const_int(width))
+                    .and_then(|w| i64::try_from(w).ok())
+                {
                     Some(w) => w,
                     None => return,
                 }
