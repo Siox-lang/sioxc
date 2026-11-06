@@ -1115,6 +1115,29 @@ impl<'a> Lowering<'a> {
                 })
                 .collect();
             if let Some(values) = values {
+                // Each element by its label too, `WIDTHS[0]`, so a width or
+                // bound written as one is a constant (#459).
+                let low = match &constant.ty {
+                    ast::Type::Indexed {
+                        index: Some(index), ..
+                    } => match index.as_ref() {
+                        ast::Expr::Range { lo, hi, .. } => self
+                            .eval_const(lo, scope)
+                            .zip(self.eval_const(hi, scope))
+                            .map(|(lo, hi)| lo.min(hi))
+                            .unwrap_or(0),
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                for (offset, value) in values.iter().enumerate() {
+                    if let (Expr::Const(word), Ok(offset)) = (value, i64::try_from(offset)) {
+                        if let Ok(narrow) = i64::try_from(*word) {
+                            self.consts
+                                .insert(format!("{name}[{}]", low + offset), narrow);
+                        }
+                    }
+                }
                 self.const_arrays.insert(name.to_string(), values);
                 return true;
             }
