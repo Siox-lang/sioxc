@@ -137,9 +137,8 @@ impl<'a> Checker<'a> {
         index: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
-        // What we can bound-check, and how to name it. A packed vector or data
-        // array may carry nonzero declared labels. An instance array (`let s:
-        // Sub[4]`) is always declared with a plain count and remains 0-based.
+        // What we can bound-check, and how to name it. A packed vector, a
+        // data array or an instance array may carry nonzero declared labels.
         let (lo, hi, noun) = match self.type_of(base, sym) {
             Ty::Array {
                 len,
@@ -149,12 +148,13 @@ impl<'a> Checker<'a> {
             } => declared_bounds_of(base, &self.array_bounds)
                 .map(|(lo, hi)| (lo, hi, "bit"))
                 .unwrap_or((low, low + len as i64 - 1, "bit")),
+            // `Sub[10..12]` is `s[10]` to `s[12]` (#485).
             Ty::Array {
                 elem,
                 len,
                 family: None,
-                ..
-            } if self.is_entity_ty(&elem) => (0, len as i64 - 1, "instance"),
+                low,
+            } if self.is_entity_ty(&elem) => (low, low + len as i64 - 1, "instance"),
             // A data array's bounds come from its declaration, not its
             // length: `Logic[15..8]` is indexed `8..15`.
             // An array literal (`[10, 20, 30][5]`) is labelled from 0. It was
