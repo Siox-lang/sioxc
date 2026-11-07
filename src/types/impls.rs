@@ -53,7 +53,9 @@ impl<'a> Checker<'a> {
     /// `let add: Adder<integer> = ..;` instantiates `impl<T> Adder<T>`: its
     /// body is checked again with `T` bound to `integer`, as a generic
     /// function's is for each call. Unbound, a type parameter is unknown and
-    /// silenced every check that touched it (`a * "some string"`, #481).
+    /// silenced every check that touched it (`a * "some string"`, #481). A
+    /// generic struct's methods are checked the same way for each
+    /// `let b: Box<integer>` (`val = 3.14` with `val: T`, #482).
     /// Diagnostics the generic check already gave are not repeated.
     // ponytail: when the instance is checked before the generic impl itself,
     // a diagnostic independent of `T` is reported twice.
@@ -64,7 +66,7 @@ impl<'a> Checker<'a> {
         let Some(key) = self.type_key(ty) else {
             return;
         };
-        if !self.entities.contains_key(&key) {
+        if !self.entities.contains_key(&key) && !self.structs.contains_key(&key) {
             return;
         }
         let impls: Vec<&'a ImplDecl> = self

@@ -610,8 +610,13 @@ impl<'a> Checker<'a> {
                 args,
                 bang,
                 span,
-                ..
+                qualifier,
             } => {
+                // `Box<integer>::make()` instantiates `impl<T> Box<T>` as a
+                // `let b: Box<integer>` does (#482).
+                if let Some(qualifier) = qualifier {
+                    self.check_entity_instantiation(qualifier);
+                }
                 // A C `void` function runs for its effect, which only a
                 // testbench (or a function it calls) can order; hardware has
                 // no place to put the call. A call from hardware to a function
