@@ -38,7 +38,9 @@ impl<'a> Checker<'a> {
                         elem: Box::new(v),
                         len: width,
                         family: None,
-                        low: 0,
+                        // `unsigned[8][10..13]` is labelled 10..13, so a
+                        // partial range (`arr[..12]`) starts at 10 (#500).
+                        low,
                     },
                     // A sized index on an *unconstrained* array fills its
                     // hole rather than nesting: `string[5]` is `Char[5]`, not
