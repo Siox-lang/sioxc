@@ -4887,7 +4887,25 @@ fn process_display_kind(
         }
     }
     match ty.as_ref() {
-        Some(ty) => process_display_kind_for_type(ty, context),
+        Some(ty) => process_display_kind_for_type(ty, context).or_else(|| {
+            // A newtype over a scalar (`time`, `struct Meter(integer)`)
+            // prints as its scalar when it has no `Display`, or under `{:?}`.
+            // It left the process unlowered (#497).
+            match &process_value_source_layout(value, context.process_ir)?.kind {
+                LayoutKind::Scalar { domain, .. } => match domain {
+                    crate::ir::ScalarDomain::Integer => Some(ProcessDisplayKind::Signed),
+                    crate::ir::ScalarDomain::Natural | crate::ir::ScalarDomain::Bits => {
+                        Some(ProcessDisplayKind::Unsigned)
+                    }
+                    crate::ir::ScalarDomain::Real => Some(ProcessDisplayKind::Real),
+                    crate::ir::ScalarDomain::Character => Some(ProcessDisplayKind::Character),
+                    crate::ir::ScalarDomain::Enum(name) => {
+                        Some(ProcessDisplayKind::Enum(name.clone()))
+                    }
+                },
+                _ => None,
+            }
+        }),
         None => process_display_kind_from_value(process_value, context),
     }
 }
