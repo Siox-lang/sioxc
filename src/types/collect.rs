@@ -133,6 +133,8 @@ impl<'a> Checker<'a> {
             field_visibility: HashMap::new(),
             struct_field_types: HashMap::new(),
             field_decl_types: HashMap::new(),
+            struct_params: HashMap::new(),
+            literal_bindings: std::cell::RefCell::new(Vec::new()),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             array_families: HashSet::new(),
@@ -823,6 +825,14 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
                     .insert(struct_key.clone(), (st.base.clone(), fields));
+                self.struct_params.insert(
+                    struct_key.clone(),
+                    st.params
+                        .params
+                        .iter()
+                        .map(|p| p.name.text.clone())
+                        .collect(),
+                );
                 self.field_decl_types.insert(
                     struct_key.clone(),
                     st.fields

@@ -950,7 +950,11 @@ impl<'a> Checker<'a> {
                     let expected = self.ast_ty(ty);
                     if let Some(head) = self.type_key(ty) {
                         if self.structs.contains_key(&head) {
+                            let bound = self.push_literal_bindings(ty, &head);
                             self.check_struct_literal_for_head(&expected, &head, e, sym);
+                            if bound {
+                                self.literal_bindings.borrow_mut().pop();
+                            }
                         }
                     }
                 }

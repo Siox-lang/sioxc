@@ -36,7 +36,39 @@ impl<'a> Checker<'a> {
             return;
         }
         let expected = self.ast_ty(&ty);
+        let bound = self.push_literal_bindings(&ty, &head);
         self.check_struct_literal_for_head(&expected, &head, value, sym);
+        if bound {
+            self.literal_bindings.borrow_mut().pop();
+        }
+    }
+
+    /// Bind an instantiated generic struct's parameters to its arguments
+    /// (`Box<integer>`: `T` to `integer`) for its literal's field checks.
+    /// Whether anything was pushed.
+    pub(super) fn push_literal_bindings(&self, ty: &Type, head: &str) -> bool {
+        let Type::Generic { args, .. } = ty else {
+            return false;
+        };
+        let Some(params) = self.struct_params.get(head) else {
+            return false;
+        };
+        let mut bindings = HashMap::new();
+        for (position, arg) in args.iter().enumerate() {
+            let name = match arg {
+                GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => {
+                    Some(name.text.clone())
+                }
+                _ => params.get(position).cloned(),
+            };
+            if let Some(name) = name {
+                bindings.insert(name, arg.clone());
+            }
+        }
+        self.literal_bindings
+            .borrow_mut()
+            .push((head.to_string(), bindings));
+        true
     }
 
     /// Validate a contextual struct literal when only the consumer's semantic
@@ -246,9 +278,17 @@ impl<'a> Checker<'a> {
         value: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
-        let Some(declared) = self.field_decl_ty(owner, field) else {
+        let Some(mut declared) = self.field_decl_ty(owner, field) else {
             return;
         };
+        if let Some((_, bindings)) = self
+            .literal_bindings
+            .borrow()
+            .last()
+            .filter(|(head, _)| head == owner)
+        {
+            crate::syntax::imports::substitute_type(&mut declared, bindings);
+        }
         let expected = self.ast_ty(&declared);
 
         // A name-less nested literal gets its type from this field. Recurse so

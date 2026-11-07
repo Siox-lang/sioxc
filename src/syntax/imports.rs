@@ -1652,7 +1652,7 @@ fn type_constructor(ty: Type) -> Option<Expr> {
 }
 
 /// Replace a generic alias's parameters in its body with the arguments.
-fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
+pub(crate) fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
     match ty {
         Type::Path(p) => {
             if let [only] = &p.segments[..] {
