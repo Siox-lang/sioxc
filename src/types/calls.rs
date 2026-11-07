@@ -90,7 +90,18 @@ impl<'a> Checker<'a> {
         // and typing a computed argument here ahead of the call's own check
         // would fix its type out of context. What this lookup records is
         // taken back, for the same reason.
-        if !matches!(argument, Expr::Path(_)) {
+        // A place built from names (`pkts[0]`, `pkt.inner`) and a struct
+        // literal naming its type (`Pkt { .. }`) have a fixed type too; they
+        // passed unchecked (#474).
+        fn fixed_type(e: &Expr) -> bool {
+            match e {
+                Expr::Path(_) => true,
+                Expr::Field { base, .. } | Expr::Index { base, .. } => fixed_type(base),
+                Expr::Construct { ty, .. } => ty.is_some(),
+                _ => false,
+            }
+        }
+        if !fixed_type(argument) {
             return;
         }
         let key = (
