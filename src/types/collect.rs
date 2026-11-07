@@ -236,6 +236,18 @@ impl<'a> Checker<'a> {
             self.method_has_self.entry(key).or_insert(has_self);
         }
         self.resolve_array_families();
+        // A sized index-contract argument names its vector family, or nothing
+        // when it is an array of plain elements (#493).
+        let families = self.array_families.clone();
+        for signatures in self.index_sigs.values_mut() {
+            for (index, value) in signatures.iter_mut() {
+                for key in [index, value] {
+                    if let Some(sized) = key.as_ref().and_then(|k| k.strip_suffix("[]")) {
+                        *key = families.contains(sized).then(|| sized.to_string());
+                    }
+                }
+            }
+        }
         self.resolve_array_elements();
         for m in modules {
             for item in &m.items {
@@ -620,6 +632,21 @@ impl<'a> Checker<'a> {
                             let arg_name = |index: usize| {
                                 im.trait_args.get(index).and_then(|a| match a {
                                     GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
+                                    // `unsigned[8]` in argument position parses as
+                                    // an index of `unsigned`; it recorded nothing,
+                                    // and the contract then accepted any value,
+                                    // `m[0] = 3.14` included (#493).
+                                    // ponytail: the family is recorded, not the
+                                    // width; keep the full type if widths matter.
+                                    GenericArg::Positional(Expr::Index { base, .. }) => {
+                                        match base.as_ref() {
+                                            // Marked `[]` until families are
+                                            // known: an element array
+                                            // (`integer[2]`) records none.
+                                            Expr::Path(p) => self.path_key(p).map(|k| k + "[]"),
+                                            _ => None,
+                                        }
+                                    }
                                     GenericArg::PositionalType(ty) => self.type_key(ty),
                                     _ => None,
                                 })
