@@ -101,6 +101,51 @@ impl Spans {
     }
 }
 
+/// `impl Doubler for Pt` where `type Pt = Point;` implements `Point`: an
+/// alias is transparent, but the impl was filed under the alias's name, so
+/// `p.double()`, `Pt::double(p)` and a `T: Doubler` bound on a `Point` all
+/// failed (#490). A non-generic alias of a named type, declared in the
+/// impl's module, is replaced by that type, through chains of aliases.
+// ponytail: an alias imported from another module, or a generic one, is
+// left as written.
+pub fn impl_aliases(modules: &mut [Module]) {
+    for module in modules {
+        let aliases: HashMap<String, Type> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Using(Using {
+                    kind: UsingKind::Alias { name, params, ty },
+                    ..
+                }) if params.params.is_empty() && matches!(ty, Type::Path(_)) => {
+                    Some((name.text.clone(), ty.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if aliases.is_empty() {
+            continue;
+        }
+        for item in &mut module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            for _ in 0..aliases.len() {
+                let Type::Path(path) = &implementation.target else {
+                    break;
+                };
+                let [segment] = path.segments.as_slice() else {
+                    break;
+                };
+                let Some(target) = aliases.get(&segment.text) else {
+                    break;
+                };
+                implementation.target = target.clone();
+            }
+        }
+    }
+}
+
 /// Rewrite every entity method and every call to one.
 pub fn entity_methods(modules: &mut [Module], sources: &mut SourceMap, sink: &mut DiagnosticSink) {
     let methods = collect(modules);
