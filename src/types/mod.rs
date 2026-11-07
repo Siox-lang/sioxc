@@ -438,6 +438,12 @@ struct Checker<'a> {
     /// target typed as `Ty::Error` and the strict assignment-width rule had
     /// nothing to check.
     field_decl_types: HashMap<String, HashMap<String, Type>>,
+    /// Struct key -> its generic parameter names, in order.
+    struct_params: HashMap<String, Vec<String>>,
+    /// While a literal of an instantiated generic struct is checked
+    /// (`Box<integer> { .val = 3.14 }`), its key and parameter bindings, so a
+    /// field's declared `T` is checked as `integer` (#486).
+    literal_bindings: std::cell::RefCell<Vec<(String, HashMap<String, GenericArg>)>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
     /// Nominal newtypes whose representation is an array (`struct F(T[])`).
