@@ -17,7 +17,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Path(p) = callee.as_ref() else {
             return None;
         };
-        if p.segments.len() != 1 || p.segments[0].text != "read" {
+        if !crate::syntax::is_fs_read_path(p) {
             return None;
         }
         match (type_args.as_slice(), args.as_slice()) {

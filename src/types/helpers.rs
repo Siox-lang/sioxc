@@ -98,7 +98,7 @@ pub(super) fn read_call_type(expression: &Expr) -> Option<&Type> {
         return None;
     };
     match type_args.as_slice() {
-        [arg] if path.segments.len() == 1 && path.segments[0].text == "read" => arg.type_ref(),
+        [arg] if crate::syntax::is_fs_read_path(path) => arg.type_ref(),
         _ => None,
     }
 }
