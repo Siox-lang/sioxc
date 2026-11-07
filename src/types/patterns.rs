@@ -318,14 +318,13 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Pattern::BitPattern { span, .. } => {
-                if !matches!(
-                    ty,
-                    Ty::Array {
-                        family: Some(_),
-                        ..
-                    }
-                ) {
+            Pattern::BitPattern { text, span } => {
+                let Ty::Array {
+                    family: Some(_),
+                    len,
+                    ..
+                } = ty
+                else {
                     self.error(
                         codes::TYPE_MISMATCH,
                         *span,
@@ -334,6 +333,35 @@ impl<'a> Checker<'a> {
                             self.ty_display(ty)
                         ),
                     );
+                    return;
+                };
+                // A pattern spells every bit it matches: one of another width
+                // was cut or padded and matched the wrong values (#494). A
+                // radix digit may overhang the top by less than a digit, as
+                // `x"3F"` on six bits does, when the overhang is zero.
+                if let (Some(width), true) = (bit_pattern_width(text), *len > 0) {
+                    let per = text
+                        .split_once('"')
+                        .and_then(|(base, _)| base.chars().next())
+                        .map_or(1, crate::syntax::bits_per_digit);
+                    let overhang_zero = || {
+                        crate::syntax::bit_pattern_mask(text).is_some_and(|(_, value)| {
+                            (*len..width).all(|bit| {
+                                value
+                                    .get(bit as usize / 64)
+                                    .is_none_or(|word| word >> (bit % 64) & 1 == 0)
+                            })
+                        })
+                    };
+                    let fits =
+                        width == *len || (width > *len && width - *len < per && overhang_zero());
+                    if !fits {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!("this pattern spells {width} bits, but the vector has {len}"),
+                        );
+                    }
                 }
             }
         }
@@ -969,4 +997,24 @@ fn position_covers(pattern: &Pattern, value: Option<&str>) -> bool {
             variants.iter().any(|variant| variant == value)
         }
     }
+}
+
+/// The bits a bit pattern spells: one per character of a plain string, a
+/// digit's worth per digit of a radix one; `_` separates and spells none.
+/// `None` for a prefix the compiler cannot evaluate, reported elsewhere.
+fn bit_pattern_width(text: &str) -> Option<u32> {
+    let (base, digits) = text.split_once('"')?;
+    let per = match base.chars().next() {
+        None => 1,
+        Some(prefix) if crate::syntax::is_radix_prefix(prefix) => {
+            crate::syntax::bits_per_digit(prefix)
+        }
+        Some(_) => return None,
+    };
+    let count = digits
+        .trim_end_matches('"')
+        .chars()
+        .filter(|c| *c != '_')
+        .count();
+    u32::try_from(count).ok()?.checked_mul(per)
 }

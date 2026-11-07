@@ -248,7 +248,7 @@ fn an_unevaluable_prefix_is_a_diagnostic_in_pattern_position_too() {
     // The prefixes the table does list still work in both positions.
     let ok = check_src(
         "module m;\nentity E { s: unsigned[8] in, y: unsigned[8] out }\n\
-             impl E { match s { x\"A?\" => y = 1, o\"7?\" => y = 2, _ => y = x\"0F\", } }\n",
+             impl E { match s { x\"A?\" => y = 1, o\"07?\" => y = 2, _ => y = x\"0F\", } }\n",
     );
     assert_eq!(ok, 0, "`x` and `o` are in RADIX_PREFIXES");
 }
