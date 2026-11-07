@@ -448,6 +448,7 @@ impl<'a> Checker<'a> {
             } => {
                 self.check_write_target(target, dirs);
                 self.check_assign_range(target, value, ranged);
+                self.check_compound_target(target, value);
                 let custom_index = self.check_index_assign(target, value, sym);
                 if !custom_index {
                     self.check_assignment(target, value, sym);
@@ -761,6 +762,43 @@ impl<'a> Checker<'a> {
     /// the process or function has no update to delay. It passed the checker
     /// and failed native codegen (#473). A parameter aliases the caller's
     /// place, which may be a signal, so it may be delayed.
+    /// `x op= e` is parsed as `x = x op e` with the target copied, spans and
+    /// all, so a call inside the target (`arr[next()] += 1`) ran twice:
+    /// once for the read and once for the write, with any side effect
+    /// doubled and possibly two different places (#458). It is reported.
+    // ponytail: binding the place once would need a typed temporary the
+    // parser cannot name; bind the index to a `let` first.
+    fn check_compound_target(&mut self, target: &Expr, value: &Expr) {
+        let Expr::Binary { lhs, .. } = value else {
+            return;
+        };
+        if expr_span(lhs) != expr_span(target) {
+            return;
+        }
+        fn has_call(e: &Expr) -> bool {
+            match e {
+                Expr::Call { .. } => true,
+                Expr::Index { base, index, .. } => has_call(base) || has_call(index),
+                Expr::Field { base, .. } => has_call(base),
+                Expr::Binary { lhs, rhs, .. } => has_call(lhs) || has_call(rhs),
+                Expr::Unary { rhs, .. } => has_call(rhs),
+                _ => false,
+            }
+        }
+        if has_call(target) {
+            self.error_with_help(
+                codes::UNSUPPORTED_EXPR,
+                expr_span(target),
+                format!(
+                    "`{}` calls a function in a compound assignment's target, which \
+                     would run it twice",
+                    crate::syntax::pretty::expr_string(target)
+                ),
+                "bind the index first: `let i: integer = f(); arr[i] += 1;`".to_string(),
+            );
+        }
+    }
+
     fn check_delayed_target(&mut self, target: &Expr) {
         let mut root = target;
         while let Expr::Field { base, .. } | Expr::Index { base, .. } = root {
