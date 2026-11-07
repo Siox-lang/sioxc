@@ -281,6 +281,9 @@ impl<'a> Checker<'a> {
                 ),
             );
         }
+        // A field's constant must fit it: `{ .y = 20 }` into an
+        // `unsigned[4]` field stored 4 (#489).
+        self.check_literal_fit(&expected, value);
     }
 
     /// The inclusive labels of a packed vector or data-array declaration:

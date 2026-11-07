@@ -423,6 +423,13 @@ impl<'a> Checker<'a> {
                     self.check_literal_fit(elem, element);
                 }
             }
+            // And each element of a tuple literal: `(1, 20)` into
+            // `(unsigned[4], unsigned[4])` stored 4 (#489).
+            (Ty::Tuple(types), Expr::Tuple { elems, .. }) => {
+                for (ty, element) in types.iter().zip(elems) {
+                    self.check_literal_fit(ty, element);
+                }
+            }
             _ => {}
         }
     }
