@@ -406,6 +406,9 @@ impl<'a> Checker<'a> {
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
+                if let Some(ty) = &l.ty {
+                    self.check_entity_instantiation(ty);
+                }
                 if l.is_static {
                     self.check_static_let(l);
                 }
