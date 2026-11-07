@@ -267,6 +267,9 @@ struct PortInfo {
     name: String,
     /// Resolved port type.
     ty: Ty,
+    /// The type as written, re-resolved while a generic entity is checked
+    /// for one instantiation (`a: T` is `integer` in `Adder<integer>`).
+    declared: Type,
     /// Declared direction, or `None` when the port is view-typed and its
     /// directions come from `view` instead.
     dir: Option<Direction>,
@@ -345,6 +348,9 @@ struct Checker<'a> {
     /// Generic module functions' declarations, checked once per distinct set
     /// of type arguments at their calls (spec: "each call is").
     generic_bodies: HashMap<DefId, &'a FnDecl>,
+    /// Inherent impls with generic parameters, re-checked for each
+    /// instantiation of their entity (#481).
+    generic_impls: Vec<&'a ImplDecl>,
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
     /// Instantiations already checked, by function and type arguments.

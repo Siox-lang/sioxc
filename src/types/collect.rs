@@ -21,6 +21,14 @@ impl<'a> Checker<'a> {
                 _ => None,
             })
             .collect();
+        let generic_impls = modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|item| match item {
+                Item::Impl(im) if im.trait_.is_none() && !im.params.params.is_empty() => Some(im),
+                _ => None,
+            })
+            .collect();
         // Seed the std::attrs targets so the standard attributes validate while
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
         let mut attr_targets = HashMap::new();
@@ -101,6 +109,7 @@ impl<'a> Checker<'a> {
             .collect();
         Checker {
             generic_bodies,
+            generic_impls,
             type_bindings: std::cell::RefCell::new(HashMap::new()),
             instantiated: std::cell::RefCell::new(HashSet::new()),
             instantiating: std::cell::RefCell::new(Vec::new()),
@@ -264,6 +273,7 @@ impl<'a> Checker<'a> {
                         .map(|p| PortInfo {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
+                            declared: p.ty.clone(),
                             dir: p.dir,
                             // An array of views applies the view per element.
                             view: self
