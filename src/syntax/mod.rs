@@ -151,6 +151,18 @@ fn push_group(words: &mut Vec<u64>, bits: u32, value: u64) {
     }
 }
 
+/// Whether `path` names `std::fs::read`: bare `read` (from the prelude),
+/// `fs::read` after `use std::fs;`, or the full path. Hardware ROM
+/// initializers recognized only the bare spelling and left a qualified one
+/// zero-filled (#499).
+pub fn is_fs_read_path(path: &ast::Path) -> bool {
+    let names: Vec<&str> = path.segments.iter().map(|s| s.text.as_str()).collect();
+    matches!(
+        names.as_slice(),
+        ["read"] | ["fs", "read"] | ["std", "fs", "read"]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
