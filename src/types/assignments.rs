@@ -555,7 +555,22 @@ impl<'a> Checker<'a> {
         let Some((generics, params)) = self.generic_fns.get(&function).cloned() else {
             return;
         };
-        for gp in &generics {
+        self.check_generic_params(&generics, &params, expr_span(callee), args, sym);
+        self.check_instantiation(function, &generics, &params, args, sym);
+    }
+
+    /// Infer each generic parameter of a call from its arguments, check that
+    /// repeated uses agree, and check its bound. Shared by generic functions
+    /// and generic methods, whose bounds went unchecked (#477).
+    pub(super) fn check_generic_params(
+        &mut self,
+        generics: &[Param],
+        params: &[Option<Type>],
+        call_span: Span,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        for gp in generics {
             let occurrences: Vec<&Expr> = params
                 .iter()
                 .zip(args)
@@ -666,7 +681,7 @@ impl<'a> Checker<'a> {
                 let shown_trait = self.key_leaf(&trait_name);
                 self.error(
                     codes::TYPE_MISMATCH,
-                    expr_span(callee),
+                    call_span,
                     format!(
                         "`{name}` does not satisfy the bound `{}: {shown_trait}`",
                         gp.name.text
@@ -674,7 +689,6 @@ impl<'a> Checker<'a> {
                 );
             }
         }
-        self.check_instantiation(function, &generics, &params, args, sym);
     }
 
     /// Check a generic function's body for this call's type arguments: the

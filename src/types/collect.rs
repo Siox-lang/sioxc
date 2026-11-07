@@ -141,6 +141,7 @@ impl<'a> Checker<'a> {
             array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
+            generic_methods: HashMap::new(),
             fn_arity: HashMap::new(),
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
@@ -316,6 +317,16 @@ impl<'a> Checker<'a> {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
                                 self.methods.insert(key.clone(), f.ret.clone());
+                                if !f.generics.params.is_empty() {
+                                    let params = f
+                                        .params
+                                        .iter()
+                                        .filter(|parameter| !parameter.is_self)
+                                        .map(|parameter| parameter.ty.clone())
+                                        .collect();
+                                    self.generic_methods
+                                        .insert(key.clone(), (f.generics.params.clone(), params));
+                                }
                                 if let Some(id) = self.resolved.declared(f.name.span) {
                                     self.method_ids.entry(key.clone()).or_default().push(id);
                                     // A bare call from the impl's own body
