@@ -457,6 +457,9 @@ struct Checker<'a> {
     /// Generic module fns: definition -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<DefId, GenericFnSignature>,
+    /// Generic methods by (type head, name): their parameters and declared
+    /// value parameter types, for call-site bound checks (#477).
+    generic_methods: HashMap<(String, String), GenericFnSignature>,
     /// Declared free function -> its parameter count, for call-arity checking.
     /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
     /// functions (rand/fs) have no declaration and are not listed.

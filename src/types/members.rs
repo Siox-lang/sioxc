@@ -527,6 +527,11 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) {
         let key = (owner.to_string(), name.to_string());
+        if let Some((generics, declared)) = self.generic_methods.get(&key).cloned() {
+            if declared.len() == args.len() {
+                self.check_generic_params(&generics, &declared, span, args, sym);
+            }
+        }
         let Some(params) = self.method_param_types.get(&key).cloned() else {
             return;
         };
