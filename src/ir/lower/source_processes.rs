@@ -6919,13 +6919,47 @@ fn generic_struct_layout(
             .copied()?;
         return generic_struct_layout(aliased, span, context);
     }
+    // `Box<integer>[2]`: an array of them, each element laid out from the
+    // written element type (#408).
+    if let ast::Type::Indexed {
+        base,
+        index: Some(_),
+        ..
+    } = declared
+    {
+        let element = generic_struct_layout(base, span, context)?;
+        let Some(crate::types::Ty::Array { len, low, .. }) =
+            process_declared_type(declared, context)
+        else {
+            return None;
+        };
+        return Some(crate::ir::SourceLayout {
+            span,
+            kind: LayoutKind::Array {
+                range: (len != 0).then(|| crate::ir::LayoutRange {
+                    left: low,
+                    right: low + i64::from(len) - 1,
+                }),
+                element: Box::new(element),
+            },
+        });
+    }
     let ast::Type::Generic { base, args, .. } = declared else {
         return None;
     };
     let ast::Type::Path(path) = base.as_ref() else {
         return None;
     };
-    let definition = context.resolved.resolved(path.span)?;
+    // A tuple is a synthetic generic struct named after its arity
+    // (`(,)<A, B>`), written after resolution: found by that name (#408).
+    let tuple = match path.segments.as_slice() {
+        [only] if crate::types::tuple_struct_arity(&only.text).is_some() => Some(only.text.clone()),
+        _ => None,
+    };
+    let definition = match &tuple {
+        Some(_) => None,
+        None => Some(context.resolved.resolved(path.span)?),
+    };
     let declaration = context
         .modules
         .iter()
@@ -6933,7 +6967,12 @@ fn generic_struct_layout(
         .find_map(|item| match item {
             ast::Item::Struct(declaration)
                 if !declaration.fields.is_empty()
-                    && context.resolved.declared(declaration.name.span) == Some(definition) =>
+                    && match (&tuple, definition) {
+                        (Some(name), _) => &declaration.name.text == name,
+                        (None, definition) => {
+                            context.resolved.declared(declaration.name.span) == definition
+                        }
+                    } =>
             {
                 Some(declaration)
             }
@@ -13146,7 +13185,18 @@ fn value_ref_with_type_inner(
     // The CFG under construction is not yet in process_ir.processes. Bind
     // local reads to its declaration now so nested fields/indices retain the
     // concrete layout during source lowering, not only after CFG publication.
+    // `Box<integer> { .. }` names its arguments, which its checked type
+    // drops: its layout comes from the written type, as a local's does.
+    // Without it the value had no width and did not lower (#454).
+    let written_generic = match expression {
+        ast::Expr::Construct {
+            ty: Some(written @ ast::Type::Generic { .. }),
+            ..
+        } => generic_struct_layout(written, span, context),
+        _ => None,
+    };
     let local_layout = match &kind {
+        _ if written_generic.is_some() => written_generic,
         ProcessValueKind::Local { local, .. } => process
             .locals
             .get(local.0 as usize)
