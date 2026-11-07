@@ -332,6 +332,25 @@ impl DiagnosticSink {
         }
     }
 
+    /// Drop each diagnostic from index `start` on that repeats an earlier
+    /// one's location and message: a generic body re-checked for one
+    /// instantiation reports again what it reported for every one.
+    pub fn dedup_from(&mut self, start: usize) {
+        let start = start.min(self.diagnostics.len());
+        let mut seen: Vec<(Option<Span>, String)> = self.diagnostics[..start]
+            .iter()
+            .map(|d| (d.primary, d.message.clone()))
+            .collect();
+        let added = self.diagnostics.split_off(start);
+        for diagnostic in added {
+            let key = (diagnostic.primary, diagnostic.message.clone());
+            if !seen.contains(&key) {
+                seen.push(key);
+                self.diagnostics.push(diagnostic);
+            }
+        }
+    }
+
     /// Everything emitted so far, in emission order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics

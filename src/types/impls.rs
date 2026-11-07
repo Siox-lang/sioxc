@@ -50,6 +50,84 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `let add: Adder<integer> = ..;` instantiates `impl<T> Adder<T>`: its
+    /// body is checked again with `T` bound to `integer`, as a generic
+    /// function's is for each call. Unbound, a type parameter is unknown and
+    /// silenced every check that touched it (`a * "some string"`, #481).
+    /// Diagnostics the generic check already gave are not repeated.
+    // ponytail: when the instance is checked before the generic impl itself,
+    // a diagnostic independent of `T` is reported twice.
+    pub(super) fn check_entity_instantiation(&mut self, ty: &Type) {
+        let Type::Generic { args, .. } = ty else {
+            return;
+        };
+        let Some(key) = self.type_key(ty) else {
+            return;
+        };
+        if !self.entities.contains_key(&key) {
+            return;
+        }
+        let impls: Vec<&'a ImplDecl> = self
+            .generic_impls
+            .iter()
+            .copied()
+            .filter(|im| self.type_key(&im.target).as_deref() == Some(key.as_str()))
+            .collect();
+        for im in impls {
+            let Type::Generic { args: written, .. } = &im.target else {
+                continue;
+            };
+            let mut bindings = HashMap::new();
+            for (written, given) in written.iter().zip(args) {
+                let Some(Type::Path(path)) = written.as_type() else {
+                    continue;
+                };
+                let [name] = path.segments.as_slice() else {
+                    continue;
+                };
+                let type_param = im.params.params.iter().any(|p| {
+                    p.name.text == name.text
+                        && p.bound.as_ref().and_then(type_head_name) != Some("integer")
+                });
+                let Some(given) = given.as_type().filter(|_| type_param) else {
+                    continue;
+                };
+                let given = self.ast_ty(&given);
+                if !matches!(given, Ty::Error) {
+                    bindings.insert(name.text.clone(), given);
+                }
+            }
+            if bindings.is_empty() {
+                continue;
+            }
+            let mut shown: Vec<String> = bindings
+                .iter()
+                .map(|(name, ty)| format!("{name}={}", self.ty_display(ty)))
+                .collect();
+            shown.sort();
+            if !self.instantiated.borrow_mut().insert(format!(
+                "{key}:{:?}:{}",
+                im.span,
+                shown.join(",")
+            )) {
+                continue;
+            }
+            let expr_types = self.expr_types.borrow().clone();
+            let promotions = self.promotions.clone();
+            let type_attr_reads = self.type_attr_reads.clone();
+            let covered = self.covered_tuple_matches.clone();
+            let saved = self.type_bindings.replace(bindings);
+            let start = self.sink.diagnostics().len();
+            self.check_impl(im);
+            self.sink.dedup_from(start);
+            self.type_bindings.replace(saved);
+            self.expr_types.replace(expr_types);
+            self.promotions = promotions;
+            self.type_attr_reads = type_attr_reads;
+            self.covered_tuple_matches = covered;
+        }
+    }
+
     /// Type-check an `impl` block.
     pub(super) fn check_impl(&mut self, im: &ImplDecl) {
         // Stimulus primitives are meaningful in a testbench; in an entity body
@@ -156,6 +234,9 @@ impl<'a> Checker<'a> {
                     self.check_init(Some(&c.ty), &c.value, &sym);
                 }
                 ImplItem::Let(l) => {
+                    if let Some(ty) = &l.ty {
+                        self.check_entity_instantiation(ty);
+                    }
                     // A signal named like one of the entity's ports: reads
                     // went to the port, the `let` was ignored, and the
                     // waveform held two `a`s in one scope.
@@ -333,8 +414,14 @@ impl<'a> Checker<'a> {
                 .type_key(&im.target)
                 .and_then(|key| self.entities.get(&key))
             {
+                let instantiated = !self.type_bindings.borrow().is_empty();
                 for p in ports {
-                    sym.insert(p.name.clone(), p.ty.clone());
+                    let ty = if instantiated {
+                        self.ast_ty(&p.declared)
+                    } else {
+                        p.ty.clone()
+                    };
+                    sym.insert(p.name.clone(), ty);
                     if let Some(r) = p.range {
                         ranged.insert(p.name.clone(), r);
                     }
