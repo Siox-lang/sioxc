@@ -381,11 +381,21 @@ impl<'a> Checker<'a> {
             return;
         }
         let owner_name = &path.segments[path.segments.len() - 2];
-        let owner = self
+        let mut owner = self
             .resolved
             .resolved(owner_name.span)
             .and_then(|id| self.definition_key(id))
             .unwrap_or_else(|| owner_name.text.clone());
+        // `Pt::double` with `type Pt = Point;` names `Point`'s method (#490).
+        for _ in 0..8 {
+            match self.aliases.get(&owner) {
+                Some(Type::Path(target)) => match self.path_key(target) {
+                    Some(key) => owner = key,
+                    None => break,
+                },
+                _ => break,
+            }
+        }
         let name = &path.segments[path.segments.len() - 1].text;
         // A type's own `fn default(..)` replaces the derived `T::default()`.
         let declared = self.methods.contains_key(&(owner.clone(), name.clone()));
