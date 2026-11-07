@@ -445,6 +445,9 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
+        if let ast::Type::Generic { args: given, .. } = qualifier {
+            return self.inline_with_qualifier_values(given, callee, args, env);
+        }
         let ast::Type::Indexed {
             index: Some(index), ..
         } = qualifier
@@ -453,6 +456,97 @@ impl<'a> Lowering<'a> {
         };
         let f = self.free_fns.get(callee)?;
         self.inline_in_format(f, index, callee, args, env)
+    }
+
+    /// A call qualified by an applied generic type (`Config<100>::f()`).
+    pub(super) fn generic_qualified_call(
+        &self,
+        e: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let ast::Expr::Call {
+            callee,
+            args,
+            qualifier: Some(qualifier),
+            ..
+        } = e
+        else {
+            return None;
+        };
+        let ast::Type::Generic { args: given, .. } = qualifier.as_ref() else {
+            return None;
+        };
+        self.inline_with_qualifier_values(given, callee, args, env)
+    }
+
+    /// `Config<100>::get_limit()`: inline the static function with the
+    /// declaring impl's value parameters (`N` of `impl<N: integer>
+    /// Config<N>`) bound to the qualifier's arguments; `N` in its body named
+    /// nothing in scope (#492).
+    fn inline_with_qualifier_values(
+        &self,
+        given: &[ast::GenericArg],
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let f = self.free_fns.get(callee)?;
+        let owner = self.free_fns.owner(f)?;
+        let ast::Type::Generic { args: written, .. } = &owner.target else {
+            return None;
+        };
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        for (written, given) in written.iter().zip(given) {
+            let (
+                ast::GenericArg::Positional(ast::Expr::Path(path)),
+                ast::GenericArg::Positional(value),
+            ) = (written, given)
+            else {
+                continue;
+            };
+            let [name] = path.segments.as_slice() else {
+                continue;
+            };
+            let value_parameter = owner
+                .params
+                .params
+                .iter()
+                .any(|parameter| parameter.name.text == name.text && parameter.bound.is_some());
+            if value_parameter {
+                let value = self.eval_const(value, &self.cur_env)?;
+                fenv.insert(name.text.clone(), Val::Scalar(Expr::Const(value as u64)));
+            }
+        }
+        if fenv.is_empty() {
+            return None;
+        }
+        let params: Vec<&ast::Ident> = f
+            .params
+            .iter()
+            .filter(|p| !p.is_self)
+            .map(|p| p.name.as_ref())
+            .collect::<Option<_>>()?;
+        if params.len() != args.len() {
+            return None;
+        }
+        for (param, arg) in params.iter().zip(args) {
+            fenv.insert(
+                param.text.clone(),
+                self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
+            );
+        }
+        let shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
+        drop(shapes);
+        match out? {
+            Val::Scalar(value) => Some(value),
+            _ => None,
+        }
     }
 
     /// Inline a `From` conversion's body for the target type.
