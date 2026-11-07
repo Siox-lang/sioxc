@@ -115,13 +115,17 @@ impl<'a> Checker<'a> {
             self.type_kind_name(&self.type_of(index, sym))
         };
         let value_ty = self.type_kind_name(&self.type_of(value, sym));
+        // An integer literal reads through a vector contract (`g[1] = 50`
+        // into `IndexAssign<integer, unsigned[8]>`), as into a vector.
+        let literal = matches!(value, Expr::Int { text, .. } if !text.contains('.'));
         let found = self
             .index_sigs
             .get(&("IndexAssign".to_string(), owner.clone()))
             .is_some_and(|sigs| {
                 sigs.iter().any(|(i, v)| {
                     Self::index_contract_type_matches(i, input.as_deref(), &owner)
-                        && Self::index_contract_type_matches(v, value_ty.as_deref(), &owner)
+                        && (Self::index_contract_type_matches(v, value_ty.as_deref(), &owner)
+                            || (literal && v.as_deref().is_some_and(|k| self.is_array_family(k))))
                 })
             });
         if !found {
