@@ -1058,10 +1058,14 @@ impl<'a> Lowering<'a> {
 }
 
 /// The view field a flattened port leaf names, past the port's element
-/// indices: `.valid` and `[2].valid` are both `valid`.
+/// indices: `.valid` and `[2].valid` are both `valid`. A leaf inside that
+/// field (`.inner.x`, `.data[0]`) is the field's too: the view lists only
+/// the struct's own fields, so those leaves had no direction and were left
+/// undriven (#495).
 fn view_leaf(mut rest: &str) -> Option<&str> {
     while let Some(tail) = rest.strip_prefix('[') {
         rest = &tail[tail.find(']')? + 1..];
     }
-    rest.strip_prefix('.')
+    let field = rest.strip_prefix('.')?;
+    Some(&field[..field.find(['.', '[']).unwrap_or(field.len())])
 }
