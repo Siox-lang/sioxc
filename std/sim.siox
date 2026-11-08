@@ -40,6 +40,10 @@ impl Suffix<"us", integer> for time {
 impl Suffix<"ms", integer> for time {
     static fn suffix(v: integer) -> time { return time(v * 1000000000000); }
 }
+// Seconds: `1s` is 10^15 fs, so a `time` holds up to about 9223 s.
+impl Suffix<"s", integer> for time {
+    static fn suffix(v: integer) -> time { return time(v * 1000000000000000); }
+}
 
 pub struct frequency(real);
 
