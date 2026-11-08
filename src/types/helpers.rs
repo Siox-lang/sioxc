@@ -282,8 +282,9 @@ pub(super) fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
 
 /// When a string literal (`"c"`) is used where a character, logic scalar, or
 /// bit vector is expected, explain that `"..."` is a *string* (a `Char` array)
-/// and point at the right form: `'c'` for a single value, `b"..."` for a bit
-/// vector. Assigning a string to a `Char` array is fine, so no hint there.
+/// and point at the right form: `'c'` for a single value, `0b...` or
+/// `x"..."` for a bit vector. There is no `b"..."` literal; the radix
+/// prefixes are `x` and `o` (#534). Assigning a string to a `Char` array is fine, so no hint there.
 pub(super) fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
     let Expr::StrLit { text, .. } = value else {
         return None;
@@ -298,7 +299,7 @@ pub(super) fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
             family: Some(_),
             ..
         } => Some(format!(
-            "`\"{text}\"` is a string; for a bit vector use a bit-string literal `b\"{text}\"` (binary) or `x\"...\"` (hex)"
+            "`\"{text}\"` is a string; for a bit vector use a binary literal `0b{text}` or a hex bit-string `x\"...\"`"
         )),
         Ty::Array { .. } => None,
         _ => None,
