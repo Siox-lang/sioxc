@@ -123,10 +123,9 @@ impl<'a> Checker<'a> {
             self.check_impl(im);
             self.sink.dedup_from(start);
             self.type_bindings.replace(saved);
-            self.expr_types.replace(expr_types);
+            self.keep_instantiation_types(expr_types);
             self.promotions = promotions;
-            self.type_attr_reads = type_attr_reads;
-            self.covered_tuple_matches = covered;
+            self.keep_instantiation_tables(type_attr_reads, covered);
         }
     }
 

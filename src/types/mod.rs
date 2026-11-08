@@ -555,6 +555,9 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Expressions of a generic body two instantiations typed differently;
+    /// their type is left unrecorded.
+    conflicting_expr_types: HashSet<Span>,
     /// Per-statement memo table for [`Self::type_of`], keyed by `(expr_ptr, sym_ptr)`
     /// so repeated `type_of` queries on nested operator trees stay linear.
     type_cache: std::cell::RefCell<HashMap<(usize, usize), Ty>>,
@@ -587,6 +590,10 @@ struct Checker<'a> {
     type_attrs: HashMap<(String, String), AttrDecl>,
     /// Each type attribute read, by span, to the declared value it expands
     /// to; handed on in [`Typed`].
+    /// Attribute reads two instantiations of one generic body expanded
+    /// differently (`x'length` with `x: T`): left to lowering, not expanded
+    /// to either value.
+    conflicting_attr_reads: HashSet<Span>,
     type_attr_reads: HashMap<Span, Expr>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,

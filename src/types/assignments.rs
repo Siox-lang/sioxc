@@ -761,10 +761,64 @@ impl<'a> Checker<'a> {
         self.check_function_block(declaration, body, None, false);
         self.instantiating.borrow_mut().pop();
         self.type_bindings.replace(saved);
-        self.expr_types.replace(expr_types);
+        self.keep_instantiation_types(expr_types);
         self.promotions = promotions;
-        self.type_attr_reads = type_attr_reads;
-        self.covered_tuple_matches = covered;
+        self.keep_instantiation_tables(type_attr_reads, covered);
+    }
+
+    /// After a generic body is checked for one instantiation, restore the
+    /// tables it recorded into, keeping what it found: its attribute reads
+    /// (`p'total_bits`) and exhaustive tuple matches. A type-generic body is
+    /// checked only through its instantiations, and discarding these left
+    /// such a read unexpanded and such a match unlowered (#386). A read two
+    /// instantiations expand differently is dropped instead.
+    /// The expression types an instantiation recorded, kept as its tables
+    /// are: a tuple match in a generic body is lowered from its scrutinee's
+    /// type (#386). A type two instantiations disagree on is dropped.
+    pub(super) fn keep_instantiation_types(&mut self, saved: HashMap<Span, Ty>) {
+        let recorded = self.expr_types.replace(saved);
+        let mut types = self.expr_types.borrow_mut();
+        for (span, ty) in recorded {
+            if self.conflicting_expr_types.contains(&span) || matches!(ty, Ty::Error) {
+                continue;
+            }
+            match types.get(&span) {
+                None => {
+                    types.insert(span, ty);
+                }
+                Some(existing) if existing != &ty => {
+                    types.remove(&span);
+                    self.conflicting_expr_types.insert(span);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    pub(super) fn keep_instantiation_tables(
+        &mut self,
+        saved_reads: HashMap<Span, Expr>,
+        saved_covered: HashSet<Span>,
+    ) {
+        let recorded = std::mem::replace(&mut self.type_attr_reads, saved_reads);
+        for (span, read) in recorded {
+            if self.conflicting_attr_reads.contains(&span) {
+                continue;
+            }
+            let shown = crate::syntax::pretty::expr_string(&read);
+            match self.type_attr_reads.get(&span) {
+                None => {
+                    self.type_attr_reads.insert(span, read);
+                }
+                Some(existing) if crate::syntax::pretty::expr_string(existing) != shown => {
+                    self.type_attr_reads.remove(&span);
+                    self.conflicting_attr_reads.insert(span);
+                }
+                Some(_) => {}
+            }
+        }
+        let recorded = std::mem::replace(&mut self.covered_tuple_matches, saved_covered);
+        self.covered_tuple_matches.extend(recorded);
     }
 
     /// Whether a type is exactly the bare parameter `name`, rather than

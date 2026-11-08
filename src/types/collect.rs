@@ -188,6 +188,8 @@ impl<'a> Checker<'a> {
             entity_names,
             type_attrs: HashMap::new(),
             type_attr_reads: HashMap::new(),
+            conflicting_attr_reads: HashSet::new(),
+            conflicting_expr_types: HashSet::new(),
             promotions: HashMap::new(),
             into_sigs: HashSet::new(),
             conversions: HashMap::new(),
