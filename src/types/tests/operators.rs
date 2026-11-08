@@ -165,7 +165,8 @@ fn string_literal_gets_a_targeted_hint() {
     // A named scalar points at the character literal.
     let h = strlit_help(&Ty::Named(crate::resolve::DefId(0)), &s("0")).unwrap();
     assert!(h.contains("'0'"), "{h}");
-    // A bit vector points at the bit-string literal.
+    // A bit vector points at a binary literal, which exists, not `b"..."`,
+    // which does not (#534).
     let h = strlit_help(
         &Ty::Array {
             elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
@@ -176,7 +177,7 @@ fn string_literal_gets_a_targeted_hint() {
         &s("0101"),
     )
     .unwrap();
-    assert!(h.contains("b\"0101\""), "{h}");
+    assert!(h.contains("0b0101") && !h.contains("b\"0101\""), "{h}");
     // Assigning a string to a Char array is correct — no hint.
     let str_ty = Ty::Array {
         elem: Box::new(Ty::Char),
