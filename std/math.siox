@@ -93,10 +93,12 @@ pub fn cmp<T: Ord<T>>(a: T, b: T) -> Ordering {
     return Ordering::Equal;
 }
 
-// The remainder with the dividend's sign (VHDL `rem`, Rust `%`): `/`
-// truncates toward zero. `rem(0 - 7, 2)` is -1.
-pub fn rem<T: Div<T, T>>(a: T, m: T) -> T {
-    return a - (a / m) * m;
+// The remainder with the dividend's sign (VHDL `rem`, Rust `%`):
+// `rem(0 - 7, 2)` is -1 and `rem(5.5, 2.0)` is 1.5. It is `%` itself; the
+// former `a - (a / m) * m` relied on `/` truncating, which a `real` does not,
+// so every real remainder was 0.0 (#544).
+pub fn rem<T: Rem<T, T>>(a: T, m: T) -> T {
+    return a % m;
 }
 
 // The remainder with the divisor's sign (VHDL `mod`). `mod(0 - 7, 2)` is 1.
