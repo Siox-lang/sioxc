@@ -714,7 +714,23 @@ impl<'a> Checker<'a> {
                 // scheduler could not evaluate (#252). A signal initializer's
                 // `read`/`exists` is compile-time I/O, elaborated.
                 if let Expr::Path(path) = callee.as_ref() {
-                    if let [segment] = path.segments.as_slice() {
+                    // `rand::randint`, `std::fs::read`: a qualified runtime
+                    // call is the same call, and passed this check to crash
+                    // hardware lowering (#524).
+                    let qualified = match path.segments.as_slice() {
+                        [segment] => Some(segment),
+                        [module, segment] if matches!(module.text.as_str(), "rand" | "fs") => {
+                            Some(segment)
+                        }
+                        [root, module, segment]
+                            if root.text == "std"
+                                && matches!(module.text.as_str(), "rand" | "fs") =>
+                        {
+                            Some(segment)
+                        }
+                        _ => None,
+                    };
+                    if let Some(segment) = qualified {
                         let runtime = self
                             .resolved
                             .resolved(path.span)
