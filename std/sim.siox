@@ -45,6 +45,31 @@ impl Suffix<"s", integer> for time {
     static fn suffix(v: integer) -> time { return time(v * 1000000000000000); }
 }
 
+// Arithmetic on `time`, as on VHDL's physical types: two times add and
+// subtract, a time scales by an integer, and a ratio of times is an integer
+// (#537).
+impl Add<time, time> for time {
+    fn add(rhs: time) -> time { return time(integer(self) + integer(rhs)); }
+}
+impl Sub<time, time> for time {
+    fn sub(rhs: time) -> time { return time(integer(self) - integer(rhs)); }
+}
+impl Mul<integer, time> for time {
+    fn mul(rhs: integer) -> time { return time(integer(self) * rhs); }
+}
+impl Mul<time, time> for integer {
+    fn mul(rhs: time) -> time { return time(self * integer(rhs)); }
+}
+impl Div<integer, time> for time {
+    fn div(rhs: integer) -> time { return time(integer(self) / rhs); }
+}
+impl Div<time, integer> for time {
+    fn div(rhs: time) -> integer { return integer(self) / integer(rhs); }
+}
+impl Neg<time> for time {
+    fn neg() -> time { return time(0 - integer(self)); }
+}
+
 pub struct frequency(real);
 
 impl Eq<frequency> for frequency {
@@ -76,3 +101,23 @@ pub const PS: integer = 1000;
 pub const NS: integer = 1000000;
 pub const US: integer = 1000000000;
 pub const MS: integer = 1000000000000;
+
+// Arithmetic on `frequency`, a real in hertz (#537).
+impl Add<frequency, frequency> for frequency {
+    fn add(rhs: frequency) -> frequency { return frequency(real(self) + real(rhs)); }
+}
+impl Sub<frequency, frequency> for frequency {
+    fn sub(rhs: frequency) -> frequency { return frequency(real(self) - real(rhs)); }
+}
+impl Mul<real, frequency> for frequency {
+    fn mul(rhs: real) -> frequency { return frequency(real(self) * rhs); }
+}
+impl Div<real, frequency> for frequency {
+    fn div(rhs: real) -> frequency { return frequency(real(self) / rhs); }
+}
+impl Div<frequency, real> for frequency {
+    fn div(rhs: frequency) -> real { return real(self) / real(rhs); }
+}
+impl Neg<frequency> for frequency {
+    fn neg() -> frequency { return frequency(0.0 - real(self)); }
+}
