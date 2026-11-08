@@ -32,6 +32,9 @@ pub struct FunctionIndex<'a> {
     /// not yet receive a `DefId` of their own.
     /// Keyed owner first, then name, so a lookup borrows both.
     associated: HashMap<String, HashMap<String, &'a ast::FnDecl>>,
+    /// The impl declaring each static associated function, by the
+    /// function's span: its parameters bind from a call's applied type.
+    owners: HashMap<crate::diag::Span, &'a ast::ImplDecl>,
     /// Concrete operator implementations, keyed by source symbol and resolved
     /// owner type. Each candidate retains the impl's declared input type for
     /// overload selection; the function body remains ordinary Siox source and
@@ -58,6 +61,7 @@ impl<'a> FunctionIndex<'a> {
             resolved,
             free: HashMap::new(),
             associated: HashMap::new(),
+            owners: HashMap::new(),
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
@@ -187,6 +191,16 @@ impl<'a> FunctionIndex<'a> {
             .entry(owner.to_owned())
             .or_default()
             .insert(name.to_owned(), function);
+    }
+
+    /// Record the impl declaring `function`.
+    pub fn insert_owner(&mut self, function: &'a ast::FnDecl, owner: &'a ast::ImplDecl) {
+        self.owners.insert(function.span, owner);
+    }
+
+    /// The impl declaring `function`, when it is a static associated one.
+    pub fn owner(&self, function: &ast::FnDecl) -> Option<&'a ast::ImplDecl> {
+        self.owners.get(&function.span).copied()
     }
 
     /// Register an inherited static default unless the impl overrides it.

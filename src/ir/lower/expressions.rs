@@ -5,6 +5,11 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        // `Config<100>::f()` binds the impl's value parameters, which the
+        // general call path below inlines without (#492).
+        if let Some(value) = self.generic_qualified_call(e, &HashMap::new()) {
+            return value;
+        }
         if let Some(Val::Scalar(value)) = self.converted_value(e, &HashMap::new()) {
             return value;
         }

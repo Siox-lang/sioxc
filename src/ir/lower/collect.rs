@@ -361,6 +361,7 @@ impl<'a> Lowering<'a> {
                 if !f.params.iter().any(|p| p.is_self) {
                     self.free_fns
                         .insert_associated(format!("{ty}::{}", f.name.text), f);
+                    self.free_fns.insert_owner(f, im);
                 }
             }
         }

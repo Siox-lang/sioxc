@@ -12073,12 +12073,112 @@ fn promote_to_real(
     )
 }
 
+/// The value parameters a qualified call's applied type binds: for
+/// `Config<100>::f()` and `impl<N: integer> Config<N>` declaring `f`, `N`
+/// bound to `100`. `None` when the qualifier binds none.
+fn qualifier_value_bindings(
+    callee: &ast::Expr,
+    qualifier: &ast::Type,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<std::collections::HashMap<crate::resolve::DefId, ProcessValueId>> {
+    let ast::Type::Generic { args: given, .. } = qualifier else {
+        return None;
+    };
+    let function = context.functions.get(callee)?;
+    let span = function.span;
+    let implementation = context
+        .modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .find_map(|item| match item {
+            ast::Item::Impl(implementation)
+                if implementation
+                    .items
+                    .iter()
+                    .any(|member| matches!(member, ast::ImplItem::Fn(f) if f.span == span)) =>
+            {
+                Some(implementation)
+            }
+            _ => None,
+        })?;
+    let ast::Type::Generic { args: written, .. } = &implementation.target else {
+        return None;
+    };
+    let mut bindings = std::collections::HashMap::new();
+    for (written, given) in written.iter().zip(given) {
+        let (
+            ast::GenericArg::Positional(ast::Expr::Path(path)),
+            ast::GenericArg::Positional(value),
+        ) = (written, given)
+        else {
+            continue;
+        };
+        let [name] = path.segments.as_slice() else {
+            continue;
+        };
+        let Some(parameter) = implementation
+            .params
+            .params
+            .iter()
+            .find(|parameter| parameter.name.text == name.text && parameter.bound.is_some())
+        else {
+            continue;
+        };
+        let Some(definition) = context.resolved.declared(parameter.name.span) else {
+            continue;
+        };
+        let value = value_ref_with_type(value, process, context, Some(&crate::types::Ty::Integer));
+        bindings.insert(definition, value);
+    }
+    (!bindings.is_empty()).then_some(bindings)
+}
+
 fn value_ref_with_type_inner(
     expression: &ast::Expr,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    // `Config<100>::get_limit()`: the impl's value parameters (`N` of
+    // `impl<N: integer> Config<N>`) take the qualifier's arguments while the
+    // call is lowered. `N` in the body named nothing and did not lower
+    // (#492).
+    if let ast::Expr::Call {
+        callee,
+        qualifier: Some(qualifier),
+        ..
+    } = expression
+    {
+        if let Some(bindings) = qualifier_value_bindings(callee, qualifier, process, context) {
+            context.value_bindings.push(bindings);
+            let value = value_ref_with_type_inner(
+                &match expression {
+                    ast::Expr::Call {
+                        callee,
+                        type_args,
+                        args,
+                        bang,
+                        span,
+                        ..
+                    } => ast::Expr::Call {
+                        callee: callee.clone(),
+                        type_args: type_args.clone(),
+                        qualifier: None,
+                        args: args.clone(),
+                        bang: *bang,
+                        span: *span,
+                    },
+                    _ => unreachable!(),
+                },
+                process,
+                context,
+                contextual_type,
+            );
+            context.value_bindings.pop();
+            return value;
+        }
+    }
     // `let r: Range = 0..3;`, a `Range` parameter, `rf[0..1] = v` through
     // `IndexAssign<Range, _>`: where a struct is expected, a range literal is
     // the `Range { left, right }` value, as an `Index<Range, _>` argument

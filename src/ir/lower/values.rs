@@ -135,6 +135,9 @@ impl<'a> Lowering<'a> {
         if let Some(value) = self.promoted_operand(e, env) {
             return Val::Scalar(value);
         }
+        if let Some(value) = self.generic_qualified_call(e, env) {
+            return Val::Scalar(value);
+        }
         if let Some(value) = self.source_call_value(e, env) {
             return value;
         }
