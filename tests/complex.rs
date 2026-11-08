@@ -67,25 +67,19 @@ impl T {
 #[cfg(feature = "llvm")]
 #[test]
 fn missing_complex_operators_are_reported_once() {
-    for (name, body, expected) in [
-        ("neg", "let z: Complex = -a;", "no unary `-` for `Complex`"),
-        (
-            "int_sub",
-            "let z: Complex = 2 - a;",
-            "cannot apply `-` to integer and Complex",
-        ),
-    ] {
-        let (compilation, _) = compile(
-            name,
-            &format!(
-                "module g;\nuse std::math::Complex;\n#[test] entity T {{}}\n\
-                 impl T {{ check: process {{ let a: Complex = {{ .re = 3.0, .im = 4.0 }}; {body} print!(\"{{}}\", z); }} }}\n"
-            ),
-        );
-        let rendered = compilation.render_diagnostics();
-        assert!(rendered.contains(expected), "{name}: {rendered}");
-        assert_eq!(rendered.matches("error[").count(), 1, "{name}: {rendered}");
-    }
+    // `-a` is declared since #530; a scalar on the left still is not.
+    let (compilation, _) = compile(
+        "int_sub",
+        "module g;\nuse std::math::Complex;\n#[test] entity T {}\n\
+         impl T { check: process { let a: Complex = { .re = 3.0, .im = 4.0 }; \
+         let z: Complex = 2 - a; print!(\"{}\", z); } }\n",
+    );
+    let rendered = compilation.render_diagnostics();
+    assert!(
+        rendered.contains("cannot apply `-` to integer and Complex"),
+        "{rendered}"
+    );
+    assert_eq!(rendered.matches("error[").count(), 1, "{rendered}");
 }
 
 /// A testbench literal of a struct with several suffix impls took whichever

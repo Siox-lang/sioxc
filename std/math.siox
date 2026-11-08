@@ -51,6 +51,99 @@ impl From<integer> for Complex {
     }
 }
 
+// The rest of the field's arithmetic (#530, #545): a `real` operand mixes
+// in as an `integer` one does.
+// ponytail: a scalar on the left (`2.0 * z`, `1 - z`) is not declared: an
+// operator on a kernel left operand is chosen by that operand alone, so
+// `impl Mul<Complex, Complex> for integer` took over every `integer * x`.
+// Write the scalar on the right until dispatch weighs the right operand.
+impl From<real> for Complex {
+    static fn from(v: real) -> Complex {
+        return Complex { .re = v, .im = 0.0 };
+    }
+}
+
+impl Add<real, Complex> for Complex {
+    fn add(rhs: real) -> Complex {
+        return Complex { .re = self.re + rhs, .im = self.im };
+    }
+}
+
+impl Sub<real, Complex> for Complex {
+    fn sub(rhs: real) -> Complex {
+        return Complex { .re = self.re - rhs, .im = self.im };
+    }
+}
+
+impl Sub<integer, Complex> for Complex {
+    fn sub(rhs: integer) -> Complex {
+        return Complex { .re = self.re - rhs, .im = self.im };
+    }
+}
+
+// `(a + bi)(c + di) = (ac - bd) + (ad + bc)i`.
+impl Mul<Complex, Complex> for Complex {
+    fn mul(rhs: Complex) -> Complex {
+        return Complex {
+            .re = self.re * rhs.re - self.im * rhs.im,
+            .im = self.re * rhs.im + self.im * rhs.re
+        };
+    }
+}
+
+impl Mul<real, Complex> for Complex {
+    fn mul(rhs: real) -> Complex {
+        return Complex { .re = self.re * rhs, .im = self.im * rhs };
+    }
+}
+
+impl Mul<integer, Complex> for Complex {
+    fn mul(rhs: integer) -> Complex {
+        return Complex { .re = self.re * rhs, .im = self.im * rhs };
+    }
+}
+
+// `(a + bi) / (c + di)`: multiplied through by the conjugate,
+// `((ac + bd) + (bc - ad)i) / (c^2 + d^2)`.
+impl Div<Complex, Complex> for Complex {
+    fn div(rhs: Complex) -> Complex {
+        let d: real = rhs.re * rhs.re + rhs.im * rhs.im;
+        return Complex {
+            .re = (self.re * rhs.re + self.im * rhs.im) / d,
+            .im = (self.im * rhs.re - self.re * rhs.im) / d
+        };
+    }
+}
+
+impl Div<real, Complex> for Complex {
+    fn div(rhs: real) -> Complex {
+        return Complex { .re = self.re / rhs, .im = self.im / rhs };
+    }
+}
+
+impl Div<integer, Complex> for Complex {
+    fn div(rhs: integer) -> Complex {
+        return Complex { .re = self.re / real(rhs), .im = self.im / real(rhs) };
+    }
+}
+
+impl Neg<Complex> for Complex {
+    fn neg() -> Complex {
+        return Complex { .re = 0.0 - self.re, .im = 0.0 - self.im };
+    }
+}
+
+impl Eq<Complex> for Complex {
+    fn eq(rhs: Complex) -> Bool {
+        return self.re == rhs.re and self.im == rhs.im;
+    }
+}
+
+// The complex conjugate: `conj(a + bi)` is `a - bi`.
+pub fn conj(z: Complex) -> Complex {
+    return Complex { .re = z.re, .im = 0.0 - z.im };
+}
+
 // `5i` is a pure imaginary `Complex` (the `i` suffix, over a real magnitude);
 // the `suffix` method builds the value and is inlined at the use site.
 impl Suffix<"i", real> for Complex {
