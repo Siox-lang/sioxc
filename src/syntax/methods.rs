@@ -146,6 +146,50 @@ pub fn impl_aliases(modules: &mut [Module]) {
     }
 }
 
+/// `std::bits::resize`, `bits::resize`, `std::primitive::integer`,
+/// `rand::randint`: a builtin named through the std module that provides it
+/// is the builtin itself, but lowering recognized only the bare one-segment
+/// name, so a qualified call passed the checker and crashed hardware or
+/// testbench lowering (#546, also #524, #499). Each is written bare here,
+/// once, before resolution.
+// ponytail: a user module named `bits`, `primitive`, `rand` or `fs` with a
+// function of one of these names would be read as the builtin.
+pub fn builtin_paths(modules: &mut [Module]) {
+    fn builtin_module(name: &str) -> Option<&'static str> {
+        match name {
+            "resize" => Some("bits"),
+            "integer" | "natural" | "real" | "Char" => Some("primitive"),
+            "rand" | "randint" | "uniform" | "seed" => Some("rand"),
+            "read" | "exists" => Some("fs"),
+            _ => None,
+        }
+    }
+    let mut rewrite = |e: &mut Expr| {
+        if let Expr::Path(path) = e {
+            let qualified = match path.segments.as_slice() {
+                [module, name] => builtin_module(&name.text) == Some(module.text.as_str()),
+                [root, module, name] => {
+                    root.text == "std" && builtin_module(&name.text) == Some(module.text.as_str())
+                }
+                _ => false,
+            };
+            if qualified {
+                let name = path
+                    .segments
+                    .pop()
+                    .expect("a qualified path has a last segment");
+                path.segments = vec![name];
+            }
+        }
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            crate::syntax::walk::walk_item(item, &mut rewrite);
+        }
+    }
+}
+
 /// Rewrite every entity method and every call to one.
 pub fn entity_methods(modules: &mut [Module], sources: &mut SourceMap, sink: &mut DiagnosticSink) {
     let methods = collect(modules);
