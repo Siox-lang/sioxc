@@ -8,6 +8,15 @@ impl<'a> Checker<'a> {
     pub(super) fn check_expr(&mut self, e: &Expr, sym: &HashMap<String, Ty>) {
         match e {
             Expr::SysAttr { base, attr, span } => {
+                // `integer'low`, `Logic[8]'length`: a type's shape attribute
+                // is a constant, recorded here; the base is no value (#539).
+                if matches!(
+                    attr.text.as_str(),
+                    "length" | "high" | "low" | "left" | "right"
+                ) && self.type_shape_attribute(base, attr, *span).is_some()
+                {
+                    return;
+                }
                 if PHASE2_ATTRS.contains(&attr.text.as_str()) {
                     self.error(
                         codes::PHASE2_SYNTAX,
