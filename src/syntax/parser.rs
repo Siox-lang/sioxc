@@ -124,7 +124,13 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
         }
         let pending = pending_precedence.take();
         if tokens[i].kind == TokenKind::Impl {
-            let limit = (i + 20).min(tokens.len());
+            // The header runs to the body's `{`: generic parameters with
+            // bounds pushed `CustomOperator<"^^", ..>` past a fixed 20-token
+            // window, and the operator went undeclared (#583).
+            let limit = tokens[i..]
+                .iter()
+                .position(|token| token.kind == TokenKind::LBrace)
+                .map_or(tokens.len(), |offset| i + offset);
             let mut j = i + 1;
             while j < limit {
                 if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "CustomOperator" {
