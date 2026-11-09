@@ -195,9 +195,13 @@ pub fn rem<T: Rem<T, T>>(a: T, m: T) -> T {
 }
 
 // The remainder with the divisor's sign (VHDL `mod`). `mod(0 - 7, 2)` is 1.
+// The remainder is taken once: written four times, each call inlined its
+// own copy of the operands, and `mod(mod(mod(s, 2), 2), 2)` grew fourfold per
+// level (#527).
 pub fn mod<T: Ord<T>>(a: T, m: T) -> T {
-    if rem(a, m) != 0 and (rem(a, m) < 0) != (m < 0) { return rem(a, m) + m; }
-    return rem(a, m);
+    let r: T = rem(a, m);
+    if r != 0 and (r < 0) != (m < 0) { return r + m; }
+    return r;
 }
 
 // The square root of any number type that implements `Sqrt`: `real`
