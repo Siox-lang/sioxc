@@ -140,11 +140,16 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
+            Expr::SysAttr { base, attr, span } => match attr.text.as_str() {
                 // `::event` is Bool; the edge helpers are `ClockLike` methods now.
                 "event" => self.ty_from_head("Bool"),
                 "old" => self.type_of(base, sym),
                 "length" | "high" | "low" | "left" | "right" => {
+                    // `integer'low`, `Logic[8]'length`: VHDL's type
+                    // attributes, folded to their constant (#539).
+                    if let Some(shape) = self.type_shape_value(base, attr, *span) {
+                        return shape.map_or(Ty::Error, |(_, ty)| ty);
+                    }
                     // A computed base's type is what `fold_value_lengths`
                     // reads its length from: `(a + b)'length` recorded none.
                     if !matches!(base.as_ref(), Expr::Path(_)) {
@@ -679,5 +684,160 @@ impl<'a> Checker<'a> {
         let mut targets = self.views.keys().filter_map(|k| k.strip_prefix(&prefix));
         let first = targets.next()?;
         targets.next().is_none().then(|| first.to_string())
+    }
+}
+
+impl Checker<'_> {
+    /// The written type a base names, when it names one: `integer`,
+    /// `Byte` (an alias), `Logic[8]`, `unsigned[7..0]`.
+    fn written_type_base(&self, base: &Expr) -> Option<Type> {
+        let root = match base {
+            Expr::Path(path) => path,
+            Expr::Index { base: inner, .. } => match inner.as_ref() {
+                Expr::Path(path) => path,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let id = self.resolved.resolved(root.span)?;
+        let names_type = match self.resolved.kind_of(id)? {
+            DefKind::Builtin => {
+                matches!(
+                    root.segments.last()?.text.as_str(),
+                    "integer" | "natural" | "real" | "Char"
+                )
+            }
+            DefKind::Struct | DefKind::Enum | DefKind::TypeAlias => true,
+            _ => false,
+        };
+        if !names_type {
+            return None;
+        }
+        GenericArg::Positional(base.clone()).as_type()
+    }
+
+    /// `integer'low`, `integer<0..255>'high` (through an alias),
+    /// `natural'high`, `Logic[8]'length`, `unsigned[7..0]'left`: a type's
+    /// shape attributes, as VHDL's `T'low`, recorded as the constant they
+    /// read. They lowered to an invalid value (#539). `None` when `base` is
+    /// not a type; a type with no such attribute (`real'low`) is reported.
+    /// Record the constant a type's shape attribute reads, or report one
+    /// the type does not have. Called from `check_expr`; `None` when `base`
+    /// is not a type.
+    pub(super) fn type_shape_attribute(
+        &mut self,
+        base: &Expr,
+        attr: &Ident,
+        span: Span,
+    ) -> Option<Ty> {
+        match self.type_shape_value(base, attr, span)? {
+            Some((value, ty)) => {
+                self.type_attr_reads.insert(span, value);
+                Some(ty)
+            }
+            None => {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    span,
+                    format!(
+                        "`{}'{}` has no value: a type's `'{}` is defined for {}",
+                        crate::syntax::pretty::expr_string(base),
+                        attr.text,
+                        attr.text,
+                        if attr.text == "length" {
+                            "array types"
+                        } else {
+                            "integer and array types"
+                        }
+                    ),
+                );
+                Some(Ty::Error)
+            }
+        }
+    }
+
+    /// The constant a type's shape attribute reads and its type: `Some(None)`
+    /// when `base` is a type without that attribute, `None` when it is no
+    /// type.
+    pub(super) fn type_shape_value(
+        &self,
+        base: &Expr,
+        attr: &Ident,
+        span: Span,
+    ) -> Option<Option<(Expr, Ty)>> {
+        let written = self.written_type_base(base)?;
+        let resolved = self.resolve_alias_type(&written).unwrap_or(written);
+        let int = |value: i128| -> Expr {
+            let magnitude = Expr::Int {
+                text: value.unsigned_abs().to_string(),
+                span,
+            };
+            if value >= 0 {
+                return magnitude;
+            }
+            // `0 - n`; `i64::MIN` as `(0 - (2^63 - 1)) - 1`, which no literal
+            // overflows.
+            let zero = Expr::Int {
+                text: "0".to_string(),
+                span,
+            };
+            let sub = |lhs: Expr, rhs: Expr| Expr::Binary {
+                op: BinOp::Sub,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+            if value == i128::from(i64::MIN) {
+                let one = Expr::Int {
+                    text: "1".to_string(),
+                    span,
+                };
+                let max = Expr::Int {
+                    text: i64::MAX.to_string(),
+                    span,
+                };
+                return sub(sub(zero, max), one);
+            }
+            sub(zero, magnitude)
+        };
+        let name = attr.text.as_str();
+        let (left, right, result) = match self.ast_ty(&resolved) {
+            Ty::Integer => {
+                let (low, high) = self
+                    .declared_range(&resolved)
+                    .unwrap_or((i64::MIN, i64::MAX));
+                (i128::from(low), i128::from(high), Ty::Integer)
+            }
+            Ty::Natural => (0, i128::from(u64::MAX), Ty::Natural),
+            Ty::Array { len, low, .. } if len > 0 => {
+                // A written range keeps its direction; a width counts up.
+                let range = match &resolved {
+                    Type::Indexed {
+                        index: Some(index), ..
+                    } => match index.as_ref() {
+                        Expr::Range { lo, hi, .. } => self.const_int(lo).zip(self.const_int(hi)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let (left, right) =
+                    range.unwrap_or((i128::from(low), i128::from(low) + i128::from(len) - 1));
+                (left, right, Ty::Integer)
+            }
+            _ => return Some(None),
+        };
+        let value = match name {
+            "left" => left,
+            "right" => right,
+            "high" => left.max(right),
+            "low" => left.min(right),
+            _ if matches!(result, Ty::Natural)
+                || !matches!(self.ast_ty(&resolved), Ty::Array { .. }) =>
+            {
+                return Some(None);
+            }
+            _ => left.abs_diff(right) as i128 + 1,
+        };
+        Some(Some((int(value), result)))
     }
 }
