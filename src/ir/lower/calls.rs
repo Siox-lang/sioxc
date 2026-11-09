@@ -900,7 +900,7 @@ impl<'a> Lowering<'a> {
         // integer is the length of the argument whose type it sizes. The body
         // inlines with it written in, as rustc monomorphizes; read as a name,
         // its types, slices and constructors had no size (#349).
-        if let Some(instance) = self.integer_instance(f, args, env) {
+        if let Some(instance) = self.integer_instance(f, callee, args, env) {
             return self.inline_function(&instance, display_name, callee, args, env);
         }
         // Dynamic arguments: inline against shared source-value handles.
@@ -2807,9 +2807,21 @@ impl<'a> Lowering<'a> {
     /// over them, through the value arena.
     /// `f` with each generic integer it can infer written in: the length of
     /// the argument of a parameter `T[W]`. `None` when it binds none.
+    /// The checked type of the call whose callee is `callee`: the smallest
+    /// expression starting at the callee and reaching past it.
+    fn call_type(&self, callee: &ast::Expr) -> Option<&crate::types::Ty> {
+        let at = ast::expr_span(callee);
+        self.expr_types
+            .iter()
+            .filter(|(span, _)| span.file == at.file && span.start == at.start && span.end > at.end)
+            .min_by_key(|(span, _)| span.end)
+            .map(|(_, ty)| ty)
+    }
+
     fn integer_instance(
         &self,
         f: &ast::FnDecl,
+        callee: &ast::Expr,
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<ast::FnDecl> {
@@ -2843,7 +2855,8 @@ impl<'a> Lowering<'a> {
                         },
                     )
                     .filter(|length| *length > 0)
-                })?;
+                })
+                .or_else(|| return_length(f, name, self.call_type(callee)))?;
             bound = true;
             instance
                 .generics
@@ -3306,4 +3319,31 @@ fn branch_then_rest(branch: &[ast::Stmt], rest: &[ast::Stmt]) -> Vec<ast::Stmt> 
     }
     all.extend(rest.iter().cloned());
     all
+}
+
+/// `fn slice_lo<W: integer>(v: unsigned[64]) -> unsigned[W]`: a generic
+/// integer only the result is sized by takes the call's checked length,
+/// `let lo: unsigned[16] = slice_lo(v)` binding `W = 16`. Bound from the
+/// arguments alone it stayed a free name (#564).
+pub(super) fn return_length(
+    function: &ast::FnDecl,
+    name: &str,
+    call: Option<&crate::types::Ty>,
+) -> Option<i64> {
+    let ast::Type::Indexed {
+        index: Some(index), ..
+    } = function.ret.as_ref()?
+    else {
+        return None;
+    };
+    let ast::Expr::Path(path) = index.as_ref() else {
+        return None;
+    };
+    if !matches!(path.segments.as_slice(), [only] if only.text == name) {
+        return None;
+    }
+    match call? {
+        crate::types::Ty::Array { len, .. } if *len > 0 => Some(i64::from(*len)),
+        _ => None,
+    }
 }

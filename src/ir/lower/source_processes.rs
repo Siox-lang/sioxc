@@ -3776,9 +3776,9 @@ fn inline_process_procedure_call(
         .iter()
         .filter(|parameter| !parameter.is_self)
         .collect();
-    for (definition, value) in
-        cfg_calls::length_generics(function, &formals, &values, call_span, process, context)
-    {
+    for (definition, value) in cfg_calls::length_generics(
+        function, &formals, &values, call_span, None, process, context,
+    ) {
         if !bindings.iter().any(|(bound, _)| *bound == definition) {
             bindings.push((definition, value));
         }
@@ -10509,7 +10509,8 @@ fn expand_process_function(
         function,
         &parameters,
         arguments,
-        function.span,
+        call,
+        return_type,
         process,
         context,
     );
