@@ -810,13 +810,42 @@ impl<'a> Lowering<'a> {
             ast::Pattern::Bounds { lo, hi, span } => {
                 let (mut low, mut high) = (lo.as_deref(), hi.as_deref());
                 if let (Some(l), Some(h)) = (low, high) {
-                    if let (Some(l), Some(h)) = (
+                    // An integer bound folds; a real, a time or a real
+                    // constant (`2.0..1.0`, `20ns..10ns`) lowers to a
+                    // constant to compare, as the testbench does (#572).
+                    let number = |text: &str| text.replace('_', "").parse::<f64>().ok();
+                    // One unit scales both sides alike.
+                    // ponytail: mixed units (`1us..500ns`) keep the written
+                    // order; evaluate the suffix if that matters.
+                    let same_unit = match (l, h) {
+                        (
+                            ast::Expr::SuffixLit {
+                                text: a, suffix: x, ..
+                            },
+                            ast::Expr::SuffixLit {
+                                text: b, suffix: y, ..
+                            },
+                        ) if x.text == y.text => Some(matches!(
+                            (number(a), number(b)),
+                            (Some(a), Some(b)) if a > b
+                        )),
+                        _ => None,
+                    };
+                    let descending = match (
                         self.eval_const(l, &self.cur_env),
                         self.eval_const(h, &self.cur_env),
                     ) {
-                        if l > h {
-                            std::mem::swap(&mut low, &mut high);
-                        }
+                        (Some(l), Some(h)) => l > h,
+                        _ => same_unit.unwrap_or_else(|| {
+                            match (self.lower_scalar_env(l, env), self.lower_scalar_env(h, env)) {
+                                (Expr::Real(l), Expr::Real(h)) => l > h,
+                                (Expr::Const(l), Expr::Const(h)) => l > h,
+                                _ => false,
+                            }
+                        }),
+                    };
+                    if descending {
+                        std::mem::swap(&mut low, &mut high);
                     }
                 }
                 let ge = low.map(|bound| {
