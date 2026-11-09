@@ -617,6 +617,7 @@ impl<'a> Lowering<'a> {
         let integer = integer
             && (declared
                 || !self.has_non_integer_signal(&lhs) && !self.has_non_integer_signal(&rhs));
+        let kernel_xor = matches!(&op, ast::BinOp::Custom { symbol, .. } if symbol == "xor");
         match lower_binop(op) {
             Some(op) => {
                 let op = if integer {
@@ -637,6 +638,17 @@ impl<'a> Lowering<'a> {
                     op
                 };
                 self.source_values.borrow_mut().binary(op, &lhs, &rhs, span)
+            }
+            // `self xor rhs` in an operator's body: its operands are kernel
+            // words there, and `xor`, a std custom operator, has no kernel
+            // form, so a custom operator written with it lowered to nothing
+            // in hardware (#541). On words it is the bitwise exclusive or.
+            // ponytail: `nand`/`nor`/`xnor` need the operand width to
+            // complement; they still lower only through their impls.
+            None if kernel_xor => {
+                self.source_values
+                    .borrow_mut()
+                    .binary(BinOp::Xor, &lhs, &rhs, span)
             }
             None => Expr::Unknown,
         }
