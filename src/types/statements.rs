@@ -305,6 +305,9 @@ impl<'a> Checker<'a> {
                 .as_ref()
                 .map(|ty| self.ast_ty(ty))
                 .unwrap_or(Ty::Error);
+            if let (Some(written), None) = (&declaration.ty, &declaration.value) {
+                self.report_unsized_vector(written, &declaration.name);
+            }
             names.insert(declaration.name.text.clone(), ty);
             if let Some(range) = declaration
                 .ty
@@ -931,5 +934,42 @@ pub(super) fn tuple_target_leaves(target: &Expr) -> Vec<&Expr> {
         Expr::Tuple { elems, .. } => elems.iter().flat_map(tuple_target_leaves).collect(),
         Expr::Path(path) if path.segments.len() == 1 && path.segments[0].text == "_" => Vec::new(),
         place => vec![place],
+    }
+}
+
+impl Checker<'_> {
+    /// `let u: unsigned;`: a vector family with no width and no initializer
+    /// to take one from has no storage; it failed in native lowering (#570).
+    pub(super) fn report_unsized_vector(
+        &mut self,
+        written: &crate::syntax::ast::Type,
+        name: &crate::syntax::ast::Ident,
+    ) {
+        // Only a bare name: a width written as a constant or a generic
+        // argument (`unsigned[N]`, `Word<8>`) is settled later.
+        if !matches!(written, crate::syntax::ast::Type::Path(_)) {
+            return;
+        }
+        let ty = &self.ast_ty(written);
+        if let Ty::Array {
+            len: 0,
+            family: Some(_),
+            ..
+        } = ty
+        {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                name.span,
+                format!(
+                    "unconstrained vector type for `{}`: its width must be set",
+                    name.text
+                ),
+                format!(
+                    "give it a width, e.g. `{}: {}[8]`, or an initializer",
+                    name.text,
+                    ty_name(ty)
+                ),
+            );
+        }
     }
 }

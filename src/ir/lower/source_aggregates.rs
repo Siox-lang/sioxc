@@ -368,7 +368,11 @@ impl Lowering<'_> {
                 // W-P016) takes its default, the signal's initial value.
                 let value = match values.get(&source) {
                     Some(value) => value.clone(),
-                    None if matches!(value_expression, ast::Expr::Construct { .. }) => {
+                    None if matches!(
+                        value_expression,
+                        ast::Expr::Construct { .. } | ast::Expr::Concat { .. }
+                    ) =>
+                    {
                         match self.out.signals[signal.0 as usize].init.as_slice() {
                             [] => Expr::Const(0),
                             [word] => Expr::Const(*word),
