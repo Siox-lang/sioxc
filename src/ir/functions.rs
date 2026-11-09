@@ -442,7 +442,24 @@ impl<'a> FunctionIndex<'a> {
     /// receiver/owner type. This is used by Process lowering for ordinary
     /// method syntax, whose callee is a field expression rather than a path.
     pub fn get_associated(&self, owner: &str, name: &str) -> Option<&'a ast::FnDecl> {
-        self.associated.get(owner)?.get(name).copied()
+        if let Some(function) = self.associated.get(owner).and_then(|f| f.get(name)) {
+            return Some(function);
+        }
+        // A testbench local through a view (`let bus: Stream StreamSource`)
+        // names its view or its struct, while the view's methods are
+        // indexed under `StreamSource@Stream` (#565). The checker allows the
+        // call only through a view, so the one view declaring it is meant.
+        let leaf = owner.rsplit("::").next().unwrap_or(owner);
+        let mut views = self
+            .associated
+            .iter()
+            .filter(|(key, _)| {
+                key.split_once('@')
+                    .is_some_and(|(view, target)| view == leaf || target == leaf)
+            })
+            .filter_map(|(_, functions)| functions.get(name));
+        let function = views.next()?;
+        views.next().is_none().then_some(*function)
     }
 
     /// Retrieve a free function using a canonical callee's resolved identity.
