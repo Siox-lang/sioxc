@@ -173,6 +173,7 @@ impl<'a> Checker<'a> {
                 self.check_field_exists(base, field, sym);
             }
             Expr::Index { base, index, .. } => {
+                self.record_partial_range(base, index, sym);
                 self.check_expr(base, sym);
                 match index.as_ref() {
                     Expr::PartialRange { lo, hi, .. } => {
@@ -1156,5 +1157,53 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+    }
+}
+
+impl Checker<'_> {
+    /// `v[..4]`: an omitted bound is the object's `'left` or `'right`, and
+    /// the slice keeps the object's own order, so `v[..]` is `v`. On a
+    /// packed vector declared ascending (a width: `unsigned[8]` is `0..7`)
+    /// that is written high to low, as significance runs: `v[..4]` is bits
+    /// 4 down to 0. Read in written order it came out bit-reversed (#496).
+    /// An unpacked array keeps its declared element order.
+    fn record_partial_range(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
+        let Expr::PartialRange { lo, hi, span } = index else {
+            return;
+        };
+        let Ty::Array {
+            family, len, low, ..
+        } = self.type_of(base, sym)
+        else {
+            return;
+        };
+        if len == 0 {
+            return;
+        }
+        // A named object's declared labels give its direction; a type does
+        // not record one, so an element (`v[i][..4]`) is left to lowering,
+        // which reads the element's declared range.
+        // ponytail: an ascending element's partial slice keeps the written
+        // reading; record element labels if that matters.
+        let (left, right) = match declared_labels_of(base, &self.array_bounds) {
+            Some(labels) => labels,
+            None if family.is_none() && matches!(base, Expr::Path(_)) => {
+                (low, low + i64::from(len) - 1)
+            }
+            None => return,
+        };
+        let bound = |given: &Option<Box<Expr>>, default: i64| match given {
+            Some(given) => signed_lit(given),
+            None => Some(default),
+        };
+        let (Some(a), Some(b)) = (bound(lo, left), bound(hi, right)) else {
+            return;
+        };
+        let range = if family.is_some() && left < right {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        self.partial_ranges.insert(*span, range);
     }
 }

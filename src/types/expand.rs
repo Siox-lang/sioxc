@@ -176,6 +176,49 @@ pub fn expand_type_attrs(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// Write each partial range index as the explicit range the checker
+/// recorded for it (#496), so every lowering path reads one meaning.
+pub fn expand_partial_ranges(modules: &mut [Module], typed: &Typed) {
+    if typed.partial_ranges.is_empty() {
+        return;
+    }
+    let int = |value: i64, span: Span| -> Expr {
+        let magnitude = Expr::Int {
+            text: value.unsigned_abs().to_string(),
+            span,
+        };
+        if value < 0 {
+            Expr::Unary {
+                op: UnOp::Neg,
+                rhs: Box::new(magnitude),
+                span,
+            }
+        } else {
+            magnitude
+        }
+    };
+    let mut expand = |e: &mut Expr| {
+        if let Expr::Index { index, .. } = e {
+            if let Expr::PartialRange { span, .. } = index.as_ref() {
+                if let Some(&(lo, hi)) = typed.partial_ranges.get(span) {
+                    let span = *span;
+                    **index = Expr::Range {
+                        lo: Box::new(int(lo, span)),
+                        hi: Box::new(int(hi, span)),
+                        span,
+                    };
+                }
+            }
+        }
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut expand);
+        }
+    }
+}
+
 /// Give each unsized family constructor its declared target's format:
 /// `let f: ufixed<8, 4> = ufixed(x);` lowers as `ufixed<8, 4>(x)` (#532).
 pub fn expand_constructor_formats(modules: &mut [Module], typed: &Typed) {

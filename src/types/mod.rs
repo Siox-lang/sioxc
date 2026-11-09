@@ -151,6 +151,9 @@ pub struct Typed {
     /// call's span, to the target's index. See
     /// [`expand_constructor_formats`].
     constructor_formats: HashMap<Span, Expr>,
+    /// Each partial range index (`v[..4]`), by its span, to the explicit
+    /// range it means, in written order. See [`expand_partial_ranges`].
+    partial_ranges: HashMap<Span, (i64, i64)>,
 }
 
 /// A value converted where it is stored, through `impl Into<T> for S`.
@@ -208,8 +211,8 @@ impl Typed {
 }
 
 pub use expand::{
-    expand_constructor_formats, expand_type_attrs, flatten_slice_chains, fold_type_attributes,
-    fold_value_lengths, inline_loop_ranges, type_instance_slots,
+    expand_constructor_formats, expand_partial_ranges, expand_type_attrs, flatten_slice_chains,
+    fold_type_attributes, fold_value_lengths, inline_loop_ranges, type_instance_slots,
 };
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
@@ -602,6 +605,9 @@ struct Checker<'a> {
     /// Unsized family constructors to give their target's format; handed
     /// on in [`Typed`].
     constructor_formats: HashMap<Span, Expr>,
+    /// Partial range indices and the explicit range each means; handed on in
+    /// [`Typed`].
+    partial_ranges: HashMap<Span, (i64, i64)>,
     type_attr_reads: HashMap<Span, Expr>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
