@@ -317,6 +317,10 @@ fn size_align(ty: BasicTypeEnum<'_>) -> (u64, u64) {
             }
             (end.next_multiple_of(align), align)
         }
+        // A C `float` is four bytes, aligned to four: read as eight, a
+        // struct of floats had its fields at the wrong offsets and its
+        // eightbytes split wrongly (#540).
+        BasicTypeEnum::FloatType(t) if t == t.get_context().f32_type() => (4, 4),
         _ => (8, 8),
     }
 }

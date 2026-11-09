@@ -13,6 +13,8 @@ struct Big { pub a: integer, pub b: integer, pub c: integer, }
 struct Pt { pub x: real, pub y: real, }
 struct Mix { pub a: c_int, pub b: real, }
 struct Two { pub f: c_float, pub g: c_float, }
+struct Three { pub a: c_float, pub b: c_float, pub c: c_float, }
+struct Four { pub a: c_float, pub b: c_float, pub c: c_float, pub d: c_float, }
 
 extern "C" {
     fn div(numerator: c_int, denominator: c_int) -> Div;
@@ -21,6 +23,8 @@ extern "C" {
     fn make_pt(v: real) -> Pt;
     fn make_mix(a: c_int) -> Mix;
     fn make_two(v: c_float) -> Two;
+    fn make_three(a: c_float, b: c_float, c: c_float) -> Three;
+    fn make_four(a: c_float, b: c_float, c: c_float, d: c_float) -> Four;
     fn wide_next(p: unsigned[128]) -> unsigned[128];
     fn memcpy(dst: c_uchar[8], src: Two, count: natural) -> natural;
 }
@@ -41,6 +45,10 @@ impl ReturnsTest {
         assert!(mix.a == -6 and mix.b == -3.0, "an int and a double");
         let two: Two = make_two(0.25);
         assert!(two.f == 0.25 and two.g == 1.0, "two floats");
+        let three: Three = make_three(1.0, 2.0, 3.0);
+        assert!(three.a == 1.0 and three.b == 2.0 and three.c == 3.0, "three floats");
+        let four: Four = make_four(1.0, 2.0, 3.0, 4.0);
+        assert!(four.a == 1.0 and four.b == 2.0 and four.c == 3.0 and four.d == 4.0, "four floats");
         let w: unsigned[128] = 18446744073709551615;
         let n: unsigned[128] = wide_next(w);
         assert!(n == 18446744073709551616, "128 bits as words and in registers");
