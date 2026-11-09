@@ -146,6 +146,11 @@ pub struct Typed {
     /// combination of a tuple, every value of a number), by the match's
     /// span: its last arm needs no condition.
     covered_tuple_matches: HashSet<Span>,
+    /// Each unsized family constructor (`ufixed(x)`) whose declared target
+    /// names its format (`let f: ufixed<8, 4> = ufixed(x);`), by the
+    /// call's span, to the target's index. See
+    /// [`expand_constructor_formats`].
+    constructor_formats: HashMap<Span, Expr>,
 }
 
 /// A value converted where it is stored, through `impl Into<T> for S`.
@@ -203,8 +208,8 @@ impl Typed {
 }
 
 pub use expand::{
-    expand_type_attrs, flatten_slice_chains, fold_type_attributes, fold_value_lengths,
-    inline_loop_ranges, type_instance_slots,
+    expand_constructor_formats, expand_type_attrs, flatten_slice_chains, fold_type_attributes,
+    fold_value_lengths, inline_loop_ranges, type_instance_slots,
 };
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
@@ -594,6 +599,9 @@ struct Checker<'a> {
     /// differently (`x'length` with `x: T`): left to lowering, not expanded
     /// to either value.
     conflicting_attr_reads: HashSet<Span>,
+    /// Unsized family constructors to give their target's format; handed
+    /// on in [`Typed`].
+    constructor_formats: HashMap<Span, Expr>,
     type_attr_reads: HashMap<Span, Expr>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,

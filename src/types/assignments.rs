@@ -297,6 +297,54 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `let f: ufixed<8, 4> = ufixed(x);`: an unsized constructor of a format
+    /// family builds its target's format, as `ufixed<8, 4>(x)` does. Unsized,
+    /// its `From` impl had no format to build and the call reinterpreted
+    /// `x`'s bits (#532). The declared type is already in its indexed form
+    /// here (`ufixed[3..-4]`); the call takes the same index.
+    fn record_constructor_format(&mut self, declared: &Type, value: &Expr) {
+        let Type::Indexed {
+            base,
+            index: Some(index),
+            ..
+        } = declared
+        else {
+            return;
+        };
+        let (
+            Type::Path(family),
+            Expr::Call {
+                callee,
+                type_args,
+                args: arguments,
+                span,
+                ..
+            },
+        ) = (base.as_ref(), value)
+        else {
+            return;
+        };
+        let Expr::Path(called) = callee.as_ref() else {
+            return;
+        };
+        let same_family = matches!(
+            (family.segments.last(), called.segments.as_slice()),
+            (Some(declared), [name]) if declared.text == name.text
+        );
+        // Only a target written with a range, as a format (`ufixed<8, 4>` is
+        // `ufixed[3..-4]` by here): std reads a value's raw bits as
+        // `let bits: unsigned[N] = unsigned(value);`, an unsized constructor
+        // into a width that must stay a reinterpretation.
+        let ranged = matches!(index.as_ref(), Expr::Range { .. });
+        let family_key = self
+            .type_key(base)
+            .is_some_and(|key| self.is_array_family(&key));
+        if same_family && type_args.is_empty() && arguments.len() == 1 && ranged && family_key {
+            self.constructor_formats
+                .insert(*span, index.as_ref().clone());
+        }
+    }
+
     /// Spec 3.17: a `let name: T = e` initializer must be assignable to `T`.
     pub(super) fn check_init(
         &mut self,
@@ -306,6 +354,7 @@ impl<'a> Checker<'a> {
     ) {
         let Some(t) = decl_ty else { return };
         self.check_value_range(t, value);
+        self.record_constructor_format(t, value);
         let lhs = self.ast_ty(t);
         // `read<T>` constructs either one `T`, a fixed array of `T`, or a
         // string. Its dynamic/context-sized result deliberately has no
