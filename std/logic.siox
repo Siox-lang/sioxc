@@ -313,6 +313,123 @@ impl CustomOperator<"xnor", Logic, Logic> for Logic {
     }
 }
 
+// `ULogic` (VHDL `std_ulogic`) has the same nine-value tables, encoding,
+// matching and edges as `Logic`; only `Resolve` stays `Logic`'s, so an
+// unresolved signal with several drivers is still an error. Its operators were
+// missing, so `a and b` or `clk.rising()` on a `ULogic` was rejected (#531).
+impl LogicEncoding for ULogic {
+    fn to_bool() -> Bool {
+        return self == '1' or self == 'H';
+    }
+    fn is_binary() -> Bool {
+        return self == '0' or self == '1';
+    }
+    fn is_high_impedance() -> Bool {
+        return self == 'Z';
+    }
+    fn to_x01() -> ULogic {
+        if self == '0' or self == 'L' { return '0'; }
+        if self == '1' or self == 'H' { return '1'; }
+        return 'X';
+    }
+}
+
+impl Match<ULogic> for ULogic {
+    fn matches(pattern: ULogic) -> Bool {
+        if self == '-' or pattern == '-' { return true; }
+        return self.to_x01() != 'X' and self.to_x01() == pattern.to_x01();
+    }
+    fn unknown() -> Bool {
+        return self != '-' and self.to_x01() == 'X';
+    }
+}
+
+impl ClockLike for ULogic {
+    fn rising() -> Bool {
+        return self'event and (self'old == '0' or self'old == 'L')
+            and (self == '1' or self == 'H');
+    }
+    fn falling() -> Bool {
+        return self'event and (self'old == '1' or self'old == 'H')
+            and (self == '0' or self == 'L');
+    }
+    fn edge() -> Bool {
+        return self'event;
+    }
+}
+
+impl And<ULogic, ULogic> for ULogic {
+    fn and(rhs: ULogic) -> ULogic {
+        // A low input (0/L) forces low, even against 'U'.
+        if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '0'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '1'; }
+        return 'X';
+    }
+}
+
+impl Or<ULogic, ULogic> for ULogic {
+    fn or(rhs: ULogic) -> ULogic {
+        if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '1'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
+        return 'X';
+    }
+}
+
+impl CustomOperator<"xor", ULogic, ULogic> for ULogic {
+    attr precedence = 35;
+    fn apply(rhs: ULogic) -> ULogic {
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
+        if (self == '0' or self == 'L') and (rhs == '1' or rhs == 'H') { return '1'; }
+        if (self == '1' or self == 'H') and (rhs == '0' or rhs == 'L') { return '1'; }
+        return 'X';
+    }
+}
+
+impl Not<ULogic> for ULogic {
+    fn not() -> ULogic {
+        if self == '0' or self == 'L' { return '1'; }
+        if self == '1' or self == 'H' { return '0'; }
+        if self == 'U' { return 'U'; }
+        return 'X';
+    }
+}
+
+impl CustomOperator<"nand", ULogic, ULogic> for ULogic {
+    attr precedence = 40;
+    fn apply(rhs: ULogic) -> ULogic {
+        if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
+        return 'X';
+    }
+}
+
+impl CustomOperator<"nor", ULogic, ULogic> for ULogic {
+    attr precedence = 30;
+    fn apply(rhs: ULogic) -> ULogic {
+        if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
+        return 'X';
+    }
+}
+
+impl CustomOperator<"xnor", ULogic, ULogic> for ULogic {
+    attr precedence = 35;
+    fn apply(rhs: ULogic) -> ULogic {
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '1'; }
+        if (self == '0' or self == 'L') and (rhs == '1' or rhs == 'H') { return '0'; }
+        if (self == '1' or self == 'H') and (rhs == '0' or rhs == 'L') { return '0'; }
+        return 'X';
+    }
+}
+
 // The std_logic resolution function (std_logic_1164 `resolved`): 'U' dominates,
 // 'X'/'-' contend to 'X', 'Z' yields to any driver, a forcing level (0/1) beats
 // weak (L/H/W) and conflicting forcing is 'X', while conflicting weak folds to
