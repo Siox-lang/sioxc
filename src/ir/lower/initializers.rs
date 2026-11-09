@@ -676,6 +676,21 @@ impl<'a> Lowering<'a> {
         is_char: bool,
     ) -> Option<u64> {
         match e {
+            // `exists("cfg.bin")`: compile-time I/O like a `read` initializer,
+            // relative to the source. The checker allowed it here and lowering
+            // reported it as not a constant (#585). `Bool` is `false`, `true`.
+            ast::Expr::Call { callee, args, .. }
+                if matches!(callee.as_ref(), ast::Expr::Path(path)
+                if matches!(
+                    path.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().as_slice(),
+                    ["exists"] | ["fs", "exists"] | ["std", "fs", "exists"]
+                )) =>
+            {
+                let [ast::Expr::StrLit { text, .. }] = args.as_slice() else {
+                    return None;
+                };
+                Some(u64::from(self.base_dir.join(text).exists()))
+            }
             // --- literals: a value read as bits ---
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 text.replace('_', "").parse::<f64>().ok().map(f64::to_bits)
