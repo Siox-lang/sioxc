@@ -500,6 +500,7 @@ fn elaborate_roots(
                 _ => None,
             })
             .collect(),
+        module_consts: module_constants(modules),
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
@@ -565,6 +566,13 @@ struct Elaborator<'a> {
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
     /// Names of structs with fields, which are connected field by field.
     record_structs: HashSet<String>,
+    /// Module-level integer and `Bool` constants, folded once: the base of
+    /// every entity's constant environment, which its parameters shadow. A
+    /// generate `if USE_FEATURE` or `for i in 0..N` on one read unknown and
+    /// became a misplaced process or no instances (#584).
+    // ponytail: keyed by bare name; same-named constants in two modules
+    // take the later one. Key by module if that collides in practice.
+    module_consts: HashMap<String, i64>,
     /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
 }
@@ -641,7 +649,9 @@ impl<'a> Elaborator<'a> {
             .get(&entity_id)
             .map(|e| e.is_extern)
             .unwrap_or(true);
-        let env = self.with_impl_binders(entity_id, param_env(&params));
+        let mut env = self.module_consts.clone();
+        env.extend(param_env(&params));
+        let env = self.with_impl_binders(entity_id, env);
         let specs = self.gather_instances(entity_id, is_extern, &env);
         let instance_arrays = self.instance_array_facts(entity_id, &env, &specs);
         // This instance's own signals (ports + impl lets), for width-checking the
@@ -1607,6 +1617,34 @@ struct InstanceSpec<'a> {
 }
 
 /// The `Int`-valued subset of a param list, as a substitution environment.
+/// Every module-level constant that folds to an integer, in as many passes
+/// as one constant takes to name another.
+fn module_constants(modules: &[Module]) -> HashMap<String, i64> {
+    let constants: Vec<&ConstDecl> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Const(constant) => Some(constant),
+            _ => None,
+        })
+        .collect();
+    let mut out = HashMap::new();
+    loop {
+        let before = out.len();
+        for constant in &constants {
+            if out.contains_key(&constant.name.text) {
+                continue;
+            }
+            if let ParamValue::Int(value) = eval(&constant.value, &out) {
+                out.insert(constant.name.text.clone(), value);
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
 fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
     params
         .iter()
