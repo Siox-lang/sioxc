@@ -395,7 +395,11 @@ impl<'a> FunctionIndex<'a> {
                     }
                 })
                 .map(|(function, _)| *function),
-            None if candidates.len() == 1 => candidates.first().map(|(function, _)| *function),
+            // A kernel owner's operator is chosen by its right operand only:
+            // `impl Mul<Complex, Complex> for integer` is no `integer * x` (#530).
+            None if candidates.len() == 1 && !matches!(owner, "integer" | "natural" | "real") => {
+                candidates.first().map(|(function, _)| *function)
+            }
             None => None,
         }
     }

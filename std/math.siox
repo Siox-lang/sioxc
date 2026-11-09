@@ -53,10 +53,8 @@ impl From<integer> for Complex {
 
 // The rest of the field's arithmetic (#530, #545): a `real` operand mixes
 // in as an `integer` one does.
-// ponytail: a scalar on the left (`2.0 * z`, `1 - z`) is not declared: an
-// operator on a kernel left operand is chosen by that operand alone, so
-// `impl Mul<Complex, Complex> for integer` took over every `integer * x`.
-// Write the scalar on the right until dispatch weighs the right operand.
+// A scalar on the left (`2.0 * z`, `1 - z`) mixes in as well: a kernel left
+// operand's operator is chosen by its right operand.
 impl From<real> for Complex {
     static fn from(v: real) -> Complex {
         return Complex { .re = v, .im = 0.0 };
@@ -78,6 +76,36 @@ impl Sub<real, Complex> for Complex {
 impl Sub<integer, Complex> for Complex {
     fn sub(rhs: integer) -> Complex {
         return Complex { .re = self.re - rhs, .im = self.im };
+    }
+}
+
+impl Add<Complex, Complex> for real {
+    fn add(rhs: Complex) -> Complex {
+        return Complex { .re = self + rhs.re, .im = rhs.im };
+    }
+}
+
+impl Sub<Complex, Complex> for real {
+    fn sub(rhs: Complex) -> Complex {
+        return Complex { .re = self - rhs.re, .im = 0.0 - rhs.im };
+    }
+}
+
+impl Sub<Complex, Complex> for integer {
+    fn sub(rhs: Complex) -> Complex {
+        return Complex { .re = self - rhs.re, .im = 0.0 - rhs.im };
+    }
+}
+
+impl Mul<Complex, Complex> for real {
+    fn mul(rhs: Complex) -> Complex {
+        return Complex { .re = self * rhs.re, .im = self * rhs.im };
+    }
+}
+
+impl Mul<Complex, Complex> for integer {
+    fn mul(rhs: Complex) -> Complex {
+        return Complex { .re = self * rhs.re, .im = self * rhs.im };
     }
 }
 
