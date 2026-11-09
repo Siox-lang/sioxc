@@ -68,7 +68,11 @@ impl Lowering<'_> {
                         })
                         .flatten()
                 }),
-            None => (functions.len() == 1).then(|| &functions[0]),
+            // A kernel left operand (`2 * x`) with an unknown right one is
+            // the built-in operator: `impl Mul<Complex, Complex> for integer`
+            // took over every `integer * x` (#530).
+            None => (functions.len() == 1 && !matches!(lhs, "integer" | "natural" | "real"))
+                .then(|| &functions[0]),
         };
         if chosen.is_none()
             && self

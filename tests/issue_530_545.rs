@@ -1,6 +1,6 @@
 //! Regression for sioxc #530 and #545: `std::math::Complex` has the
 //! field's arithmetic (product, quotient, negation, equality, conjugate)
-//! and mixes with `real` operands as with `integer` ones on its right.
+//! and mixes with `real` and `integer` operands on either side.
 
 use std::process::Command;
 
@@ -33,7 +33,7 @@ fn complex_arithmetic() {
     assert!(run.status.success() && stdout.contains("done"), "{stdout}");
 }
 
-const SOURCE: &str = r#"module p530;
+const SOURCE: &str = r#"module p530b;
 
 use std::math::{Complex, conj};
 
@@ -51,6 +51,8 @@ impl TB {
         assert!(z1 - 1 == 2i and z1 - 0.5 == Complex { .re = 0.5, .im = 2.0 }, "scalar sub");
         assert!(z1 + 1.5 == Complex { .re = 2.5, .im = 2.0 }, "real add");
         assert!(z1 * 2.0 == z1 * 2 and z1 / 2 == z1 * 0.5, "scalars");
+        assert!(2.0 * z1 == z1 * 2.0 and 2 * z1 == z1 * 2, "scalar on the left");
+        assert!(1 - z1 == Complex { .re = 0.0, .im = 0.0 - 2.0 } and 1.5 + z1 == z1 + 1.5, "left sub and add");
         assert!(Complex(3.14) == Complex { .re = 3.14, .im = 0.0 }, "from real");
         assert!(conj(z1) == Complex { .re = 1.0, .im = 0.0 - 2.0 }, "conj");
         assert!(z1 == z1 and not (z1 == z2), "eq");
