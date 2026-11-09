@@ -189,6 +189,7 @@ impl<'a> Checker<'a> {
             type_attrs: HashMap::new(),
             type_attr_reads: HashMap::new(),
             constructor_formats: HashMap::new(),
+            partial_ranges: HashMap::new(),
             conflicting_attr_reads: HashSet::new(),
             conflicting_expr_types: HashSet::new(),
             promotions: HashMap::new(),
@@ -206,6 +207,7 @@ impl<'a> Checker<'a> {
             conversions: self.conversions,
             covered_tuple_matches: self.covered_tuple_matches,
             constructor_formats: self.constructor_formats,
+            partial_ranges: self.partial_ranges,
         }
     }
 
