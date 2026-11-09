@@ -128,6 +128,7 @@ impl<'a> Checker<'a> {
             attr_value_kinds,
             trait_impls: HashMap::new(),
             trait_defaults: HashMap::new(),
+            trait_default_bodies: HashMap::new(),
             trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
             trait_visibility,
@@ -742,6 +743,16 @@ impl<'a> Checker<'a> {
                     .map(|f| f.name.text.clone())
                     .collect();
                 self.trait_required.insert(trait_key.clone(), required);
+                if t.params.params.is_empty() {
+                    self.trait_default_bodies.insert(
+                        trait_key.clone(),
+                        t.items
+                            .iter()
+                            .filter(|f| f.body.is_some())
+                            .cloned()
+                            .collect(),
+                    );
+                }
                 self.trait_defaults.insert(
                     trait_key,
                     t.items

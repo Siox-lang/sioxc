@@ -160,6 +160,7 @@ impl<'a> Checker<'a> {
             Item::Impl(im) => {
                 self.check_applied_view(&im.target);
                 self.check_impl(im);
+                self.check_inherited_defaults(im);
             }
             Item::Trait(t) => {
                 for f in &t.items {
@@ -1223,5 +1224,40 @@ impl<'a> Checker<'a> {
             format!("attribute `{name}` has no effect yet"),
             &format!("it is reserved for {purpose}; nothing reads it today"),
         );
+    }
+}
+
+impl Checker<'_> {
+    /// A trait's default body checked against each type that inherits it:
+    /// generic, `self` types as nothing, so `self.id` on a type without an
+    /// `id` field passed and crashed lowering (#574). A generic trait or
+    /// impl is left to its generic check.
+    fn check_inherited_defaults(&mut self, im: &ImplDecl) {
+        if !im.params.params.is_empty() {
+            return;
+        }
+        let Some(key) = im.trait_.as_ref().and_then(|tr| self.trait_key(tr)) else {
+            return;
+        };
+        let Some(defaults) = self.trait_default_bodies.get(&key).cloned() else {
+            return;
+        };
+        let own: HashSet<&str> = im
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(f) => Some(f.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for f in &defaults {
+            let Some(body) = &f.body else { continue };
+            if body.stmts.is_empty() || own.contains(f.name.text.as_str()) {
+                continue;
+            }
+            let saved = self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
+            self.check_function_block(f, body, Some(&im.target), true);
+            *self.type_params.borrow_mut() = saved;
+        }
     }
 }
