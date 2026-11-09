@@ -623,6 +623,18 @@ impl<'a> Checker<'a> {
     /// Whether `value` may be assigned to `lhs`. Widths are strict, but a
     /// contextual literal adopts the target's type.
     pub(super) fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
+        // An unsized result (`slice_lo<W>(v) -> unsigned[W]`, `W` bound by
+        // nothing else) takes the target's width, recorded for lowering to
+        // bind `W` from (#564).
+        if let (Expr::Call { span, .. }, Ty::Array { len: want, .. }) = (value, lhs) {
+            if *want > 0 {
+                if let Some(Ty::Array { len, .. }) = self.expr_types.borrow_mut().get_mut(span) {
+                    if *len == 0 {
+                        *len = *want;
+                    }
+                }
+            }
+        }
         match value {
             // A decimal literal is already `real`; narrowing it to integer or
             // packed bits requires an explicit conversion.

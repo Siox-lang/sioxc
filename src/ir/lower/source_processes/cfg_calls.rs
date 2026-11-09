@@ -791,9 +791,15 @@ fn inline_call_once(
         bindings.insert(definition, argument);
     }
     let span = context.process_ir.values[call.0 as usize].span;
-    for (definition, value) in
-        length_generics(function, &parameters, arguments, span, process, context)
-    {
+    for (definition, value) in length_generics(
+        function,
+        &parameters,
+        arguments,
+        span,
+        None,
+        process,
+        context,
+    ) {
         bindings.entry(definition).or_insert(value);
     }
     let mut node = context.process_ir.values[call.0 as usize].clone();
@@ -1303,9 +1309,13 @@ pub(super) fn length_generics(
     parameters: &[&ast::FnParam],
     arguments: &[ProcessValueId],
     span: crate::diag::Span,
+    result: Option<&crate::types::Ty>,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Vec<(crate::resolve::DefId, ProcessValueId)> {
+    let result = result
+        .or_else(|| context.hierarchy.expr_types.get(&span))
+        .cloned();
     let mut bound = Vec::new();
     for generic in &function.generics.params {
         let Some(definition) = context.resolved.declared(generic.name.span) else {
@@ -1330,6 +1340,14 @@ pub(super) fn length_generics(
                 operand_source_layout(*argument, process, context)?
                     .index_range()?
                     .len()
+            })
+            .or_else(|| {
+                let length = crate::ir::lower::calls::return_length(
+                    function,
+                    &generic.name.text,
+                    result.as_ref(),
+                )?;
+                u64::try_from(length).ok()
             });
         if let Some(length) = length {
             let value = push_value(
