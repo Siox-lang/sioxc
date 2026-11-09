@@ -1476,6 +1476,39 @@ fn derive_text(
         );
         return None;
     }
+    // `Bit`, `Logic`, `ULogic` and `Bool` have no ordering: a derived `Ord`
+    // over one compared it with an operator it does not have, reported
+    // inside the generated impl (#405). It is reported here, at the derive.
+    if derive.text == "Ord" {
+        let unordered = |ty: &crate::syntax::ast::Type| -> Option<String> {
+            let mut current = ty;
+            while let crate::syntax::ast::Type::Indexed { base, .. } = current {
+                current = base;
+            }
+            let crate::syntax::ast::Type::Path(path) = current else {
+                return None;
+            };
+            let last = &path.segments.last()?.text;
+            matches!(last.as_str(), "Bit" | "Logic" | "ULogic" | "Bool").then(|| last.clone())
+        };
+        let element = declaration.base.as_ref().and_then(unordered).or_else(|| {
+            declaration
+                .fields
+                .iter()
+                .find_map(|field| unordered(&field.ty))
+        });
+        if let Some(element) = element {
+            sink.emit(
+                Diagnostic::error(format!(
+                    "cannot derive `Ord` for `{name}`: `{element}` has no ordering"
+                ))
+                .with_code(codes::INVALID_DERIVE)
+                .at(derive.span)
+                .help("derive `Eq` alone, or order it as a number (`unsigned(...)`) in a hand-written impl"),
+            );
+            return None;
+        }
+    }
     // A generic struct derives for every instance whose parameters have the
     // trait: `impl<A: Eq, B: Eq> Eq<Pair<A, B>> for Pair<A, B>`, as Rust's
     // derive bounds each type parameter (#403). A bounded parameter (a value
