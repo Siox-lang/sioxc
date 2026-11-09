@@ -1398,12 +1398,22 @@ pub fn derive(
 ) {
     for module in modules.iter_mut() {
         let mut generated = Vec::new();
+        // An enum is never a packed family, so an array of one derives
+        // element-wise (#548).
+        let enums: std::collections::HashSet<String> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Enum(declaration) => Some(declaration.name.text.clone()),
+                _ => None,
+            })
+            .collect();
         for item in &module.items {
             let Item::Struct(declaration) = item else {
                 continue;
             };
             for derive in &declaration.derives {
-                let Some(text) = derive_text(declaration, derive, sink) else {
+                let Some(text) = derive_text(declaration, derive, &enums, sink) else {
                     continue;
                 };
                 let name = format!("<derive {} for {}>", derive.text, declaration.name.text);
@@ -1435,6 +1445,7 @@ pub fn derive(
 fn derive_text(
     declaration: &StructDecl,
     derive: &Ident,
+    enums: &std::collections::HashSet<String>,
     sink: &mut DiagnosticSink,
 ) -> Option<String> {
     let name = &declaration.name.text;
@@ -1503,11 +1514,13 @@ fn derive_text(
         // conversion to its base: a plain array is no family. It compares
         // element by element in declared order, read on the newtype itself
         // (#405).
-        Some(base) if plain_array_positions(base).is_some() => plain_array_positions(base)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|index| (format!("self[{index}]"), format!("rhs[{index}]")))
-            .collect(),
+        Some(base) if plain_array_positions(base, enums).is_some() => {
+            plain_array_positions(base, enums)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|index| (format!("self[{index}]"), format!("rhs[{index}]")))
+                .collect()
+        }
         Some(base) => {
             let base = crate::syntax::pretty::type_str(base);
             vec![(format!("{base}(self)"), format!("{base}(rhs)"))]
@@ -1551,7 +1564,10 @@ fn derive_text(
 /// else, a vector family (`unsigned[8]`) among them.
 // ponytail: an array of a user enum or struct is read as a family and keeps
 // the conversion, which fails; it needs the module's declarations here.
-fn plain_array_positions(base: &crate::syntax::ast::Type) -> Option<Vec<i64>> {
+fn plain_array_positions(
+    base: &crate::syntax::ast::Type,
+    enums: &std::collections::HashSet<String>,
+) -> Option<Vec<i64>> {
     use crate::syntax::ast::{Expr, Type};
     let Type::Indexed {
         base: element,
@@ -1564,13 +1580,14 @@ fn plain_array_positions(base: &crate::syntax::ast::Type) -> Option<Vec<i64>> {
     let Type::Path(path) = element.as_ref() else {
         return None;
     };
-    let [head] = path.segments.as_slice() else {
-        return None;
-    };
-    if !matches!(
+    // `std::logic::Bit` names `Bit` as much as `Bit` does (#548).
+    let head = path.segments.last()?;
+    let scalar = matches!(
         head.text.as_str(),
         "Bit" | "Logic" | "ULogic" | "Bool" | "integer" | "natural" | "real" | "Char"
-    ) {
+    );
+    let local_enum = path.segments.len() == 1 && enums.contains(&head.text);
+    if !(scalar || local_enum) {
         return None;
     }
     let literal = |e: &Expr| match e {
