@@ -408,6 +408,9 @@ struct Checker<'a> {
     /// `trait_required` already allows — so the implementing type has to be
     /// able to call it.
     trait_defaults: HashMap<String, Vec<TraitDefaultSignature>>,
+    /// The default methods of each trait without parameters, checked
+    /// against every type that inherits them (#574).
+    trait_default_bodies: HashMap<String, Vec<FnDecl>>,
     /// Type identity -> the traits it implements, for that inheritance.
     trait_impls_by_type: HashMap<String, Vec<String>>,
     /// Trait name -> the methods an implementation must provide (those the

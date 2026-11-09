@@ -62,12 +62,29 @@ impl<'a> Checker<'a> {
         let Some(head) = self.ty_head(&base_ty) else {
             return;
         };
-        // `s.ready()` parses as a call over a *field* node, so a method name
-        // reaches here too — it is not a missing field.
+        // A view's method reaches here through a bus. Read bare (`d.tag`), a
+        // struct's method is no value, and failed in lowering (#574); a call
+        // (`d.tag()`) is checked as one and does not come here.
         if self
             .methods
             .contains_key(&(head.clone(), field.text.clone()))
         {
+            let has_field = self
+                .structs
+                .get(&head)
+                .is_some_and(|(_, fields)| fields.contains(&field.text));
+            if !has_field && self.structs.contains_key(&head) {
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    field.span,
+                    format!(
+                        "`{}` is a method of `{}`, not a field",
+                        field.text,
+                        self.key_leaf(&head)
+                    ),
+                    format!("call it: `.{}()`", field.text),
+                );
+            }
             return;
         }
         // An entity value exposes ports, not the storage declarations in its
