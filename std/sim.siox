@@ -112,8 +112,21 @@ impl Sub<frequency, frequency> for frequency {
 impl Mul<real, frequency> for frequency {
     fn mul(rhs: real) -> frequency { return frequency(real(self) * rhs); }
 }
+impl Mul<integer, frequency> for frequency {
+    fn mul(rhs: integer) -> frequency { return frequency(real(self) * real(rhs)); }
+}
+// A scalar scales from either side, as `time` does (#582).
+impl Mul<frequency, frequency> for real {
+    fn mul(rhs: frequency) -> frequency { return frequency(self * real(rhs)); }
+}
+impl Mul<frequency, frequency> for integer {
+    fn mul(rhs: frequency) -> frequency { return frequency(real(self) * real(rhs)); }
+}
 impl Div<real, frequency> for frequency {
     fn div(rhs: real) -> frequency { return frequency(real(self) / rhs); }
+}
+impl Div<integer, frequency> for frequency {
+    fn div(rhs: integer) -> frequency { return frequency(real(self) / real(rhs)); }
 }
 impl Div<frequency, real> for frequency {
     fn div(rhs: frequency) -> real { return real(self) / real(rhs); }
