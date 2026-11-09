@@ -176,6 +176,41 @@ pub fn expand_type_attrs(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// Give each unsized family constructor its declared target's format:
+/// `let f: ufixed<8, 4> = ufixed(x);` lowers as `ufixed<8, 4>(x)` (#532).
+pub fn expand_constructor_formats(modules: &mut [Module], typed: &Typed) {
+    if typed.constructor_formats.is_empty() {
+        return;
+    }
+    let mut expand = |e: &mut Expr| {
+        if let Expr::Call { callee, span, .. } = e {
+            if let Some(index) = typed.constructor_formats.get(span) {
+                if matches!(callee.as_ref(), Expr::Path(_)) {
+                    let base = std::mem::replace(
+                        callee.as_mut(),
+                        Expr::Int {
+                            text: String::new(),
+                            span: *span,
+                        },
+                    );
+                    let at = expr_span(&base);
+                    **callee = Expr::Index {
+                        base: Box::new(base),
+                        index: Box::new(index.clone()),
+                        span: at,
+                    };
+                }
+            }
+        }
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut expand);
+        }
+    }
+}
+
 /// `[10, 20, 30]'length` and `arr[0..2]'length`: the length of a value that
 /// is not a name, from its checked type. Lowering read the attribute of a
 /// declaration only, and these did not lower or read the element's width

@@ -585,6 +585,7 @@ impl Compiler {
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
+        crate::types::expand_constructor_formats(&mut result.modules, &typed);
         crate::types::fold_value_lengths(&mut result.modules, &typed);
         crate::types::fold_type_attributes(&mut result.modules);
         crate::types::flatten_slice_chains(&mut result.modules);
