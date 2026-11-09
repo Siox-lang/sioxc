@@ -684,6 +684,7 @@ impl<'a> Checker<'a> {
                     }
                     _ => {
                         let Some(width) = self.const_int(index) else {
+                            self.check_type_index_expr(index);
                             // A literal past every machine word is past the
                             // layout maximum too; it used to pass silently
                             // (#149).
@@ -729,16 +730,21 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Type::Generic { base, args, .. } => {
+            Type::Generic { base, args, span } => {
                 self.check_type_layout(base);
                 for argument in args {
                     match argument {
                         GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
                             self.check_type_layout(ty);
                         }
-                        GenericArg::Positional(_) | GenericArg::Named { .. } => {}
+                        GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
+                            if self.const_int(value).is_none() {
+                                self.check_type_index_expr(value);
+                            }
+                        }
                     }
                 }
+                self.check_instantiated_layout(base, args, *span);
             }
             Type::View { target, .. } => self.check_type_layout(target),
             Type::Tuple { elems, .. } => {
@@ -747,6 +753,110 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// A width or argument that is not a constant still has to name values
+    /// that exist and not divide by zero: `unsigned[nonexistent]` and
+    /// `unsigned[10 / 0]` passed and broke lowering (#526).
+    fn check_type_index_expr(&mut self, index: &Expr) {
+        let mut problems: Vec<(Span, String, &'static str)> = Vec::new();
+        let mut visit = |e: &Expr, problems: &mut Vec<(Span, String, &'static str)>| match e {
+            Expr::Path(path) if path.segments.len() == 1 => {
+                if self.resolved.resolved(path.span).is_none() {
+                    problems.push((
+                        path.span,
+                        format!(
+                            "cannot find value `{}` in this scope",
+                            path.segments[0].text
+                        ),
+                        codes::UNKNOWN_NAME,
+                    ));
+                }
+            }
+            Expr::Binary {
+                op: BinOp::Div | BinOp::Rem,
+                rhs,
+                span,
+                ..
+            } if self.const_int(rhs) == Some(0) => {
+                problems.push((
+                    *span,
+                    "division by a constant zero".to_string(),
+                    codes::TYPE_MISMATCH,
+                ));
+            }
+            _ => {}
+        };
+        fn walk(
+            e: &Expr,
+            visit: &mut impl FnMut(&Expr, &mut Vec<(Span, String, &'static str)>),
+            problems: &mut Vec<(Span, String, &'static str)>,
+        ) {
+            visit(e, problems);
+            match e {
+                Expr::Binary { lhs, rhs, .. } => {
+                    walk(lhs, visit, problems);
+                    walk(rhs, visit, problems);
+                }
+                Expr::Unary { rhs, .. } => walk(rhs, visit, problems),
+                Expr::Range { lo, hi, .. } => {
+                    walk(lo, visit, problems);
+                    walk(hi, visit, problems);
+                }
+                Expr::Call { args, .. } => {
+                    for argument in args {
+                        walk(argument, visit, problems);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(index, &mut visit, &mut problems);
+        for (span, message, code) in problems {
+            self.error(code, span, message);
+        }
+    }
+
+    /// `MyVec<0>` for `struct MyVec<N: integer>(unsigned[N])`: the struct's
+    /// layout with the value arguments substituted is checked as written
+    /// types are, reported at the instantiation; a zero or negative width
+    /// passed and crashed lowering (#533).
+    fn check_instantiated_layout(&mut self, base: &Type, args: &[GenericArg], span: Span) {
+        let Some(key) = self.type_key(base) else {
+            return;
+        };
+        let Some(params) = self.struct_params.get(&key).cloned() else {
+            return;
+        };
+        let mut bindings = HashMap::new();
+        for (position, argument) in args.iter().enumerate() {
+            if let GenericArg::Positional(value) = argument {
+                if self.const_int(value).is_none() {
+                    continue;
+                }
+                if let Some(name) = params.get(position) {
+                    bindings.insert(name.clone(), argument.clone());
+                }
+            }
+        }
+        if bindings.is_empty() {
+            return;
+        }
+        let mut layouts: Vec<Type> = self
+            .structs
+            .get(&key)
+            .and_then(|(base, _)| base.clone())
+            .into_iter()
+            .collect();
+        if let Some(fields) = self.field_decl_types.get(&key) {
+            layouts.extend(fields.values().cloned());
+        }
+        let start = self.sink.diagnostics().len();
+        for mut layout in layouts {
+            crate::syntax::imports::substitute_type(&mut layout, &bindings);
+            self.check_type_layout(&layout);
+        }
+        self.sink.relocate_from(start, span);
     }
 
     /// Check the type layouts in a function signature.
