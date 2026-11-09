@@ -146,6 +146,164 @@ pub fn impl_aliases(modules: &mut [Module]) {
     }
 }
 
+/// A struct's own `impl Default` is its default everywhere (spec 3.29):
+/// `let p: Pt;` and `Pt()` are written `Pt::default()`, which both lowering
+/// paths call. They built the structural all-zero default instead (#569).
+/// Matched by name: `T::default()` on a same-named struct without the impl
+/// is its structural default, so a collision changes nothing.
+pub fn struct_defaults(modules: &mut [Module]) {
+    let with_fields: HashSet<String> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Struct(declaration) if !declaration.fields.is_empty() => {
+                Some(declaration.name.text.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let defaulted: HashSet<String> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation
+                    .trait_
+                    .as_ref()
+                    .and_then(|path| path.segments.last())
+                    .is_some_and(|name| name.text == "Default") =>
+            {
+                let Type::Path(target) = &implementation.target else {
+                    return None;
+                };
+                let name = &target.segments.last()?.text;
+                with_fields.contains(name).then(|| name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if defaulted.is_empty() {
+        return;
+    }
+    let named = |path: &Path| {
+        path.segments
+            .last()
+            .is_some_and(|name| defaulted.contains(&name.text))
+    };
+    let default_of = |path: &Path| {
+        let mut path = path.clone();
+        path.segments.push(Ident {
+            text: "default".to_string(),
+            span: path.span,
+        });
+        path
+    };
+    fn lets(statements: &mut [Stmt], f: &mut impl FnMut(&mut LetDecl)) {
+        for statement in statements {
+            match statement {
+                Stmt::Let(declaration) => f(declaration),
+                Stmt::Process(process) => lets(&mut process.body.stmts, f),
+                Stmt::If(chain) => {
+                    let mut chain = Some(chain);
+                    while let Some(current) = chain.take() {
+                        lets(&mut current.then.stmts, f);
+                        match current.else_.as_deref_mut() {
+                            Some(ElseBranch::Block(block)) => lets(&mut block.stmts, f),
+                            Some(ElseBranch::If(nested)) => chain = Some(nested),
+                            None => {}
+                        }
+                    }
+                }
+                Stmt::Match(nested) => {
+                    for arm in &mut nested.arms {
+                        lets(&mut arm.body.stmts, f);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => lets(&mut body.stmts, f),
+                _ => {}
+            }
+        }
+    }
+    fn member_lets(member: &mut ImplItem, f: &mut impl FnMut(&mut LetDecl)) {
+        match member {
+            ImplItem::Let(declaration) => f(declaration),
+            ImplItem::Fn(function) => {
+                if let Some(body) = &mut function.body {
+                    lets(&mut body.stmts, f);
+                }
+            }
+            ImplItem::Process(process) => lets(&mut process.body.stmts, f),
+            ImplItem::Stmt(statement) => lets(std::slice::from_mut(statement), f),
+            ImplItem::Block(block) => {
+                for item in &mut block.items {
+                    member_lets(item, f);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut give_default = |declaration: &mut LetDecl| {
+        if declaration.value.is_some() {
+            return;
+        }
+        let Some(Type::Path(path)) = &declaration.ty else {
+            return;
+        };
+        if named(path) {
+            declaration.value = Some(Expr::Call {
+                callee: Box::new(Expr::Path(default_of(path))),
+                type_args: Vec::new(),
+                qualifier: None,
+                args: Vec::new(),
+                bang: false,
+                span: declaration.span,
+            });
+        }
+    };
+    for module in modules.iter_mut() {
+        for item in &mut module.items {
+            match item {
+                Item::Fn(function) => {
+                    if let Some(body) = &mut function.body {
+                        lets(&mut body.stmts, &mut give_default);
+                    }
+                }
+                // The default itself builds its value; `let p: Pt;` there
+                // would call itself.
+                Item::Impl(implementation)
+                    if implementation
+                        .trait_
+                        .as_ref()
+                        .and_then(|path| path.segments.last())
+                        .is_some_and(|name| name.text == "Default") => {}
+                Item::Impl(implementation) => {
+                    for member in &mut implementation.items {
+                        member_lets(member, &mut give_default);
+                    }
+                }
+                _ => {}
+            }
+            crate::syntax::walk::walk_item(item, &mut |e| {
+                if let Expr::Call {
+                    callee,
+                    type_args,
+                    args,
+                    bang: false,
+                    ..
+                } = e
+                {
+                    if let Expr::Path(path) = callee.as_mut() {
+                        if args.is_empty() && type_args.is_empty() && named(path) {
+                            *path = default_of(path);
+                        }
+                    }
+                }
+                true
+            });
+        }
+    }
+}
+
 /// `std::bits::resize`, `bits::resize`, `std::primitive::integer`,
 /// `rand::randint`: a builtin named through the std module that provides it
 /// is the builtin itself, but lowering recognized only the bare one-segment

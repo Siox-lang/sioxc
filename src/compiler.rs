@@ -556,6 +556,7 @@ impl Compiler {
         crate::syntax::macros::hardware_statics(&mut result.modules, &mut result.diagnostics);
         crate::syntax::methods::impl_aliases(&mut result.modules);
         crate::syntax::methods::builtin_paths(&mut result.modules);
+        crate::syntax::methods::struct_defaults(&mut result.modules);
         crate::syntax::methods::entity_methods(
             &mut result.modules,
             &mut result.sources,
