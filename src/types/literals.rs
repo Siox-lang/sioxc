@@ -186,6 +186,25 @@ impl<'a> Checker<'a> {
                 for (field, value) in fields.iter().zip(parts) {
                     self.check_struct_field_value(head, field, value, sym);
                 }
+                // `{ 42 }` for a two-field struct leaves the rest at the
+                // default, as a named literal does (#566).
+                if let Some(missing) = fields.get(parts.len()..).filter(|m| !m.is_empty()) {
+                    self.sink.emit(
+                        Diagnostic::warning(format!(
+                            "literal for `{head}` leaves {} at the default value",
+                            missing
+                                .iter()
+                                .map(|f| format!("`{f}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .with_code(codes::INCOMPLETE_STRUCT_LITERAL)
+                        .at(*span)
+                        .help(
+                            "give every field a value, or copy the rest with `{ ..base, .x = v }`",
+                        ),
+                    );
+                }
                 return;
             }
             _ => return,

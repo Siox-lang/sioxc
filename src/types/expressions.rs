@@ -95,6 +95,32 @@ impl<'a> Checker<'a> {
                         help,
                     );
                 }
+                // A struct or a tuple has fields, not a range: `p'length`
+                // passed here and failed in lowering (#571).
+                if matches!(
+                    attr.text.as_str(),
+                    "length" | "high" | "low" | "left" | "right" | "ascending"
+                ) {
+                    let base_ty = self.type_of(base, sym);
+                    let shapeless = match &base_ty {
+                        Ty::Tuple(_) => Some(ty_name(&base_ty)),
+                        Ty::Named(_) => self
+                            .ty_head(&base_ty)
+                            .filter(|head| !self.base_struct_fields_named(head).is_empty()),
+                        _ => None,
+                    };
+                    if let Some(name) = shapeless {
+                        self.error(
+                            codes::INVALID_ATTR_TARGET,
+                            *span,
+                            format!(
+                                "`'{}` reads an array's range, and `{name}` has fields, not a range",
+                                attr.text
+                            ),
+                        );
+                        return;
+                    }
+                }
                 if matches!(attr.text.as_str(), "event" | "old") {
                     let base_ty = self.type_of(base, sym);
                     // An unresolved receiver (notably generic `self` in a
