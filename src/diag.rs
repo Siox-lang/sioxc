@@ -332,6 +332,14 @@ impl DiagnosticSink {
         }
     }
 
+    /// Point each diagnostic from index `start` on at `span`: a check made
+    /// on a substituted declaration reports where it was instantiated.
+    pub fn relocate_from(&mut self, start: usize, span: Span) {
+        for diagnostic in self.diagnostics.iter_mut().skip(start) {
+            diagnostic.primary = Some(span);
+        }
+    }
+
     /// Drop each diagnostic from index `start` on that repeats an earlier
     /// one's location and message: a generic body re-checked for one
     /// instantiation reports again what it reported for every one.
