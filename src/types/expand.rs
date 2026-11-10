@@ -677,7 +677,11 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
 /// signal exists, and the name was read as a value there, which had none
 /// (#295). `'length`, `'low` and `'high` of a width (`[8]` is `0..7` by
 /// position) or of a literal range.
-pub fn fold_type_attributes(modules: &mut [Module]) {
+pub fn fold_type_attributes(
+    modules: &mut [Module],
+    resolved: &crate::resolve::Resolved,
+    sink: &mut crate::diag::DiagnosticSink,
+) {
     // Names in a type index are not resolved, so a declaration is found by
     // name among its entity's ports and its impl's `let`s.
     let mut scopes: HashMap<String, HashMap<String, Type>> = HashMap::new();
@@ -715,7 +719,8 @@ pub fn fold_type_attributes(modules: &mut [Module]) {
             _ => None,
         }
     }
-    let fold = |e: &mut Expr, declared: &HashMap<String, Type>| {
+    let mut unknown: Vec<(Span, String)> = Vec::new();
+    let mut fold = |e: &mut Expr, declared: &HashMap<String, Type>| {
         let Expr::SysAttr { base, attr, span } = e else {
             return true;
         };
@@ -725,15 +730,38 @@ pub fn fold_type_attributes(modules: &mut [Module]) {
         let [name] = path.segments.as_slice() else {
             return true;
         };
+        // `unsigned[nonexistent'length]`: neither a port or signal here nor
+        // a name resolution knows; it passed and the width stayed unknown
+        // (#580).
+        if !declared.contains_key(&name.text) && resolved.resolved(path.span).is_none() {
+            unknown.push((path.span, name.text.clone()));
+            return true;
+        }
+        let int = |value: i64| Expr::Int {
+            text: value.to_string(),
+            span: *span,
+        };
+        // A single-bit scalar (`x: Bit`) is one element: `x'length` sized
+        // nothing and lowering found a zero width (#580).
+        if let Some(Type::Path(scalar)) = declared.get(&name.text) {
+            if scalar
+                .segments
+                .last()
+                .is_some_and(|s| matches!(s.text.as_str(), "Bit" | "Logic" | "ULogic"))
+            {
+                *e = match attr.text.as_str() {
+                    "length" => int(1),
+                    "low" | "high" | "left" | "right" => int(0),
+                    _ => return true,
+                };
+                return false;
+            }
+        }
         let Some(Type::Indexed {
             index: Some(index), ..
         }) = declared.get(&name.text)
         else {
             return true;
-        };
-        let int = |value: i64| Expr::Int {
-            text: value.to_string(),
-            span: *span,
         };
         let literal = |e: &Expr| match e {
             Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
@@ -788,5 +816,12 @@ pub fn fold_type_attributes(modules: &mut [Module]) {
                 _ => {}
             }
         }
+    }
+    for (span, name) in unknown {
+        sink.emit(
+            crate::diag::Diagnostic::error(format!("cannot find value `{name}` in this scope"))
+                .with_code(crate::diag::codes::UNKNOWN_NAME)
+                .at(span),
+        );
     }
 }

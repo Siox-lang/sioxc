@@ -589,7 +589,7 @@ impl Compiler {
         crate::types::expand_constructor_formats(&mut result.modules, &typed);
         crate::types::expand_partial_ranges(&mut result.modules, &typed);
         crate::types::fold_value_lengths(&mut result.modules, &typed);
-        crate::types::fold_type_attributes(&mut result.modules);
+        crate::types::fold_type_attributes(&mut result.modules, &resolved, &mut result.diagnostics);
         crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
