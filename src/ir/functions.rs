@@ -14,6 +14,8 @@ pub enum Intrinsic {
     Real(crate::ir::RealFunction),
     /// `pow(x, y)`.
     Pow,
+    /// `to_bits(x)`: a real's IEEE-754 bit pattern, as a `natural`.
+    ToBits,
 }
 
 /// Functions available to lowering and constant evaluation.
@@ -173,6 +175,7 @@ impl<'a> FunctionIndex<'a> {
         }
         match function.name.text.as_str() {
             "pow" => Some(Intrinsic::Pow),
+            "to_bits" => Some(Intrinsic::ToBits),
             name => crate::ir::RealFunction::from_name(name).map(Intrinsic::Real),
         }
     }

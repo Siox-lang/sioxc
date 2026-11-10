@@ -15,4 +15,8 @@ extern "intrinsic" {
     pub fn floor(x: real) -> real;
     pub fn ceil(x: real) -> real;
     pub fn round(x: real) -> real;
+    // The IEEE-754 bit pattern of `x`, as rustc's `f64::to_bits`. A vector
+    // constructor converts a real by value (`unsigned[8](3.7)` is 3); this
+    // is how its raw bits are read (#568).
+    pub fn to_bits(x: real) -> natural;
 }
