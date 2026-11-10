@@ -305,6 +305,9 @@ impl<'a> Checker<'a> {
                 .as_ref()
                 .map(|ty| self.ast_ty(ty))
                 .unwrap_or(Ty::Error);
+            if let Some(written) = &declaration.ty {
+                self.report_bare_generic(written);
+            }
             if let (Some(written), None) = (&declaration.ty, &declaration.value) {
                 self.report_unsized_vector(written, &declaration.name);
             }
@@ -971,5 +974,33 @@ impl Checker<'_> {
                 ),
             );
         }
+    }
+}
+
+impl Checker<'_> {
+    /// `let b: Box;` or `b: Box in` for `struct Box<T>`: a declared type
+    /// names its arguments; bare, the struct had no layout and native code
+    /// generation failed (#575).
+    pub(super) fn report_bare_generic(&mut self, written: &crate::syntax::ast::Type) {
+        let crate::syntax::ast::Type::Path(path) = written else {
+            return;
+        };
+        let Some(key) = self.type_key(written) else {
+            return;
+        };
+        let Some(count) = self
+            .struct_params
+            .get(&key)
+            .map(Vec::len)
+            .filter(|count| *count > 0)
+        else {
+            return;
+        };
+        let name = path.segments.last().map_or("", |s| s.text.as_str());
+        self.error(
+            codes::TYPE_MISMATCH,
+            path.span,
+            format!("`{name}` takes {count} generic argument(s), but 0 were given"),
+        );
     }
 }

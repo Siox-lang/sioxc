@@ -1475,8 +1475,25 @@ impl<'a> Resolver<'a> {
             let Some(owner) = self.out.resolved(head) else {
                 continue;
             };
-            let Some(declared) = self.decl_param_order.get(&owner).map(Vec::len) else {
-                continue;
+            let declared = match self.decl_param_order.get(&owner) {
+                Some(order) => order.len(),
+                // A struct, enum or entity declaring no parameters takes
+                // none: `Point<integer, Bool, 123>` passed (#576).
+                None if matches!(
+                    self.out.kind_of(owner),
+                    Some(DefKind::Struct | DefKind::Enum | DefKind::Entity)
+                ) =>
+                {
+                    0
+                }
+                // A compiler hook (`From<real>`, `Into<T>`) takes its
+                // argument without declaring it; any other trait takes none.
+                None if self.out.kind_of(owner) == Some(DefKind::Trait)
+                    && self.out.lang_of(owner).is_none() =>
+                {
+                    0
+                }
+                None => continue,
             };
             let name = self
                 .out
@@ -1910,6 +1927,14 @@ impl<'a> Resolver<'a> {
         }
         for arg in &im.trait_args {
             match arg {
+                // `impl OneParam<NonExistent> for T`: a bare name no value
+                // answers to is a type, and an unknown one is reported (#577).
+                GenericArg::Positional(Expr::Path(path))
+                    if path.segments.len() == 1
+                        && self.lookup(&path.segments[0].text).is_none() =>
+                {
+                    self.resolve_type_path(path);
+                }
                 GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
                     self.resolve_expr(value);
                 }
@@ -1917,6 +1942,16 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(ty);
                 }
             }
+        }
+        // `impl NoParams<integer, Bool> for T` and `impl OneParam for T` are
+        // counted like any generic use; they passed unchecked (#577).
+        if let Some(tr) = &im.trait_ {
+            self.generic_uses.push((
+                tr.span,
+                im.trait_args.len(),
+                tr.span,
+                vec![None; im.trait_args.len()],
+            ));
         }
         // The impl target necessarily mentions its parameters (`Owner<T>`);
         // that alone does not make the declaration's `T` meaningful. Snapshot

@@ -1036,6 +1036,7 @@ impl<'a> Checker<'a> {
                 for port in &entity.ports {
                     self.check_type_layout(&port.ty);
                     self.check_storable(&port.ty);
+                    self.report_bare_generic(&port.ty);
                 }
             }
             Item::Impl(implementation) => {
