@@ -8177,9 +8177,41 @@ fn lower_process_raw_resize(
         context.process_ir.value_layouts[value.0 as usize] = layout;
         return Some(value);
     }
+    let operand = numeric_operand(operand, &target, *span, context);
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
     Some(push_converted(*span, target, width, kind, context))
+}
+
+/// `unsigned[8](3.7)`: a real converts to a vector by value, as hardware
+/// does, not as its f64 bit pattern (#568); `core::intrinsics::to_bits`
+/// reads the bits.
+fn numeric_operand(
+    operand: ProcessValueId,
+    target: &crate::types::Ty,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let vector = matches!(
+        target,
+        crate::types::Ty::Array {
+            family: Some(_),
+            ..
+        }
+    );
+    if !vector || !process_value_is_real(operand, context) {
+        return operand;
+    }
+    push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::RealToInteger,
+            operand,
+        },
+        context,
+    )
 }
 
 /// A conversion's result with its target's vector layout, which a method on
@@ -8891,6 +8923,17 @@ fn lower_process_foreign_call(
                 left: *left,
                 right: *right,
             },
+            // The f64 word's bits, unconverted, as a `natural`.
+            (crate::ir::Intrinsic::ToBits, [operand]) => {
+                let kind = ProcessValueKind::RawResize { operand: *operand };
+                return Some(push_value(
+                    *span,
+                    Some(crate::types::Ty::Natural),
+                    Some(64),
+                    kind,
+                    context,
+                ));
+            }
             _ => return None,
         };
         return Some(push_value(*span, Some(real), Some(64), kind, context));

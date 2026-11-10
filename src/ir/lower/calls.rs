@@ -812,6 +812,11 @@ impl<'a> Lowering<'a> {
                     arena.unary(ProcessUnaryOp::Real(function), x, span)
                 }
                 (crate::ir::Intrinsic::Pow, [x, y]) => arena.binary(BinOp::FPow, x, y, span),
+                // A real is held as its f64 word: the same bits, read as an
+                // integer word (`or 0` is no float operation).
+                (crate::ir::Intrinsic::ToBits, [x]) => {
+                    arena.binary(BinOp::Or, x, &Expr::Const(0), span)
+                }
                 _ => return None,
             }));
         }

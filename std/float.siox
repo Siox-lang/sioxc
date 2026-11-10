@@ -4,6 +4,7 @@ use std::bits::{unsigned, signed};
 use std::fixed::{ufixed, sfixed};
 use std::math::Sqrt;
 use std::numeric::Rounding;
+use core::intrinsics;
 
 // Floating point, after VHDL-2008's `float_pkg`. The parameters are the
 // format: W bits in all, M of them the mantissa (fraction).
@@ -574,7 +575,7 @@ fn float_word(value: real, e: integer, f: integer) -> integer {
     let magnitude: real = if 0.0 > value { 0.0 - value } else { value };
     if magnitude != magnitude { return nan_word(e, f); }
     // The f64 bits of a non-negative real: exponent 62..52, fraction 51..0.
-    let bits: integer = integer(unsigned[64](magnitude));
+    let bits: integer = integer(intrinsics::to_bits(magnitude));
     let e64: integer = bits >> 52;
     let fraction: integer = low_bits(bits, 52);
     if e64 == 2047 { return infinity_word(sign, e, f); }
