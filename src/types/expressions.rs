@@ -122,6 +122,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if matches!(attr.text.as_str(), "event" | "old") {
+                    self.report_variable_edge(base, &format!("`'{}`", attr.text), *span);
                     let base_ty = self.type_of(base, sym);
                     // An unresolved receiver (notably generic `self` in a
                     // trait method) cannot be classified here; avoid a
@@ -809,6 +810,13 @@ impl<'a> Checker<'a> {
                 match callee.as_ref() {
                     Expr::Field { base, field, .. } => {
                         self.check_expr(base, sym);
+                        if matches!(field.text.as_str(), "rising" | "falling" | "edge") {
+                            self.report_variable_edge(
+                                base,
+                                &format!("`.{}()`", field.text),
+                                field.span,
+                            );
+                        }
                         // `f.ping()` with `ping` from two traits: lowering
                         // took whichever impl came last (#192). As in rustc,
                         // the call must name its trait.
