@@ -239,6 +239,7 @@ pub fn check<'a>(
     let mut checker = Checker::new(sink, resolved, modules);
     checker.collect(modules);
     checker.check_struct_field_cycles();
+    checker.check_type_attr_cycles();
     checker.collect_aggregate_extern_fns(modules);
     for m in modules {
         for item in &m.items {
