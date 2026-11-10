@@ -1262,3 +1262,55 @@ impl Checker<'_> {
         }
     }
 }
+
+impl Checker<'_> {
+    /// `pub attr a: integer = self'a + 1;`, or `a` and `b` naming each
+    /// other: a type attribute defined through itself has no value. Its
+    /// expansion stopped at a depth limit and lowering met the bare
+    /// attribute (#578).
+    pub(super) fn check_type_attr_cycles(&mut self) {
+        let reads = |declaration: &AttrDecl| -> Vec<String> {
+            let Some(value) = &declaration.default else {
+                return Vec::new();
+            };
+            let mut value = value.clone();
+            let mut out = Vec::new();
+            crate::syntax::walk::walk_expr(&mut value, &mut |e| {
+                if let Expr::SysAttr { base, attr, .. } = e {
+                    if matches!(base.as_ref(), Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "self")
+                    {
+                        out.push(attr.text.clone());
+                    }
+                }
+                true
+            });
+            out
+        };
+        let mut cyclic: Vec<(Span, String)> = Vec::new();
+        for ((owner, name), declaration) in &self.type_attrs {
+            let mut stack = reads(declaration);
+            let mut seen = HashSet::new();
+            while let Some(next) = stack.pop() {
+                if next == *name {
+                    cyclic.push((declaration.name.span, name.clone()));
+                    break;
+                }
+                if !seen.insert(next.clone()) {
+                    continue;
+                }
+                if let Some(read) = self.type_attrs.get(&(owner.clone(), next)) {
+                    stack.extend(reads(read));
+                }
+            }
+        }
+        cyclic.sort_by_key(|(span, _)| span.start);
+        for (span, name) in cyclic {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!("type attribute `{name}` is defined in terms of itself"),
+                "break the cycle: a type attribute cannot depend on itself".to_string(),
+            );
+        }
+    }
+}
