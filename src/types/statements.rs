@@ -816,16 +816,7 @@ impl<'a> Checker<'a> {
         let Expr::Path(path) = root else {
             return;
         };
-        let (Some(body), Some(declared)) = (
-            self.body_span.get(),
-            self.resolved
-                .resolved(path.span)
-                .and_then(|id| self.resolved.def(id))
-                .and_then(|definition| definition.span),
-        ) else {
-            return;
-        };
-        if declared.file == body.file && body.start <= declared.start && declared.end <= body.end {
+        if self.is_body_variable(path) {
             self.error_with_help(
                 codes::INVALID_ASSIGN_TARGET,
                 expr_span(target),
@@ -1001,6 +992,44 @@ impl Checker<'_> {
             codes::TYPE_MISMATCH,
             path.span,
             format!("`{name}` takes {count} generic argument(s), but 0 were given"),
+        );
+    }
+}
+
+impl Checker<'_> {
+    /// Whether `path` names a variable of the process or function body being
+    /// checked: declared inside it, so it has no driver, event or history.
+    pub(super) fn is_body_variable(&self, path: &Path) -> bool {
+        let (Some(body), Some(declared)) = (
+            self.body_span.get(),
+            self.resolved
+                .resolved(path.span)
+                .and_then(|id| self.resolved.def(id))
+                .and_then(|definition| definition.span),
+        ) else {
+            return false;
+        };
+        declared.file == body.file && body.start <= declared.start && declared.end <= body.end
+    }
+
+    /// `a'event`, `a'old` or `a.rising()` on a body variable: a variable has
+    /// no change in a delta cycle to read. It passed and failed native
+    /// lowering (#563).
+    pub(super) fn report_variable_edge(&mut self, base: &Expr, what: &str, span: Span) {
+        let Expr::Path(path) = base else {
+            return;
+        };
+        if !self.is_body_variable(path) {
+            return;
+        }
+        self.error_with_help(
+            codes::INVALID_ATTR_TARGET,
+            span,
+            format!(
+                "`{}` is a variable of this body, so {what} has no change to read",
+                crate::syntax::pretty::expr_string(base)
+            ),
+            "edges and history belong to signals and ports: declare it as a signal".to_string(),
         );
     }
 }
