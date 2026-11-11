@@ -250,6 +250,10 @@ impl<'a> Lexer<'a> {
             Some(b) if b != b'\'' && b != b'\n' => b,
             _ => return false,
         };
+        // `'\''`, `'\n'`: an escape is one character (#645).
+        if b1 == b'\\' {
+            return self.peek_at(2).is_some_and(|b| b != b'\n') && self.peek_at(3) == Some(b'\'');
+        }
         // Width of the one UTF-8 character starting just after the quote.
         let len = match b1 {
             b if b & 0x80 == 0 => 1,
@@ -267,6 +271,13 @@ impl<'a> Lexer<'a> {
         self.bump(); // opening `'`
         let mut chars = 0;
         while let Some(c) = self.peek() {
+            // An escape (`\'`, `\n`) is one character, its second byte too.
+            if c == b'\\' && self.peek_at(1).is_some_and(|b| b != b'\n') {
+                self.bump();
+                self.bump();
+                chars += 1;
+                continue;
+            }
             if c == b'\'' || c == b'\n' {
                 break;
             }

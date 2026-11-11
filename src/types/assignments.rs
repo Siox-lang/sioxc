@@ -563,7 +563,8 @@ impl<'a> Checker<'a> {
             !vars.is_empty()
                 && vars
                     .iter()
-                    .all(|v| v.len() == 3 && v.starts_with('\'') && v.ends_with('\''))
+                    // Three characters, not bytes: `'←'` is five (#647).
+                    .all(|v| v.chars().count() == 3 && v.starts_with('\'') && v.ends_with('\''))
         })
     }
 

@@ -62,13 +62,14 @@ impl<'a> Checker<'a> {
         span: Span,
         value: bool,
     ) {
-        let Some((lo, hi)) = self.numeric_domain(ty) else {
+        let domain = self.numeric_domain(ty);
+        let (lo, hi) = if let Some(domain) = domain {
+            domain
+        } else {
             // An unbounded scalar (`integer`, `real`, `Char`) has values no
             // list of closed arms covers: it needs a catch-all, or arms open
             // at both ends (`..-1`, `0..9`, `10..`). Without either, an
             // unmatched value took the last arm (#478).
-            // ponytail: with both ends open the gaps between arms are not
-            // checked; compare constant bounds if that ever matters.
             fn open_end(p: &Pattern, low: bool) -> bool {
                 match p {
                     Pattern::Bounds { lo, hi, .. } => {
@@ -98,8 +99,17 @@ impl<'a> Checker<'a> {
                     .at(span)
                     .help("add a `_` arm for the remaining values"),
                 );
+                return;
             }
-            return;
+            // Open at both ends, an integer's arms still leave the values
+            // between them (`..0`, `100..` miss `1..99`): walk them as a
+            // bounded domain's are (#623).
+            if !matches!(ty, Ty::Integer | Ty::Natural)
+                || arms.iter().any(|arm| pattern_covers(&arm.pattern).1)
+            {
+                return;
+            }
+            (i128::MIN, i128::MAX)
         };
         // Collect covered intervals. A bit pattern carries don't-cares, whose
         // coverage is not an interval, so its presence makes the answer

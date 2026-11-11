@@ -129,6 +129,7 @@ impl<'a> Checker<'a> {
             trait_impls: HashMap::new(),
             trait_defaults: HashMap::new(),
             trait_default_bodies: HashMap::new(),
+            trait_impl_sites: HashSet::new(),
             trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
             trait_visibility,
@@ -442,6 +443,42 @@ impl<'a> Checker<'a> {
                 // conditions) can ask "does T implement Trait?".
                 if let (Some(tr), Some(ty)) = (&im.trait_, self.type_key(&im.target)) {
                     if let Some(key) = self.trait_key(tr) {
+                        // `impl Foo for S` twice: each call took whichever
+                        // impl lowering met last (#603). Arguments tell
+                        // impls apart (`Add<time, time>`, `Add<integer,
+                        // time>`), so they are part of the identity.
+                        use crate::syntax::pretty::{expr_string, type_str};
+                        let arguments: Vec<String> = im
+                            .trait_args
+                            .iter()
+                            .map(|argument| match argument {
+                                GenericArg::Positional(value) => expr_string(value),
+                                GenericArg::PositionalType(ty) => type_str(ty),
+                                GenericArg::Named { name, value } => {
+                                    format!("{} = {}", name.text, expr_string(value))
+                                }
+                                GenericArg::NamedType { name, ty } => {
+                                    format!("{} = {}", name.text, type_str(ty))
+                                }
+                            })
+                            .collect();
+                        let identity = (key.clone(), arguments.join(", "), ty.clone());
+                        if im.params.params.is_empty() && !self.trait_impl_sites.insert(identity) {
+                            self.error_with_help(
+                                codes::DUPLICATE_ITEM,
+                                tr.span,
+                                format!(
+                                    "duplicate implementation of `{}` for `{}`",
+                                    tr.segments
+                                        .iter()
+                                        .map(|s| s.text.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("::"),
+                                    self.key_leaf(&ty)
+                                ),
+                                "keep one `impl` block for this trait and type".to_string(),
+                            );
+                        }
                         self.trait_impls_by_type.entry(ty).or_default().push(key);
                     }
                 }

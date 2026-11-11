@@ -2832,8 +2832,7 @@ impl<'a> Parser<'a> {
             // design uses — could not be matched on at all.
             TokenKind::CharacterLit => {
                 let t = self.bump();
-                let text = self.text_of(t.span);
-                let ch = text.chars().nth(1).unwrap_or('?');
+                let ch = char_literal_value(self.text_of(t.span));
                 Pattern::CharLit { ch, span: t.span }
             }
             // A bare-string bit pattern `"1-1-0000"` (spec 3.22): each char is
@@ -3642,14 +3641,19 @@ impl<'a> Parser<'a> {
             }
             TokenKind::CharacterLit => {
                 let t = self.bump();
-                let text = self.text_of(t.span);
-                let ch = text.chars().nth(1).unwrap_or('?');
+                let ch = char_literal_value(self.text_of(t.span));
                 Expr::CharLit { ch, span: t.span }
             }
             TokenKind::StrLit => {
                 let t = self.bump();
                 let raw = self.text_of(t.span);
-                let text = unescape(raw.trim_matches('"'));
+                // One quote off each end: `"say \""` ends in an escaped quote,
+                // which trimming every quote cut to a backslash (#642).
+                let inner = raw
+                    .strip_prefix('"')
+                    .and_then(|raw| raw.strip_suffix('"'))
+                    .unwrap_or(raw);
+                let text = unescape(inner);
                 Expr::StrLit { text, span: t.span }
             }
             // `(e)` groups; `(a, b, ..)` is a tuple.
@@ -4599,6 +4603,15 @@ fn is_prefix_letter(text: &str) -> bool {
 /// Process the standard escapes in a string literal body: `\\n`, `\\t`,
 /// `\\r`, `\\0`, `\\"`, `\\\\`. An unknown escape keeps the backslash
 /// verbatim (best-effort; the lexer already validated termination).
+/// A `'c'` literal's character, its escape (`'\''`, `'\n'`) read (#645).
+fn char_literal_value(text: &str) -> char {
+    let inner = text
+        .strip_prefix('\'')
+        .and_then(|text| text.strip_suffix('\''))
+        .unwrap_or(text);
+    unescape(inner).chars().next().unwrap_or('?')
+}
+
 fn unescape(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut it = raw.chars();
@@ -4613,6 +4626,7 @@ fn unescape(raw: &str) -> String {
             Some('r') => out.push('\r'),
             Some('0') => out.push('\0'),
             Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
             Some('\\') => out.push('\\'),
             Some(other) => {
                 out.push('\\');
