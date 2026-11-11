@@ -325,7 +325,15 @@ pub fn eval_const_fns(
         ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
         ast::Expr::Path(path) => fns
             .constant_path_key(path)
-            .and_then(|key| env.get(&key).copied()),
+            .and_then(|key| env.get(&key).copied())
+            // `true`/`false` (`Bool::true`) are 1 and 0, as elaboration folds
+            // them: a generate `if true` read as a run-time condition, and its
+            // instances' outputs were never driven (#611).
+            .or_else(|| match path.segments.last()?.text.as_str() {
+                "true" => Some(1),
+                "false" => Some(0),
+                _ => None,
+            }),
         // `CFG.width`, `WIDTHS[0]`: a constant aggregate's part, as its key
         // names it (#459).
         ast::Expr::Field { .. } | ast::Expr::Index { .. } => fns
