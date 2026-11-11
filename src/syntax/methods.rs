@@ -309,10 +309,21 @@ pub fn struct_defaults(modules: &mut [Module]) {
 /// is the builtin itself, but lowering recognized only the bare one-segment
 /// name, so a qualified call passed the checker and crashed hardware or
 /// testbench lowering (#546, also #524, #499). Each is written bare here,
-/// once, before resolution.
-// ponytail: a user module named `bits`, `primitive`, `rand` or `fs` with a
-// function of one of these names would be read as the builtin.
+/// once, before resolution. A module of the program's own named `bits`,
+/// `primitive`, `rand` or `fs` keeps its two-segment calls (`fs::read`): they
+/// name its function, not the builtin (#620).
 pub fn builtin_paths(modules: &mut [Module]) {
+    let own_modules: HashSet<String> = modules
+        .iter()
+        .filter(|module| {
+            module
+                .path
+                .segments
+                .first()
+                .is_some_and(|root| !matches!(root.text.as_str(), "std" | "core"))
+        })
+        .filter_map(|module| module.path.segments.last().map(|s| s.text.clone()))
+        .collect();
     fn builtin_module(name: &str) -> Option<&'static str> {
         match name {
             "resize" => Some("bits"),
@@ -325,7 +336,10 @@ pub fn builtin_paths(modules: &mut [Module]) {
     let mut rewrite = |e: &mut Expr| {
         if let Expr::Path(path) = e {
             let qualified = match path.segments.as_slice() {
-                [module, name] => builtin_module(&name.text) == Some(module.text.as_str()),
+                [module, name] => {
+                    builtin_module(&name.text) == Some(module.text.as_str())
+                        && !own_modules.contains(&module.text)
+                }
                 [root, module, name] => {
                     root.text == "std" && builtin_module(&name.text) == Some(module.text.as_str())
                 }

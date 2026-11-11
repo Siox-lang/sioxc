@@ -4564,7 +4564,10 @@ fn symbol_enum(element: &crate::ir::SourceLayout, context: &LoweringContext<'_>)
     let symbols = context.design.enum_syms.get(name)?;
     symbols
         .values()
-        .all(|symbol| symbol.len() == 3 && symbol.starts_with('\'') && symbol.ends_with('\''))
+        // Three characters, not bytes: `'←'` is five (#647).
+        .all(|symbol| {
+            symbol.chars().count() == 3 && symbol.starts_with('\'') && symbol.ends_with('\'')
+        })
         .then(|| name.clone())
 }
 

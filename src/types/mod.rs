@@ -412,6 +412,9 @@ struct Checker<'a> {
     /// The default methods of each trait without parameters, checked
     /// against every type that inherits them (#574).
     trait_default_bodies: HashMap<String, Vec<FnDecl>>,
+    /// Each non-generic trait impl's (trait, arguments, type), to report a
+    /// second one (#603).
+    trait_impl_sites: HashSet<(String, String, String)>,
     /// Type identity -> the traits it implements, for that inheritance.
     trait_impls_by_type: HashMap<String, Vec<String>>,
     /// Trait name -> the methods an implementation must provide (those the
