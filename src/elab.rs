@@ -1784,9 +1784,21 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
             .copied()
             .map(Int)
             .unwrap_or(Unknown),
+        // `std::sim::FS`, `pkg::N`: a qualified constant is the module
+        // constant of that name; it read unknown (#614).
+        Expr::Path(p) => p
+            .segments
+            .last()
+            .and_then(|name| env.get(&name.text))
+            .copied()
+            .map(Int)
+            .unwrap_or(Unknown),
         Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
             (UnOp::Neg, Int(v)) => v.checked_neg().map(Int).unwrap_or(Unknown),
-            (UnOp::Not, Int(v)) => Int(!v),
+            // `not` is boolean negation, as lowering folds it: bitwise, `not
+            // true` was -2, nonzero, and a generate `if not c` took the
+            // wrong branch (#611).
+            (UnOp::Not, Int(v)) => Int(i64::from(v == 0)),
             _ => Unknown,
         },
         Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs, env), eval(rhs, env)) {
