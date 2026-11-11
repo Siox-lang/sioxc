@@ -392,6 +392,12 @@ impl<'a> Checker<'a> {
                         len: base_len,
                         low: base_low,
                     } if is_range => {
+                        // A bound is a literal or a named constant: `x[0..HI]`
+                        // typed as width 0, assignable to any width (#661).
+                        let lit = |e: &Expr| {
+                            signed_lit(e)
+                                .or_else(|| self.const_int(e).and_then(|v| i64::try_from(v).ok()))
+                        };
                         // An open end of an element array's slice (`s[2..]` of
                         // a `Char[5]`) is the array's own: the slice is sized
                         // too, rather than read as a runtime `T[]`.
@@ -406,11 +412,11 @@ impl<'a> Checker<'a> {
                             if family.is_some() {
                                 let (left, right) = declared_labels_of(base, &self.array_bounds)?;
                                 let left = match lo {
-                                    Some(lo) => signed_lit(lo)?,
+                                    Some(lo) => lit(lo)?,
                                     None => left,
                                 };
                                 let right = match hi {
-                                    Some(hi) => signed_lit(hi)?,
+                                    Some(hi) => lit(hi)?,
                                     None => right,
                                 };
                                 return u32::try_from(left.abs_diff(right) + 1).ok();
@@ -419,11 +425,11 @@ impl<'a> Checker<'a> {
                                 return None;
                             }
                             let left = match lo {
-                                Some(lo) => signed_lit(lo)?,
+                                Some(lo) => lit(lo)?,
                                 None => *base_low,
                             };
                             let right = match hi {
-                                Some(hi) => signed_lit(hi)?,
+                                Some(hi) => lit(hi)?,
                                 None => base_low + i64::from(*base_len) - 1,
                             };
                             u32::try_from(left.abs_diff(right) + 1).ok()
@@ -435,7 +441,15 @@ impl<'a> Checker<'a> {
                         let width = if runtime {
                             0
                         } else {
-                            explicit_range_len(index).or_else(open).unwrap_or(0)
+                            explicit_range_len(index)
+                                .or_else(|| match index.as_ref() {
+                                    Expr::Range { lo, hi, .. } => lit(lo)
+                                        .zip(lit(hi))
+                                        .and_then(|(a, b)| u32::try_from(a.abs_diff(b) + 1).ok()),
+                                    _ => None,
+                                })
+                                .or_else(open)
+                                .unwrap_or(0)
                         };
                         // A range is a slice at any width: `v[0..0]` is a
                         // one-element vector, as `v(0 downto 0)` is in VHDL and
@@ -446,16 +460,16 @@ impl<'a> Checker<'a> {
                         // `ufixed<3, 2>`, its lowest label `-2` (#301).
                         let low = if *base_low < 0 && width > 0 {
                             let bounds = match index.as_ref() {
-                                Expr::Range { lo, hi, .. } => signed_lit(lo).zip(signed_lit(hi)),
+                                Expr::Range { lo, hi, .. } => lit(lo).zip(lit(hi)),
                                 Expr::PartialRange { lo, hi, .. } => {
                                     declared_labels_of(base, &self.array_bounds).and_then(
                                         |(left, right)| {
                                             let left = match lo {
-                                                Some(lo) => signed_lit(lo)?,
+                                                Some(lo) => lit(lo)?,
                                                 None => left,
                                             };
                                             let right = match hi {
-                                                Some(hi) => signed_lit(hi)?,
+                                                Some(hi) => lit(hi)?,
                                                 None => right,
                                             };
                                             Some((left, right))
