@@ -790,10 +790,32 @@ impl<'a> Lowering<'a> {
         // Test families before lowering either operand. An integer literal
         // takes the other operand's family and width, on either side
         // (`255 xor a` as `a xor 255`).
+        // The family as the element table keys it, whole or by its leaf.
+        let known = |family: &str| -> Option<String> {
+            if self.out.array_element_of_family.contains_key(family) {
+                return Some(family.to_string());
+            }
+            let leaf = family.rsplit("::").next()?;
+            self.out
+                .array_element_of_family
+                .contains_key(leaf)
+                .then(|| leaf.to_string())
+        };
         let vector = |expression: &ast::Expr| {
             self.operand_type_name(expression)
                 .filter(|family| self.out.array_element_of_family.contains_key(family))
                 .map(|family| (family, self.ast_width(expression)))
+                // In an operator body (`self xnor rhs` of an `unsigned[8]`
+                // impl) the operands are bound words; their checked type
+                // gives the family and width the complement needs (#625).
+                .or_else(|| match self.expr_types.get(&ast::expr_span(expression)) {
+                    Some(crate::types::Ty::Array {
+                        family: Some(family),
+                        len,
+                        ..
+                    }) if *len > 0 => known(family).map(|family| (family, *len)),
+                    _ => None,
+                })
         };
         let literal = |expression: &ast::Expr| matches!(expression, ast::Expr::Int { .. });
         let (left, right) = match (vector(lhs), vector(rhs)) {

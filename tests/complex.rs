@@ -67,17 +67,17 @@ impl T {
 #[cfg(feature = "llvm")]
 #[test]
 fn missing_complex_operators_are_reported_once() {
-    // `-a` and `2 - a` are declared since #530; a scalar divided by one is
-    // not.
+    // `-a`, `2 - a` (#530) and `2.0 / a` (#621) are declared; a remainder
+    // of one is not.
     let (compilation, _) = compile(
         "real_div",
         "module g;\nuse std::math::Complex;\n#[test] entity T {}\n\
          impl T { check: process { let a: Complex = { .re = 3.0, .im = 4.0 }; \
-         print!(\"{}\", 2.0 / a); } }\n",
+         print!(\"{}\", 2.0 % a); } }\n",
     );
     let rendered = compilation.render_diagnostics();
     assert!(
-        rendered.contains("cannot apply `/` to real and Complex"),
+        rendered.contains("cannot apply `%` to real and Complex"),
         "{rendered}"
     );
     assert_eq!(rendered.matches("error[").count(), 1, "{rendered}");
