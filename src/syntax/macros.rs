@@ -1491,11 +1491,17 @@ fn derive_text(
             let last = &path.segments.last()?.text;
             matches!(last.as_str(), "Bit" | "Logic" | "ULogic" | "Bool").then(|| last.clone())
         };
+        // A tuple *field* has no `<` of its own either: the derive wrote one
+        // and checking the generated impl failed (#644). A newtype over a
+        // tuple derives by position (#383).
         let element = declaration.base.as_ref().and_then(unordered).or_else(|| {
-            declaration
-                .fields
-                .iter()
-                .find_map(|field| unordered(&field.ty))
+            declaration.fields.iter().find_map(|field| {
+                if matches!(field.ty, crate::syntax::ast::Type::Tuple { .. }) {
+                    Some("tuple".to_string())
+                } else {
+                    unordered(&field.ty)
+                }
+            })
         });
         if let Some(element) = element {
             sink.emit(

@@ -566,12 +566,11 @@ struct Elaborator<'a> {
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
     /// Names of structs with fields, which are connected field by field.
     record_structs: HashSet<String>,
-    /// Module-level integer and `Bool` constants, folded once: the base of
-    /// every entity's constant environment, which its parameters shadow. A
-    /// generate `if USE_FEATURE` or `for i in 0..N` on one read unknown and
-    /// became a misplaced process or no instances (#584).
-    // ponytail: keyed by bare name; same-named constants in two modules
-    // take the later one. Key by module if that collides in practice.
+    /// Module-level integer and `Bool` constants, folded once and keyed by
+    /// qualified name (`m1::N`): the base of every entity's constant
+    /// environment, which its parameters shadow, with its own module's by
+    /// bare name. A generate `if USE_FEATURE` or `for i in 0..N` on one read
+    /// unknown (#584); keyed by bare name, two modules' `N` collided (#648).
     module_consts: HashMap<String, i64>,
     /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
@@ -650,8 +649,42 @@ impl<'a> Elaborator<'a> {
             .map(|e| e.is_extern)
             .unwrap_or(true);
         let mut env = self.module_consts.clone();
+        // The entity's own module's constants by bare name (#648).
+        if let Some(module) = self.resolved.qualified_name(entity_id).and_then(|name| {
+            name.rsplit_once("::")
+                .map(|(module, _)| format!("{module}::"))
+        }) {
+            for (name, value) in &self.module_consts {
+                if let Some(leaf) = name
+                    .strip_prefix(&module)
+                    .filter(|leaf| !leaf.contains("::"))
+                {
+                    env.insert(leaf.to_string(), *value);
+                }
+            }
+        }
         env.extend(param_env(&params));
-        let env = self.with_impl_binders(entity_id, env);
+        let mut env = self.with_impl_binders(entity_id, env);
+        // `impl Top { const W: integer = 8; let sub: Sub<W> = {}; }`: an
+        // impl's own constants name values its body uses (#658).
+        if let Some(impls) = self.impls.get(&entity_id) {
+            let constants: Vec<&ConstDecl> = impls
+                .iter()
+                .flat_map(|im| &im.items)
+                .filter_map(|item| match item {
+                    ImplItem::Const(constant) => Some(constant),
+                    _ => None,
+                })
+                .collect();
+            for _ in 0..constants.len() {
+                for constant in &constants {
+                    if let ParamValue::Int(value) = eval(&constant.value, &env) {
+                        env.insert(constant.name.text.clone(), value);
+                    }
+                }
+            }
+        }
+        let env = env;
         let specs = self.gather_instances(entity_id, is_extern, &env);
         let instance_arrays = self.instance_array_facts(entity_id, &env, &specs);
         // This instance's own signals (ports + impl lets), for width-checking the
@@ -1620,23 +1653,44 @@ struct InstanceSpec<'a> {
 /// Every module-level constant that folds to an integer, in as many passes
 /// as one constant takes to name another.
 fn module_constants(modules: &[Module]) -> HashMap<String, i64> {
-    let constants: Vec<&ConstDecl> = modules
+    // Each constant with its module's path, evaluated with its own module's
+    // constants by bare name and every module's by qualified name.
+    let constants: Vec<(String, &ConstDecl)> = modules
         .iter()
-        .flat_map(|module| &module.items)
-        .filter_map(|item| match item {
-            Item::Const(constant) => Some(constant),
-            _ => None,
+        .flat_map(|module| {
+            let path = module
+                .path
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            module.items.iter().filter_map(move |item| match item {
+                Item::Const(constant) => Some((path.clone(), constant)),
+                _ => None,
+            })
         })
         .collect();
-    let mut out = HashMap::new();
+    let mut out: HashMap<String, i64> = HashMap::new();
     loop {
         let before = out.len();
-        for constant in &constants {
-            if out.contains_key(&constant.name.text) {
+        for (module, constant) in &constants {
+            let key = format!("{module}::{}", constant.name.text);
+            if out.contains_key(&key) {
                 continue;
             }
-            if let ParamValue::Int(value) = eval(&constant.value, &out) {
-                out.insert(constant.name.text.clone(), value);
+            let prefix = format!("{module}::");
+            let mut scope = out.clone();
+            for (name, value) in &out {
+                if let Some(leaf) = name
+                    .strip_prefix(&prefix)
+                    .filter(|leaf| !leaf.contains("::"))
+                {
+                    scope.insert(leaf.to_string(), *value);
+                }
+            }
+            if let ParamValue::Int(value) = eval(&constant.value, &scope) {
+                out.insert(key, value);
             }
         }
         if out.len() == before {
@@ -1785,14 +1839,26 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
             .map(Int)
             .unwrap_or(Unknown),
         // `std::sim::FS`, `pkg::N`: a qualified constant is the module
-        // constant of that name; it read unknown (#614).
-        Expr::Path(p) => p
-            .segments
-            .last()
-            .and_then(|name| env.get(&name.text))
-            .copied()
-            .map(Int)
-            .unwrap_or(Unknown),
+        // constant of that name; it read unknown (#614). A path through an
+        // alias (`sim::FS` after `use std::sim`) is the one constant whose
+        // qualified name ends in it.
+        Expr::Path(p) => {
+            let path = p
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if let Some(&value) = env.get(&path) {
+                return Int(value);
+            }
+            let suffix = format!("::{path}");
+            let mut found = env.iter().filter(|(name, _)| name.ends_with(&suffix));
+            match (found.next(), found.next()) {
+                (Some((_, &value)), None) => Int(value),
+                _ => Unknown,
+            }
+        }
         Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
             (UnOp::Neg, Int(v)) => v.checked_neg().map(Int).unwrap_or(Unknown),
             // `not` is boolean negation, as lowering folds it: bitwise, `not
