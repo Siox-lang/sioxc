@@ -814,9 +814,11 @@ impl<'a> Lowering<'a> {
                     // constant (`2.0..1.0`, `20ns..10ns`) lowers to a
                     // constant to compare, as the testbench does (#572).
                     let number = |text: &str| text.replace('_', "").parse::<f64>().ok();
-                    // One unit scales both sides alike.
-                    // ponytail: mixed units (`1us..500ns`) keep the written
-                    // order; evaluate the suffix if that matters.
+                    // A unit's value is its number times its scale, so
+                    // `1us..500ns` orders as 1e9 fs against 5e8 fs (#617).
+                    let scaled = |text: &str, suffix: &str| {
+                        Some(number(text)? * crate::syntax::ast::suffix_scale(suffix)? as f64)
+                    };
                     let same_unit = match (l, h) {
                         (
                             ast::Expr::SuffixLit {
@@ -825,10 +827,14 @@ impl<'a> Lowering<'a> {
                             ast::Expr::SuffixLit {
                                 text: b, suffix: y, ..
                             },
-                        ) if x.text == y.text => Some(matches!(
-                            (number(a), number(b)),
-                            (Some(a), Some(b)) if a > b
-                        )),
+                        ) => {
+                            let (a, b) = if x.text == y.text {
+                                (number(a), number(b))
+                            } else {
+                                (scaled(a, &x.text), scaled(b, &y.text))
+                            };
+                            Some(matches!((a, b), (Some(a), Some(b)) if a > b))
+                        }
                         _ => None,
                     };
                     let descending = match (
