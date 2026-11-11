@@ -63,6 +63,17 @@ impl Mul<time, time> for integer {
 impl Div<integer, time> for time {
     fn div(rhs: integer) -> time { return time(integer(self) / rhs); }
 }
+// A real scales a time to whole femtoseconds, truncating toward zero as
+// `integer(r)` does (#632).
+impl Mul<real, time> for time {
+    fn mul(rhs: real) -> time { return time(integer(real(integer(self)) * rhs)); }
+}
+impl Mul<time, time> for real {
+    fn mul(rhs: time) -> time { return time(integer(self * real(integer(rhs)))); }
+}
+impl Div<real, time> for time {
+    fn div(rhs: real) -> time { return time(integer(real(integer(self)) / rhs)); }
+}
 impl Div<time, integer> for time {
     fn div(rhs: time) -> integer { return integer(self) / integer(rhs); }
 }
