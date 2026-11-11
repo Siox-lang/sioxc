@@ -1227,7 +1227,8 @@ impl Checker<'_> {
             None => return,
         };
         let bound = |given: &Option<Box<Expr>>, default: i64| match given {
-            Some(given) => signed_lit(given),
+            Some(given) => signed_lit(given)
+                .or_else(|| self.const_int(given).and_then(|v| i64::try_from(v).ok())),
             None => Some(default),
         };
         let (Some(a), Some(b)) = (bound(lo, left), bound(hi, right)) else {
