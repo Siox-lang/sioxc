@@ -456,6 +456,7 @@ impl<'a> Checker<'a> {
                 ..
             } => {
                 self.check_write_target(target, dirs);
+                self.check_instance_output_write(target, sym);
                 self.check_assign_range(target, value, ranged);
                 self.check_compound_target(target, value);
                 let custom_index = self.check_index_assign(target, value, sym);
