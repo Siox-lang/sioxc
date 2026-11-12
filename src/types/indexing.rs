@@ -171,8 +171,7 @@ impl<'a> Checker<'a> {
                 // hardware read past them as 0 in silence (#228).
                 None => match base {
                     Expr::Path(path) => match self
-                        .resolved
-                        .resolved(path.span)
+                        .const_def(path)
                         .and_then(|id| self.const_types.get(&id))
                         .and_then(|ty| self.declared_index_bounds(ty))
                     {

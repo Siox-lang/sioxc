@@ -100,12 +100,7 @@ impl<'a> Checker<'a> {
                 low: 0,
             },
             Expr::Path(p) => {
-                if let Some(ty) = self
-                    .resolved
-                    .resolved(p.span)
-                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))
-                    .and_then(|id| self.const_types.get(&id))
-                {
+                if let Some(ty) = self.const_def(p).and_then(|id| self.const_types.get(&id)) {
                     return self.ast_ty(ty);
                 }
                 if p.segments.len() == 1 {

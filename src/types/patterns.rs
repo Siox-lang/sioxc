@@ -720,10 +720,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Path(p) => {
-                let id = self
-                    .resolved
-                    .resolved(p.span)
-                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
+                let id = self.const_def(p)?;
                 self.const_int_at(self.const_values.get(&id)?, depth + 1)
             }
             // `WIDTHS[0]` of a constant array and `CFG.width` of a constant
@@ -763,10 +760,7 @@ impl<'a> Checker<'a> {
         }
         match e {
             Expr::Path(p) => {
-                let id = self
-                    .resolved
-                    .resolved(p.span)
-                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
+                let id = self.const_def(p)?;
                 self.const_values.get(&id)
             }
             Expr::Index { base, index, .. } => {
@@ -1027,4 +1021,15 @@ fn bit_pattern_width(text: &str) -> Option<u32> {
         .filter(|c| *c != '_')
         .count();
     u32::try_from(count).ok()?.checked_mul(per)
+}
+
+impl Checker<'_> {
+    /// The constant a path names. An impl's own constant is bound in its
+    /// body as a local at the declaration, and that local is the identity
+    /// its value is registered under (#657).
+    pub(super) fn const_def(&self, path: &Path) -> Option<DefId> {
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(DefKind::Const) || self.const_values.contains_key(&id))
+            .then_some(id)
+    }
 }

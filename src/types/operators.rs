@@ -15,12 +15,19 @@ impl<'a> Checker<'a> {
         rhs: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
+        // A named constant or constant expression is a constant here too, as
+        // the assignment and argument checks read it (#656).
+        let constant = |this: &Self, e: &Expr| {
+            this.constant_value(e)
+                .map(i128::from)
+                .or_else(|| Self::fit_literal(e))
+        };
         for (operand, lit) in [(lhs, rhs), (rhs, lhs)] {
             // Only flag a bare constant against a sized runtime operand.
-            if Self::fit_literal(operand).is_some() {
+            if constant(self, operand).is_some() {
                 continue;
             }
-            let Some(v) = Self::fit_literal(lit) else {
+            let Some(v) = constant(self, lit) else {
                 continue;
             };
             if let Ty::Array {

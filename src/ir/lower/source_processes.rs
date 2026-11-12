@@ -12352,6 +12352,26 @@ fn value_ref_with_type_inner(
                 if context.constant_stack.insert(definition) {
                     let value = value_ref_with_type(initializer, process, context, ty.as_ref());
                     context.constant_stack.remove(&definition);
+                    // A table keeps its declared labels: `const UP:
+                    // unsigned[8][1..4]` is indexed from 1, which its
+                    // literal, labelled from 0, does not say (#619).
+                    if let Some(declared) = constant_declared_type(definition, context) {
+                        if let Some(mut layout) =
+                            context.process_ir.value_layouts[value.0 as usize].clone()
+                        {
+                            let mut aliases = std::collections::HashSet::new();
+                            if apply_process_declared_ranges(
+                                &mut layout,
+                                declared,
+                                context,
+                                &mut aliases,
+                            )
+                            .is_some()
+                            {
+                                context.process_ir.value_layouts[value.0 as usize] = Some(layout);
+                            }
+                        }
+                    }
                     return value;
                 }
             }
@@ -14423,6 +14443,30 @@ fn procedural_sensitivity(process: &ProcessCfg, ir: &ProcessIr) -> Vec<ProcessSe
         }
     }
     sensitivity
+}
+
+/// The type a constant declares, at module level or in an impl.
+fn constant_declared_type<'a>(
+    definition: crate::resolve::DefId,
+    context: &LoweringContext<'a>,
+) -> Option<&'a ast::Type> {
+    let declared = |constant: &'a ast::ConstDecl| {
+        (context.resolved.declared(constant.name.span) == Some(definition)).then_some(&constant.ty)
+    };
+    context
+        .modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .find_map(|item| match item {
+            ast::Item::Const(constant) => declared(constant),
+            ast::Item::Impl(implementation) => {
+                implementation.items.iter().find_map(|member| match member {
+                    ast::ImplItem::Const(constant) => declared(constant),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
 }
 
 #[cfg(test)]

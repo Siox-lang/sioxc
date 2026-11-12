@@ -320,6 +320,17 @@ impl<'a> Checker<'a> {
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
             }
             Item::Impl(im) => {
+                // An impl's own constants are constants like a module's: a
+                // value checked against a width (`let k: unsigned[4] =
+                // LIMIT` with `LIMIT = 20`) passed and truncated (#657).
+                for item in &im.items {
+                    if let ImplItem::Const(constant) = item {
+                        if let Some(id) = self.resolved.declared(constant.name.span) {
+                            self.const_types.insert(id, constant.ty.clone());
+                            self.const_values.insert(id, constant.value.clone());
+                        }
+                    }
+                }
                 if matches!(im.target, Type::Indexed { index: None, .. }) {
                     for it in &im.items {
                         if let ImplItem::Fn(f) = it {
