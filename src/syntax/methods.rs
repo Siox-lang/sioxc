@@ -104,13 +104,69 @@ impl Spans {
 /// `impl Doubler for Pt` where `type Pt = Point;` implements `Point`: an
 /// alias is transparent, but the impl was filed under the alias's name, so
 /// `p.double()`, `Pt::double(p)` and a `T: Doubler` bound on a `Point` all
-/// failed (#490). A non-generic alias of a named type, declared in the
-/// impl's module, is replaced by that type, through chains of aliases.
-// ponytail: an alias imported from another module, or a generic one, is
-// left as written.
+/// failed (#490). A non-generic alias of a named type is replaced by that
+/// type, through chains of aliases: declared in the impl's module,
+/// imported (`use types_mod::Pt;`), or named by path (`types_mod::Pt`),
+/// which were left as written (#616).
+// ponytail: a generic alias is left as written.
 pub fn impl_aliases(modules: &mut [Module]) {
+    fn joined(segments: &[Ident]) -> String {
+        segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+    // Every alias by its qualified name, its target qualified by its module
+    // when it names a type declared there, so it reads the same elsewhere.
+    let mut qualified: HashMap<String, Type> = HashMap::new();
+    for module in modules.iter() {
+        let declared: HashSet<&str> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct(declaration) => Some(declaration.name.text.as_str()),
+                Item::Enum(declaration) => Some(declaration.name.text.as_str()),
+                Item::Entity(declaration) => Some(declaration.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for item in &module.items {
+            let Item::Using(Using {
+                kind:
+                    UsingKind::Alias {
+                        name,
+                        params,
+                        ty: Type::Path(path),
+                    },
+                ..
+            }) = item
+            else {
+                continue;
+            };
+            if !params.params.is_empty() {
+                continue;
+            }
+            let mut target = path.clone();
+            if let [only] = path.segments.as_slice() {
+                if declared.contains(only.text.as_str()) {
+                    target.segments = module
+                        .path
+                        .segments
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(only.clone()))
+                        .collect();
+                }
+            }
+            qualified.insert(
+                format!("{}::{}", joined(&module.path.segments), name.text),
+                Type::Path(target),
+            );
+        }
+    }
     for module in modules {
-        let aliases: HashMap<String, Type> = module
+        let mut aliases: HashMap<String, Type> = module
             .items
             .iter()
             .filter_map(|item| match item {
@@ -123,21 +179,44 @@ pub fn impl_aliases(modules: &mut [Module]) {
                 _ => None,
             })
             .collect();
-        if aliases.is_empty() {
+        for item in &module.items {
+            let Item::Using(Using {
+                kind: UsingKind::Import { base, names },
+                ..
+            }) = item
+            else {
+                continue;
+            };
+            for imported in names.iter().filter(|imported| !imported.glob) {
+                let full: Vec<Ident> = base
+                    .segments
+                    .iter()
+                    .chain(&imported.via)
+                    .chain(std::iter::once(&imported.name))
+                    .cloned()
+                    .collect();
+                if let Some(target) = qualified.get(&joined(&full)) {
+                    let local = imported.local.as_ref().unwrap_or(&imported.name);
+                    aliases.insert(local.text.clone(), target.clone());
+                }
+            }
+        }
+        if aliases.is_empty() && qualified.is_empty() {
             continue;
         }
         for item in &mut module.items {
             let Item::Impl(implementation) = item else {
                 continue;
             };
-            for _ in 0..aliases.len() {
+            for _ in 0..=aliases.len() + qualified.len() {
                 let Type::Path(path) = &implementation.target else {
                     break;
                 };
-                let [segment] = path.segments.as_slice() else {
-                    break;
+                let target = match path.segments.as_slice() {
+                    [segment] => aliases.get(&segment.text),
+                    segments => qualified.get(&joined(segments)),
                 };
-                let Some(target) = aliases.get(&segment.text) else {
+                let Some(target) = target else {
                     break;
                 };
                 implementation.target = target.clone();
@@ -300,6 +379,36 @@ pub fn struct_defaults(modules: &mut [Module]) {
                 }
                 true
             });
+        }
+    }
+}
+
+/// `Self::make(42)` in `impl Foo` is `Foo::make(42)`: `Self` resolved as a
+/// local, so a static call through it found no function and did not lower
+/// (#659). Written out once, before resolution, for an impl whose target is
+/// a plain path; a generic impl keeps `Self`.
+pub fn self_paths(modules: &mut [Module]) {
+    for module in modules {
+        for item in &mut module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            let Type::Path(target) = &implementation.target else {
+                continue;
+            };
+            let target = target.segments.clone();
+            let mut rewrite = |e: &mut Expr| {
+                if let Expr::Path(path) = e {
+                    if path.segments.len() >= 2 && path.segments[0].text == "Self" {
+                        let rest = path.segments.split_off(1);
+                        path.segments = target.iter().cloned().chain(rest).collect();
+                    }
+                }
+                true
+            };
+            for member in &mut implementation.items {
+                crate::syntax::walk::walk_impl_item(member, &mut rewrite);
+            }
         }
     }
 }
