@@ -1314,6 +1314,12 @@ impl GenericArg {
                     index: Some(index.clone()),
                     span: *span,
                 }),
+                // `(integer, integer)` of `IndexAssign<integer, (integer,
+                // integer)>`: a tuple of types, written as a tuple (#637).
+                Expr::Tuple { elems, span } => Some(Type::Tuple {
+                    elems: elems.iter().map(expr_type).collect::<Option<_>>()?,
+                    span: *span,
+                }),
                 _ => None,
             }
         }
