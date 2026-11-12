@@ -326,6 +326,21 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether `value` calls a declared function anywhere in it. A type's
+    /// constructor or conversion (`ufixed(3)`, `unsigned[8](x)`) is no such
+    /// call: a constant built by one may fold where the testbench reads it
+    /// and not in these tables, and is not "a call that never returned".
+    fn calls_a_function(&self, value: &ast::Expr) -> bool {
+        let mut found = false;
+        crate::syntax::walk::walk_expr(&mut value.clone(), &mut |e: &mut ast::Expr| {
+            if let ast::Expr::Call { callee, .. } = e {
+                found |= self.free_fns.get(callee).is_some();
+            }
+            !found
+        });
+        found
+    }
+
     /// A constant computed by a call that never folded (a recursion that
     /// does not end, past the evaluator's depth) was dropped in silence: a
     /// width read from it was "unresolved", a read of it "no value named",
@@ -334,7 +349,7 @@ impl<'a> Lowering<'a> {
     /// impl's constant too (#715). Folded means any table holds it or a leaf
     /// of it (`K.a`, `M[0]`).
     pub(super) fn report_unfolded_constant(&mut self, key: &str, constant: &ast::ConstDecl) {
-        if self.has_const_leaves(key) || !calls_a_function(&constant.value) {
+        if self.has_const_leaves(key) || !self.calls_a_function(&constant.value) {
             return;
         }
         if !self.unfolded_constants.insert(constant.name.text.clone()) {
@@ -1456,14 +1471,4 @@ fn is_constant_value(value: &Expr) -> bool {
         }
         _ => false,
     }
-}
-
-/// Whether `value` calls a function anywhere in it.
-fn calls_a_function(value: &ast::Expr) -> bool {
-    let mut found = false;
-    crate::syntax::walk::walk_expr(&mut value.clone(), &mut |e: &mut ast::Expr| {
-        found |= matches!(e, ast::Expr::Call { .. });
-        !found
-    });
-    found
 }
