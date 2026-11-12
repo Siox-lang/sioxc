@@ -469,18 +469,43 @@ pub fn format_constructors(modules: &mut [Module]) {
             span: at,
         };
     }
-    /// Each assignment of a statement list, nested blocks included.
-    fn assigns(statements: &mut [Stmt], f: &mut impl FnMut(&Expr, &mut Expr)) {
+    /// Rewrite each constructor under `statements`: `let` initializers and
+    /// assignments, `scope` holding the declared type of every name visible
+    /// there (ports, signals, parameters, locals). Nested blocks see a copy.
+    fn walk(statements: &mut [Stmt], scope: &mut HashMap<String, Type>) {
         for statement in statements {
             match statement {
-                Stmt::Assign { target, value, .. } => f(target, value),
-                Stmt::Process(process) => assigns(&mut process.body.stmts, f),
+                Stmt::Let(declaration) => match &declaration.ty {
+                    Some(ty) => {
+                        if let Some(value) = &mut declaration.value {
+                            sized(ty, value);
+                        }
+                        scope.insert(declaration.name.text.clone(), ty.clone());
+                    }
+                    None => {
+                        scope.remove(&declaration.name.text);
+                    }
+                },
+                Stmt::Assign {
+                    target: Expr::Path(path),
+                    value,
+                    ..
+                } => {
+                    if let [name] = path.segments.as_slice() {
+                        if let Some(ty) = scope.get(&name.text) {
+                            sized(ty, value);
+                        }
+                    }
+                }
+                Stmt::Process(process) => walk(&mut process.body.stmts, &mut scope.clone()),
                 Stmt::If(chain) => {
                     let mut chain = Some(chain);
                     while let Some(current) = chain.take() {
-                        assigns(&mut current.then.stmts, f);
+                        walk(&mut current.then.stmts, &mut scope.clone());
                         match current.else_.as_deref_mut() {
-                            Some(ElseBranch::Block(block)) => assigns(&mut block.stmts, f),
+                            Some(ElseBranch::Block(block)) => {
+                                walk(&mut block.stmts, &mut scope.clone())
+                            }
                             Some(ElseBranch::If(nested)) => chain = Some(nested),
                             None => {}
                         }
@@ -488,15 +513,58 @@ pub fn format_constructors(modules: &mut [Module]) {
                 }
                 Stmt::Match(nested) => {
                     for arm in &mut nested.arms {
-                        assigns(&mut arm.body.stmts, f);
+                        walk(&mut arm.body.stmts, &mut scope.clone());
                     }
                 }
-                Stmt::For { body, .. } | Stmt::While { body, .. } => assigns(&mut body.stmts, f),
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    walk(&mut body.stmts, &mut scope.clone())
+                }
                 _ => {}
             }
         }
     }
-    // Each entity's ports by name, for the assignments of its impls.
+    /// A function's body, its typed parameters in scope.
+    fn function(declaration: &mut FnDecl, outer: &HashMap<String, Type>) {
+        let Some(body) = &mut declaration.body else {
+            return;
+        };
+        let mut scope = outer.clone();
+        for parameter in &declaration.params {
+            if let (Some(name), Some(ty)) = (&parameter.name, &parameter.ty) {
+                scope.insert(name.text.clone(), ty.clone());
+            }
+        }
+        walk(&mut body.stmts, &mut scope);
+    }
+    /// One impl member, `scope` holding the entity's ports and signals.
+    fn member(item: &mut ImplItem, scope: &HashMap<String, Type>) {
+        match item {
+            ImplItem::Let(declaration) => {
+                if let (Some(ty), Some(value)) = (&declaration.ty, &mut declaration.value) {
+                    sized(ty, value);
+                }
+            }
+            ImplItem::Const(constant) => sized(&constant.ty, &mut constant.value),
+            ImplItem::Fn(declaration) => function(declaration, scope),
+            ImplItem::Process(process) => walk(&mut process.body.stmts, &mut scope.clone()),
+            ImplItem::Stmt(statement) => walk(std::slice::from_mut(statement), &mut scope.clone()),
+            ImplItem::Block(block) => {
+                for item in &mut block.items {
+                    member(item, scope);
+                }
+            }
+            _ => {}
+        }
+    }
+    /// `GenTop` of `GenTop<N>` as of `Top`.
+    fn target_name(ty: &Type) -> Option<&str> {
+        match ty {
+            Type::Path(path) => path.segments.last().map(|name| name.text.as_str()),
+            Type::Generic { base, .. } => target_name(base),
+            _ => None,
+        }
+    }
+    // Each entity's ports by name, for the statements of its impls.
     let ports: HashMap<String, HashMap<String, Type>> = modules
         .iter()
         .flat_map(|module| &module.items)
@@ -512,65 +580,34 @@ pub fn format_constructors(modules: &mut [Module]) {
             _ => None,
         })
         .collect();
+    // Constants, generic impls, and locals assigned after their `let` were
+    // missed by a walk of top-level forms only (#706).
     for module in modules.iter_mut() {
         for item in &mut module.items {
             match item {
-                Item::Fn(function) => {
-                    if let Some(body) = &mut function.body {
-                        lets(&mut body.stmts, &mut |declaration: &mut LetDecl| {
-                            if let (Some(ty), Some(value)) =
-                                (&declaration.ty, &mut declaration.value)
-                            {
-                                sized(ty, value);
-                            }
-                        });
-                    }
-                }
+                Item::Const(constant) => sized(&constant.ty, &mut constant.value),
+                Item::Fn(declaration) => function(declaration, &HashMap::new()),
                 Item::Impl(implementation) => {
-                    // `y = ufixed(3)` of a port or signal `y: ufixed<8, 4>`.
-                    let mut declared: HashMap<String, Type> = match &implementation.target {
-                        Type::Path(path) => path
-                            .segments
-                            .last()
-                            .and_then(|name| ports.get(&name.text))
-                            .cloned()
-                            .unwrap_or_default(),
-                        _ => HashMap::new(),
-                    };
-                    for member in &implementation.items {
-                        if let ImplItem::Let(LetDecl {
-                            name, ty: Some(ty), ..
-                        }) = member
-                        {
-                            declared.insert(name.text.clone(), ty.clone());
+                    let mut scope: HashMap<String, Type> = target_name(&implementation.target)
+                        .and_then(|name| ports.get(name))
+                        .cloned()
+                        .unwrap_or_default();
+                    fn signals(items: &[ImplItem], scope: &mut HashMap<String, Type>) {
+                        for item in items {
+                            match item {
+                                ImplItem::Let(LetDecl {
+                                    name, ty: Some(ty), ..
+                                }) => {
+                                    scope.insert(name.text.clone(), ty.clone());
+                                }
+                                ImplItem::Block(block) => signals(&block.items, scope),
+                                _ => {}
+                            }
                         }
                     }
-                    for member in &mut implementation.items {
-                        member_lets(member, &mut |declaration: &mut LetDecl| {
-                            if let (Some(ty), Some(value)) =
-                                (&declaration.ty, &mut declaration.value)
-                            {
-                                sized(ty, value);
-                            }
-                        });
-                        let mut assigned = |target: &Expr, value: &mut Expr| {
-                            if let Expr::Path(path) = target {
-                                if let [name] = path.segments.as_slice() {
-                                    if let Some(ty) = declared.get(&name.text) {
-                                        sized(ty, value);
-                                    }
-                                }
-                            }
-                        };
-                        match member {
-                            ImplItem::Stmt(statement) => {
-                                assigns(std::slice::from_mut(statement), &mut assigned)
-                            }
-                            ImplItem::Process(process) => {
-                                assigns(&mut process.body.stmts, &mut assigned)
-                            }
-                            _ => {}
-                        }
+                    signals(&implementation.items, &mut scope);
+                    for item in &mut implementation.items {
+                        member(item, &scope);
                     }
                 }
                 _ => {}
