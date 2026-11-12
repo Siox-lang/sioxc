@@ -579,6 +579,7 @@ impl Compiler {
             result.diagnostics.emit(warning);
         }
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
+        crate::syntax::methods::format_constructors(&mut result.modules);
         crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         crate::resolve::rewrite_implicit_fields(&mut result.modules, &resolved);
