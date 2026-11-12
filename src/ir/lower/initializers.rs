@@ -656,7 +656,25 @@ impl<'a> Lowering<'a> {
             // Only an integer one with a fixed scale folded, so `const MEM:
             // Bytes = 4kB` read 4 and `1.5ns` did not fold at all (#247).
             ast::Expr::SuffixLit { text, suffix, .. } => {
-                let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
+                let builtin = ast::suffix_scale(&suffix.text);
+                // A user `impl Suffix` scales by its own body: `1.5scale10`
+                // read as unscaled 1.5 and did not fold, and `2.0scale10` as
+                // 2 (#716). The fixed-scale units keep the exact path below.
+                if builtin.is_none() {
+                    if let Some(value) =
+                        self.suffix_impls
+                            .get(&suffix.text)
+                            .and_then(|(_, function)| {
+                                super::source_processes::fold_real_suffix(function, text)
+                            })
+                    {
+                        return Some(Expr::Real(value));
+                    }
+                    if let Some(Val::Scalar(value)) = self.inline_suffix(expression) {
+                        return Some(value);
+                    }
+                }
+                let scale = builtin.unwrap_or(1);
                 if text.contains('.') {
                     let scaled = text.replace('_', "").parse::<f64>().ok()? * scale as f64;
                     return (scaled.fract() == 0.0 && scaled >= 0.0 && scaled < u64::MAX as f64)
@@ -709,6 +727,8 @@ impl<'a> Lowering<'a> {
         match self.lower_const_value(expression, &self.cur_env) {
             Some(Expr::WideConst(words)) => Some(words),
             Some(Expr::Const(value)) => Some(vec![value]),
+            // A `real` constant initializes with its IEEE bits (#716).
+            Some(Expr::Real(value)) => Some(vec![value.to_bits()]),
             _ => self
                 .const_init_value(expression, target, is_char)
                 .map(|value| vec![value]),

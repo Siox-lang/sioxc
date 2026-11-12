@@ -1138,6 +1138,32 @@ fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: u64) ->
     None
 }
 
+/// A `real` suffix literal (`2.0scale10`) folded through its impl's body,
+/// the evaluator a testbench folds it with, so a hardware constant reads
+/// the same value (#716). `None` for a body it cannot fold.
+pub(super) fn fold_real_suffix(function: &ast::FnDecl, text: &str) -> Option<f64> {
+    let parameter = function
+        .params
+        .iter()
+        .find(|parameter| !parameter.is_self)?;
+    if parameter.ty.as_ref().and_then(type_leaf) != Some("real") {
+        return None;
+    }
+    let suffix = ConstantSuffix {
+        target: function
+            .ret
+            .as_ref()
+            .and_then(type_leaf)
+            .unwrap_or("real")
+            .to_string(),
+        parameter: parameter.name.as_ref()?.text.clone(),
+        domain: SuffixDomain::Real,
+        body: function.body.clone()?,
+        function: function.clone(),
+    };
+    eval_real_suffix_block(&suffix.body, &suffix, real_literal(text)?)
+}
+
 fn real_literal(text: &str) -> Option<f64> {
     text.replace('_', "").parse().ok()
 }
