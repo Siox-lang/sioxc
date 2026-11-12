@@ -1001,10 +1001,10 @@ impl<'a> Lowering<'a> {
                     .or_default()
                     .push((label, value.clone()));
             }
-            if let Expr::Const(word) = &value {
-                if let Ok(narrow) = i64::try_from(*word) {
-                    self.consts.insert(key.clone(), narrow);
-                }
+            // A leaf bound through its layout is canonical, not a bare
+            // `Const`, and was left out: `M[0][1] + 1` named nothing (#701).
+            if let Some(narrow) = self.constant_expr(&value) {
+                self.consts.insert(key.clone(), narrow);
             }
             self.const_values.insert(key, value);
         }
@@ -1161,28 +1161,39 @@ impl<'a> Lowering<'a> {
             // A table of structs (`const SA: S[2] = [S { .a = 1 }, ..]`):
             // one value per element field, keyed as `SA[0].a` reads it.
             // Nothing folded it, and the read had no hardware form (#229).
+            // All or nothing: leaves kept from a table that then failed
+            // marked it folded, and the general path never ran for the rest
+            // (#700). A spread (`..BASE`) is the general path's (#699).
             if let ast::Type::Indexed { base: element, .. } = &constant.ty {
-                let mut folded = false;
+                let mut folded = Vec::new();
                 for (position, elem) in elems.iter().enumerate() {
-                    let ast::Expr::Construct { args, .. } = elem else {
+                    let ast::Expr::Construct {
+                        args, spread: None, ..
+                    } = elem
+                    else {
                         return false;
                     };
                     let Some(fields) = self.const_struct_fields(element, args) else {
                         return false;
                     };
                     for (field, value) in fields {
-                        let key = format!("{name}[{position}].{field}");
-                        if let Some(narrow) = self.eval_const(&value, scope) {
-                            self.consts.insert(key.clone(), narrow);
-                        }
                         let Some(lowered) = self.lower_const_value(&value, scope) else {
                             return false;
                         };
-                        self.const_values.insert(key, lowered);
-                        folded = true;
+                        folded.push((
+                            format!("{name}[{position}].{field}"),
+                            self.eval_const(&value, scope),
+                            lowered,
+                        ));
                     }
                 }
-                if folded {
+                if !folded.is_empty() {
+                    for (key, narrow, lowered) in folded {
+                        if let Some(narrow) = narrow {
+                            self.consts.insert(key.clone(), narrow);
+                        }
+                        self.const_values.insert(key, lowered);
+                    }
                     return true;
                 }
             }
@@ -1209,7 +1220,10 @@ impl<'a> Lowering<'a> {
                 return false;
             };
             return self.insert_const_fields(name, fields, scope);
-        } else if let ast::Expr::Construct { args, .. } = &constant.value {
+        } else if let ast::Expr::Construct {
+            args, spread: None, ..
+        } = &constant.value
+        {
             // `const K: Pair = { .a = 4, .b = 5 };` — a struct constant is one
             // folded value per field, keyed by the dotted path a read spells.
             // Nothing folded it before, so the constant never entered any
