@@ -225,6 +225,53 @@ pub fn impl_aliases(modules: &mut [Module]) {
     }
 }
 
+/// Each `let` of a statement list, nested blocks included.
+fn lets(statements: &mut [Stmt], f: &mut impl FnMut(&mut LetDecl)) {
+    for statement in statements {
+        match statement {
+            Stmt::Let(declaration) => f(declaration),
+            Stmt::Process(process) => lets(&mut process.body.stmts, f),
+            Stmt::If(chain) => {
+                let mut chain = Some(chain);
+                while let Some(current) = chain.take() {
+                    lets(&mut current.then.stmts, f);
+                    match current.else_.as_deref_mut() {
+                        Some(ElseBranch::Block(block)) => lets(&mut block.stmts, f),
+                        Some(ElseBranch::If(nested)) => chain = Some(nested),
+                        None => {}
+                    }
+                }
+            }
+            Stmt::Match(nested) => {
+                for arm in &mut nested.arms {
+                    lets(&mut arm.body.stmts, f);
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => lets(&mut body.stmts, f),
+            _ => {}
+        }
+    }
+}
+/// Each `let` of an impl member, a function's or a process's included.
+fn member_lets(member: &mut ImplItem, f: &mut impl FnMut(&mut LetDecl)) {
+    match member {
+        ImplItem::Let(declaration) => f(declaration),
+        ImplItem::Fn(function) => {
+            if let Some(body) = &mut function.body {
+                lets(&mut body.stmts, f);
+            }
+        }
+        ImplItem::Process(process) => lets(&mut process.body.stmts, f),
+        ImplItem::Stmt(statement) => lets(std::slice::from_mut(statement), f),
+        ImplItem::Block(block) => {
+            for item in &mut block.items {
+                member_lets(item, f);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A struct's own `impl Default` is its default everywhere (spec 3.29):
 /// `let p: Pt;` and `Pt()` are written `Pt::default()`, which both lowering
 /// paths call. They built the structural all-zero default instead (#569).
@@ -277,50 +324,6 @@ pub fn struct_defaults(modules: &mut [Module]) {
         });
         path
     };
-    fn lets(statements: &mut [Stmt], f: &mut impl FnMut(&mut LetDecl)) {
-        for statement in statements {
-            match statement {
-                Stmt::Let(declaration) => f(declaration),
-                Stmt::Process(process) => lets(&mut process.body.stmts, f),
-                Stmt::If(chain) => {
-                    let mut chain = Some(chain);
-                    while let Some(current) = chain.take() {
-                        lets(&mut current.then.stmts, f);
-                        match current.else_.as_deref_mut() {
-                            Some(ElseBranch::Block(block)) => lets(&mut block.stmts, f),
-                            Some(ElseBranch::If(nested)) => chain = Some(nested),
-                            None => {}
-                        }
-                    }
-                }
-                Stmt::Match(nested) => {
-                    for arm in &mut nested.arms {
-                        lets(&mut arm.body.stmts, f);
-                    }
-                }
-                Stmt::For { body, .. } | Stmt::While { body, .. } => lets(&mut body.stmts, f),
-                _ => {}
-            }
-        }
-    }
-    fn member_lets(member: &mut ImplItem, f: &mut impl FnMut(&mut LetDecl)) {
-        match member {
-            ImplItem::Let(declaration) => f(declaration),
-            ImplItem::Fn(function) => {
-                if let Some(body) = &mut function.body {
-                    lets(&mut body.stmts, f);
-                }
-            }
-            ImplItem::Process(process) => lets(&mut process.body.stmts, f),
-            ImplItem::Stmt(statement) => lets(std::slice::from_mut(statement), f),
-            ImplItem::Block(block) => {
-                for item in &mut block.items {
-                    member_lets(item, f);
-                }
-            }
-            _ => {}
-        }
-    }
     let mut give_default = |declaration: &mut LetDecl| {
         if declaration.value.is_some() {
             return;
@@ -408,6 +411,169 @@ pub fn self_paths(modules: &mut [Module]) {
             };
             for member in &mut implementation.items {
                 crate::syntax::walk::walk_impl_item(member, &mut rewrite);
+            }
+        }
+    }
+}
+
+/// `let a: ufixed<8, 4> = ufixed(42);` builds its declared format, as the
+/// written `ufixed<8, 4>(42)` does: the unsized constructor is given the
+/// declared range here, after desugaring (`ufixed[3..-4]`) and before
+/// checking, so every stage sees the sized constructor. Rewritten after
+/// checking, a testbench still built it from the unsized call's types and
+/// did not lower (#638, after #532).
+pub fn format_constructors(modules: &mut [Module]) {
+    // `ufixed(42)` of a declared `ufixed[3..-4]`: the sized constructor.
+    fn sized(declared: &Type, value: &mut Expr) {
+        let Type::Indexed {
+            base,
+            index: Some(index),
+            ..
+        } = declared
+        else {
+            return;
+        };
+        // Only a range, as a format is by here: `let bits: unsigned[N] =
+        // unsigned(value)` reads raw bits and stays as written.
+        if !matches!(index.as_ref(), Expr::Range { .. }) {
+            return;
+        }
+        let Type::Path(family) = base.as_ref() else {
+            return;
+        };
+        let Expr::Call {
+            callee,
+            type_args,
+            args,
+            qualifier: None,
+            ..
+        } = value
+        else {
+            return;
+        };
+        let Expr::Path(called) = callee.as_ref() else {
+            return;
+        };
+        let same = matches!(
+            (family.segments.last(), called.segments.as_slice()),
+            (Some(declared), [name]) if declared.text == name.text
+        );
+        if !same || !type_args.is_empty() || args.len() != 1 {
+            return;
+        }
+        let at = called.span;
+        let base = Expr::Path(called.clone());
+        **callee = Expr::Index {
+            base: Box::new(base),
+            index: index.clone(),
+            span: at,
+        };
+    }
+    /// Each assignment of a statement list, nested blocks included.
+    fn assigns(statements: &mut [Stmt], f: &mut impl FnMut(&Expr, &mut Expr)) {
+        for statement in statements {
+            match statement {
+                Stmt::Assign { target, value, .. } => f(target, value),
+                Stmt::Process(process) => assigns(&mut process.body.stmts, f),
+                Stmt::If(chain) => {
+                    let mut chain = Some(chain);
+                    while let Some(current) = chain.take() {
+                        assigns(&mut current.then.stmts, f);
+                        match current.else_.as_deref_mut() {
+                            Some(ElseBranch::Block(block)) => assigns(&mut block.stmts, f),
+                            Some(ElseBranch::If(nested)) => chain = Some(nested),
+                            None => {}
+                        }
+                    }
+                }
+                Stmt::Match(nested) => {
+                    for arm in &mut nested.arms {
+                        assigns(&mut arm.body.stmts, f);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => assigns(&mut body.stmts, f),
+                _ => {}
+            }
+        }
+    }
+    // Each entity's ports by name, for the assignments of its impls.
+    let ports: HashMap<String, HashMap<String, Type>> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Entity(entity) => Some((
+                entity.name.text.clone(),
+                entity
+                    .ports
+                    .iter()
+                    .map(|port| (port.name.text.clone(), port.ty.clone()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    for module in modules.iter_mut() {
+        for item in &mut module.items {
+            match item {
+                Item::Fn(function) => {
+                    if let Some(body) = &mut function.body {
+                        lets(&mut body.stmts, &mut |declaration: &mut LetDecl| {
+                            if let (Some(ty), Some(value)) =
+                                (&declaration.ty, &mut declaration.value)
+                            {
+                                sized(ty, value);
+                            }
+                        });
+                    }
+                }
+                Item::Impl(implementation) => {
+                    // `y = ufixed(3)` of a port or signal `y: ufixed<8, 4>`.
+                    let mut declared: HashMap<String, Type> = match &implementation.target {
+                        Type::Path(path) => path
+                            .segments
+                            .last()
+                            .and_then(|name| ports.get(&name.text))
+                            .cloned()
+                            .unwrap_or_default(),
+                        _ => HashMap::new(),
+                    };
+                    for member in &implementation.items {
+                        if let ImplItem::Let(LetDecl {
+                            name, ty: Some(ty), ..
+                        }) = member
+                        {
+                            declared.insert(name.text.clone(), ty.clone());
+                        }
+                    }
+                    for member in &mut implementation.items {
+                        member_lets(member, &mut |declaration: &mut LetDecl| {
+                            if let (Some(ty), Some(value)) =
+                                (&declaration.ty, &mut declaration.value)
+                            {
+                                sized(ty, value);
+                            }
+                        });
+                        let mut assigned = |target: &Expr, value: &mut Expr| {
+                            if let Expr::Path(path) = target {
+                                if let [name] = path.segments.as_slice() {
+                                    if let Some(ty) = declared.get(&name.text) {
+                                        sized(ty, value);
+                                    }
+                                }
+                            }
+                        };
+                        match member {
+                            ImplItem::Stmt(statement) => {
+                                assigns(std::slice::from_mut(statement), &mut assigned)
+                            }
+                            ImplItem::Process(process) => {
+                                assigns(&mut process.body.stmts, &mut assigned)
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
