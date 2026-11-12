@@ -904,6 +904,18 @@ impl<'a> Lowering<'a> {
                 .collect();
             return Some(Val::Fields(fields));
         }
+        // The other way, a newtype built from its base (`Outer(inner)` of
+        // `struct Outer(Inner)`): with no fields of its own it is the
+        // base's value, as an enum's is. It lowered to nothing and crashed
+        // hardware (#604).
+        if self.struct_derives_from(target, src)
+            && self
+                .structs
+                .get(target)
+                .is_some_and(|declaration| declaration.fields.is_empty())
+        {
+            return Some(self.lower_val_env(arg, env));
+        }
         None
     }
 
