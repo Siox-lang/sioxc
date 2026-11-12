@@ -1689,6 +1689,7 @@ fn lexicographic(operands: &[(String, String)], last: &str) -> String {
 /// local back, so the register takes its final value at the edge. A write
 /// anywhere but under a clock edge would be a feedback loop, and is an error.
 pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
+    let writers = parameter_writers(modules);
     for module in modules.iter_mut() {
         let tests: HashSet<String> = module
             .items
@@ -1736,7 +1737,7 @@ pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
                         format!("process#{}", *count - 1)
                     }
                 };
-                registers.extend(process_registers(process, &label, sink));
+                registers.extend(process_registers(process, &label, &writers, sink));
             }
             implementation
                 .items
@@ -1749,6 +1750,7 @@ pub fn hardware_statics(modules: &mut [Module], sink: &mut DiagnosticSink) {
 fn process_registers(
     process: &mut ProcessDecl,
     label: &str,
+    writers: &HashMap<String, Vec<usize>>,
     sink: &mut DiagnosticSink,
 ) -> Vec<LetDecl> {
     let mut registers = Vec::new();
@@ -1822,9 +1824,90 @@ fn process_registers(
         })
         .collect();
     for statement in &mut process.body.stmts {
-        clock_write_backs(statement, &names, &write_backs, false, sink);
+        clock_write_backs(statement, &names, writers, &write_backs, false, sink);
     }
     registers
+}
+
+/// Each free function's parameters its body assigns, by position: passing a
+/// static there writes it (copy-in/copy-out), so `inc_free(c);` outside an
+/// edge is a static written without one (#694).
+fn parameter_writers(modules: &[Module]) -> HashMap<String, Vec<usize>> {
+    fn writes(statements: &[Stmt], name: &str) -> bool {
+        statements.iter().any(|statement| match statement {
+            Stmt::Assign { target, .. } => assigned_roots(target).contains(&name),
+            Stmt::If(chain) => {
+                let mut link = Some(chain);
+                let mut found = false;
+                while let Some(current) = link.take() {
+                    found |= writes(&current.then.stmts, name);
+                    match current.else_.as_deref() {
+                        Some(ElseBranch::Block(block)) => found |= writes(&block.stmts, name),
+                        Some(ElseBranch::If(nested)) => link = Some(nested),
+                        None => {}
+                    }
+                }
+                found
+            }
+            Stmt::Match(nested) => nested.arms.iter().any(|arm| writes(&arm.body.stmts, name)),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => writes(&body.stmts, name),
+            _ => false,
+        })
+    }
+    let mut out = HashMap::new();
+    for module in modules {
+        for item in &module.items {
+            let Item::Fn(function) = item else {
+                continue;
+            };
+            let Some(body) = &function.body else {
+                continue;
+            };
+            let written: Vec<usize> = function
+                .params
+                .iter()
+                .filter(|parameter| !parameter.is_self)
+                .enumerate()
+                .filter(|(_, parameter)| {
+                    parameter
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| writes(&body.stmts, &name.text))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if !written.is_empty() {
+                out.insert(function.name.text.clone(), written);
+            }
+        }
+    }
+    out
+}
+
+/// The variables an assignment target writes: `x` of `x.f[i]`, each of
+/// `(a, b)` and `{a, b}`.
+fn assigned_roots(target: &Expr) -> Vec<&str> {
+    match target {
+        Expr::Tuple { elems: parts, .. } | Expr::Concat { parts, .. } => {
+            parts.iter().flat_map(assigned_roots).collect()
+        }
+        _ => static_root(target).into_iter().collect(),
+    }
+}
+
+/// `x` of `x`, `x.f`, `x[i]`, `x.f[i].g`.
+fn static_root(expression: &Expr) -> Option<&str> {
+    let mut root = expression;
+    while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+        root = base;
+    }
+    match root {
+        Expr::Path(path) => match path.segments.as_slice() {
+            [segment] => Some(segment.text.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Append the write-backs to every clocked branch under `statement`, and
@@ -1834,6 +1917,7 @@ fn process_registers(
 fn clock_write_backs(
     statement: &mut Stmt,
     names: &[String],
+    writers: &HashMap<String, Vec<usize>>,
     write_backs: &[Stmt],
     clocked: bool,
     sink: &mut DiagnosticSink,
@@ -1844,7 +1928,7 @@ fn clock_write_backs(
             while let Some(current) = link {
                 let clocked_link = chain_has_edge(current);
                 for inner in &mut current.then.stmts {
-                    clock_write_backs(inner, names, write_backs, clocked_link, sink);
+                    clock_write_backs(inner, names, writers, write_backs, clocked_link, sink);
                 }
                 if is_edge(&current.cond) {
                     // A next-state update: the local's final value.
@@ -1861,7 +1945,7 @@ fn clock_write_backs(
                     Some(ElseBranch::If(next)) => Some(next),
                     Some(ElseBranch::Block(block)) => {
                         for inner in &mut block.stmts {
-                            clock_write_backs(inner, names, write_backs, false, sink);
+                            clock_write_backs(inner, names, writers, write_backs, false, sink);
                         }
                         None
                     }
@@ -1873,13 +1957,13 @@ fn clock_write_backs(
             let mut link = Some(chain);
             while let Some(current) = link {
                 for inner in &mut current.then.stmts {
-                    clock_write_backs(inner, names, write_backs, clocked, sink);
+                    clock_write_backs(inner, names, writers, write_backs, clocked, sink);
                 }
                 link = match current.else_.as_deref_mut() {
                     Some(ElseBranch::If(next)) => Some(next),
                     Some(ElseBranch::Block(block)) => {
                         for inner in &mut block.stmts {
-                            clock_write_backs(inner, names, write_backs, clocked, sink);
+                            clock_write_backs(inner, names, writers, write_backs, clocked, sink);
                         }
                         None
                     }
@@ -1890,67 +1974,79 @@ fn clock_write_backs(
         Stmt::Match(m) => {
             for arm in &mut m.arms {
                 for inner in &mut arm.body.stmts {
-                    clock_write_backs(inner, names, write_backs, clocked, sink);
+                    clock_write_backs(inner, names, writers, write_backs, clocked, sink);
                 }
             }
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             for inner in &mut body.stmts {
-                clock_write_backs(inner, names, write_backs, clocked, sink);
+                clock_write_backs(inner, names, writers, write_backs, clocked, sink);
             }
         }
         // `c.inc();`: a method call made for its effect writes its receiver,
         // as an assignment does; outside an edge it was a feedback loop the
         // check did not see (#633).
-        Stmt::Expr(Expr::Call { callee, span, .. }) if !clocked => {
-            let Expr::Field { base, field, .. } = callee.as_ref() else {
-                return;
+        // A call made for its effect writes what it is handed: the receiver
+        // of `c.inc();` (#633) or `Counter::inc(c);`, and a free function's
+        // argument in a position its body assigns (`inc_free(c);`, #694).
+        Stmt::Expr(Expr::Call {
+            callee, args, span, ..
+        }) if !clocked => {
+            let written: Vec<(&str, String)> = match callee.as_ref() {
+                Expr::Field { base, field, .. } => static_root(base)
+                    .map(|root| (root, format!("{root}.{}()", field.text)))
+                    .into_iter()
+                    .collect(),
+                Expr::Path(path) if path.segments.len() > 1 => args
+                    .first()
+                    .and_then(static_root)
+                    .map(|root| (root, format!("{}({root})", path_text(path))))
+                    .into_iter()
+                    .collect(),
+                Expr::Path(path) => match path.segments.as_slice() {
+                    [name] => writers
+                        .get(&name.text)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|position| args.get(*position).and_then(static_root))
+                        .map(|root| (root, format!("{}(..)", name.text)))
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
             };
-            let mut root = base.as_ref();
-            while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
-                root = base;
-            }
-            if let Expr::Path(path) = root {
-                if let [segment] = path.segments.as_slice() {
-                    if names.contains(&segment.text) {
-                        sink.emit(
-                            Diagnostic::error(format!(
-                                "a hardware `static let` is written only under a clock edge; \
-                                 `{}.{}()` may write `{}` here without one",
-                                segment.text, field.text, segment.text
-                            ))
-                            .at(*span)
-                            .help(
-                                "a register changes at an edge: call it inside \
-                                 `if clk.rising() { ... }`",
-                            ),
-                        );
-                    }
+            for (root, call) in written {
+                if names.iter().any(|name| name == root) {
+                    sink.emit(
+                        Diagnostic::error(format!(
+                            "a hardware `static let` is written only under a clock edge; \
+                             `{call}` may write `{root}` here without one"
+                        ))
+                        .at(*span)
+                        .help(
+                            "a register changes at an edge: call it inside \
+                             `if clk.rising() { ... }`",
+                        ),
+                    );
                 }
             }
         }
+        // `(a, b) = ..` and `{a, b} = ..` write each part (#694).
         Stmt::Assign { target, span, .. } if !clocked => {
-            let mut root = &*target;
-            while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
-                root = base;
-            }
-            if let Expr::Path(path) = root {
-                if let [segment] = path.segments.as_slice() {
-                    if names.contains(&segment.text) {
-                        sink.emit(
-                            Diagnostic::error(format!(
-                                "a hardware `static let` is written only under a clock edge; \
-                                 `{}` is written here without one",
-                                segment.text
-                            ))
-                            .at(*span)
-                            .help(
-                                "a register changes at an edge: write it inside \
-                                 `if clk.rising() { ... }`, or use an ordinary `let` for a \
-                                 value computed fresh each time",
-                            ),
-                        );
-                    }
+            for root in assigned_roots(target) {
+                if names.iter().any(|name| name == root) {
+                    sink.emit(
+                        Diagnostic::error(format!(
+                            "a hardware `static let` is written only under a clock edge; \
+                             `{root}` is written here without one"
+                        ))
+                        .at(*span)
+                        .help(
+                            "a register changes at an edge: write it inside \
+                             `if clk.rising() { ... }`, or use an ordinary `let` for a \
+                             value computed fresh each time",
+                        ),
+                    );
                 }
             }
         }
