@@ -622,6 +622,30 @@ impl<'a> Checker<'a> {
     /// out variant by variant; any other position is covered only by `_`.
     /// A domain too large to spell out needs an arm that matches anything.
     pub(super) fn tuple_arms_missing(&self, elems: &[Ty], arms: &[MatchArm]) -> Option<String> {
+        // A nested tuple (`(a, (b, c))`) is its leaves: as one position it
+        // was a value only `_` covered, and every exhaustive match of one was
+        // rejected (#609). An arm that does not flatten keeps that reading.
+        if elems.iter().any(|ty| matches!(ty, Ty::Tuple(_))) {
+            let mut leaves = Vec::new();
+            flatten_tuple_ty(elems, &mut leaves);
+            let flat: Option<Vec<MatchArm>> = arms
+                .iter()
+                .map(|arm| {
+                    let mut patterns = Vec::new();
+                    flatten_tuple_pattern(&arm.pattern, elems, &mut patterns)?;
+                    Some(MatchArm {
+                        pattern: Pattern::Tuple {
+                            elems: patterns,
+                            span: arm.span,
+                        },
+                        ..arm.clone()
+                    })
+                })
+                .collect();
+            if let Some(flat) = flat {
+                return self.tuple_arms_missing(&leaves, &flat);
+            }
+        }
         const LIMIT: usize = 4096;
         // Each position's values; `None` stands for "a value only `_` covers".
         let domains: Vec<Vec<Option<String>>> = elems
@@ -1031,5 +1055,46 @@ impl Checker<'_> {
         let id = self.resolved.resolved(path.span)?;
         (self.resolved.kind_of(id) == Some(DefKind::Const) || self.const_values.contains_key(&id))
             .then_some(id)
+    }
+}
+
+/// A tuple type's leaf element types, nested tuples flattened in order.
+fn flatten_tuple_ty(elems: &[Ty], out: &mut Vec<Ty>) {
+    for ty in elems {
+        match ty {
+            Ty::Tuple(inner) => flatten_tuple_ty(inner, out),
+            ty => out.push(ty.clone()),
+        }
+    }
+}
+
+/// A tuple pattern over `elems` as one pattern per leaf; `_` at a nested
+/// tuple covers each of its leaves. `None` for a shape that does not
+/// flatten position by position (an `or` of nested tuples).
+fn flatten_tuple_pattern(pattern: &Pattern, elems: &[Ty], out: &mut Vec<Pattern>) -> Option<()> {
+    fn leaves(ty: &Ty) -> usize {
+        match ty {
+            Ty::Tuple(inner) => inner.iter().map(leaves).sum(),
+            _ => 1,
+        }
+    }
+    match pattern {
+        Pattern::Tuple {
+            elems: patterns, ..
+        } if patterns.len() == elems.len() => {
+            for (pattern, ty) in patterns.iter().zip(elems) {
+                match ty {
+                    Ty::Tuple(inner) => flatten_tuple_pattern(pattern, inner, out)?,
+                    _ => out.push(pattern.clone()),
+                }
+            }
+            Some(())
+        }
+        Pattern::Wildcard => {
+            let count: usize = elems.iter().map(leaves).sum();
+            out.extend(std::iter::repeat_n(Pattern::Wildcard, count));
+            Some(())
+        }
+        _ => None,
     }
 }
