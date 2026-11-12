@@ -322,38 +322,37 @@ impl<'a> Lowering<'a> {
         // a width read from it was "unresolved", and a test did not lower
         // (#174). Say so at the constant.
         for (key, constant) in &constant_decls {
-            let folded = self.consts.contains_key(key)
-                || self.const_values.contains_key(key)
-                || self.consts_real.contains_key(key)
-                || self.const_arrays.contains_key(key)
-                || self.const_ranges.contains_key(key);
-            // A kernel scalar folds into the tables above, a `real` into
-            // `consts_real`: one that did not is unfolded, as an `integer`
-            // already was (#636). An aggregate's call may fold through a
-            // table this does not consult, so it is left alone.
-            let scalar = matches!(
-                &constant.ty,
-                ast::Type::Path(path) if path.segments.last().is_some_and(|s| {
-                    matches!(s.text.as_str(), "integer" | "natural" | "real" | "Bool")
-                })
-            );
-            if !folded && scalar && matches!(constant.value, ast::Expr::Call { .. }) {
-                self.unfolded_constants.insert(constant.name.text.clone());
-                self.sink.emit(
-                    crate::diag::Diagnostic::error(format!(
-                        "the value of `{}` could not be computed when the design is built",
-                        constant.name.text
-                    ))
-                    .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
-                    .at(ast::expr_span(&constant.value))
-                    .help(
-                        "a constant is folded at compile time: the call must return for \
-                         these arguments, within the evaluator's depth (a recursion that \
-                         never ends cannot)",
-                    ),
-                );
-            }
+            self.report_unfolded_constant(key, constant);
         }
+    }
+
+    /// A constant computed by a call that never folded (a recursion that
+    /// does not end, past the evaluator's depth) was dropped in silence: a
+    /// width read from it was "unresolved", a read of it "no value named",
+    /// and a test did not lower (#174, #636). Say so at the constant, once,
+    /// whatever its type, wherever the call sits in its value, and for an
+    /// impl's constant too (#715). Folded means any table holds it or a leaf
+    /// of it (`K.a`, `M[0]`).
+    pub(super) fn report_unfolded_constant(&mut self, key: &str, constant: &ast::ConstDecl) {
+        if self.has_const_leaves(key) || !calls_a_function(&constant.value) {
+            return;
+        }
+        if !self.unfolded_constants.insert(constant.name.text.clone()) {
+            return;
+        }
+        self.sink.emit(
+            crate::diag::Diagnostic::error(format!(
+                "the value of `{}` could not be computed when the design is built",
+                constant.name.text
+            ))
+            .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
+            .at(ast::expr_span(&constant.value))
+            .help(
+                "a constant is folded at compile time: the call must return for \
+                 these arguments, within the evaluator's depth (a recursion that \
+                 never ends cannot)",
+            ),
+        );
     }
 
     /// Register an impl's *static* associated fns (those without a `self`
@@ -928,7 +927,7 @@ impl<'a> Lowering<'a> {
 
     /// Whether a constant is already folded, whole or as leaves (`K.a`,
     /// `M[0][1]`).
-    fn has_const_leaves(&self, name: &str) -> bool {
+    pub(super) fn has_const_leaves(&self, name: &str) -> bool {
         let member = |key: &String| {
             key.strip_prefix(name).is_some_and(|rest| {
                 rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')
@@ -1457,4 +1456,14 @@ fn is_constant_value(value: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether `value` calls a function anywhere in it.
+fn calls_a_function(value: &ast::Expr) -> bool {
+    let mut found = false;
+    crate::syntax::walk::walk_expr(&mut value.clone(), &mut |e: &mut ast::Expr| {
+        found |= matches!(e, ast::Expr::Call { .. });
+        !found
+    });
+    found
 }
