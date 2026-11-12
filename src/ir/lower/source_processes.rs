@@ -11221,10 +11221,13 @@ fn inline_process_comparison(
     // Only the design's own comparisons, in the process's file: std's
     // operator bodies (a sign test, a float's fields) compare kernel words.
     let own = ast::expr_span(lhs).file == process.span.file;
-    // ponytail: an operand still holding a call (a function result) keeps
-    // the plain comparison; the CFG expands that call once, for the inner
-    // comparison, and a second reference from the rule lost its layout.
-    let holds_call = |root: ProcessValueId| {
+    // ponytail: an operand holding a call with an unsized result (`s.
+    // saturating_sub(100)`, `-> signed`) keeps the plain comparison: the
+    // CFG expands that call once, for the inner comparison, and the rule's
+    // second reference had no layout to read its companion through. A call
+    // with a sized result (`-> unsigned[4]`) takes the rule (#629); giving
+    // the unsized one its receiver's layout would retire this.
+    let holds_unsized_call = |root: ProcessValueId| {
         let mut seen = std::collections::HashSet::new();
         let mut pending = vec![root];
         while let Some(id) = pending.pop() {
@@ -11234,14 +11237,16 @@ fn inline_process_comparison(
             let Some(node) = context.process_ir.values.get(id.0 as usize) else {
                 continue;
             };
-            if matches!(node.kind, ProcessValueKind::Call { .. }) {
+            if matches!(node.kind, ProcessValueKind::Call { .. })
+                && !matches!(node.ty, Some(crate::types::Ty::Array { len, .. }) if len > 0)
+            {
                 return true;
             }
             pending.extend(crate::ir::process_value_dependencies(&node.kind));
         }
         false
     };
-    let own = own && !holds_call(left) && !holds_call(right);
+    let own = own && !holds_unsized_call(left) && !holds_unsized_call(right);
     let numeric_family = own
         && matches!(left_type, crate::types::Ty::Array { family: Some(family), .. }
         if context.design.array_element_of_family.contains_key(family)
@@ -11468,6 +11473,22 @@ fn inline_value_statements(
                 context,
                 declared.as_ref(),
             );
+            // A vector literal holding metavalues (`"0UX1"`) stays a string
+            // until a local's layout gives it its companion; as a bare value
+            // it had none and the call's block did not lower (#629). The CFG
+            // form declares the local.
+            if matches!(
+                &context.process_ir.values[value.0 as usize].kind,
+                ProcessValueKind::String(text) if !text.is_empty()
+            ) && matches!(
+                declared,
+                Some(crate::types::Ty::Array {
+                    family: Some(_),
+                    ..
+                })
+            ) {
+                return None;
+            }
             let definition = context.resolved.declared(declaration.name.span)?;
             context.value_bindings.last_mut()?.insert(definition, value);
             let layout = process_binding_layout(
