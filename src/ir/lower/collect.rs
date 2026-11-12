@@ -72,6 +72,7 @@ impl<'a> Lowering<'a> {
             source_values: std::cell::RefCell::new(source_values::SourceValues::default()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
             unfolded_constants: std::collections::HashSet::new(),
+            edge_guard: std::cell::RefCell::new(None),
             block_scopes: std::cell::RefCell::new(Vec::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             instance_array_facts: HashMap::new(),

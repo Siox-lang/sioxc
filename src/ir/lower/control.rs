@@ -481,7 +481,9 @@ impl<'a> Lowering<'a> {
                         // block took the new value whether or not the edge
                         // came (#605, #680), as the `else` form below does not.
                         None => {
-                            self.lower_event_block(&iff.then, Some(event.clone()), &mut updates);
+                            let outer = self.edge_guard.replace(Some(event.clone()));
+                            self.lower_event_block(&iff.then, None, &mut updates);
+                            self.edge_guard.replace(outer);
                             self.source_and(cond.clone(), event.clone(), span)
                         }
                         // `if clk.rising() { .. } else { .. }` runs its `else`
@@ -1150,7 +1152,14 @@ impl<'a> Lowering<'a> {
                         out.extend(updates);
                         continue;
                     }
-                    if self.assign_block_local(target, value, &cond) {
+                    // A local's value holds only with the edge (#605, #680);
+                    // the signal updates are guarded by the event block.
+                    let edge = self.edge_guard.borrow().clone();
+                    let local_cond = match edge {
+                        Some(edge) => Some(self.source_and(cond.clone(), edge, ast::stmt_span(s))),
+                        None => cond.clone(),
+                    };
+                    if self.assign_block_local(target, value, &local_cond) {
                         continue;
                     }
                     if let Some(leaves) = self.struct_assign_leaves(target, value) {

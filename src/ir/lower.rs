@@ -372,6 +372,9 @@ struct Lowering<'a> {
     /// Constants already reported as not folding (E-P021): a read of one is
     /// not reported again as an unknown name (#636).
     unfolded_constants: std::collections::HashSet<String>,
+    /// The edge of the event-controlled `if` being lowered without an
+    /// `else`: a block local written in it holds only with the edge.
+    edge_guard: std::cell::RefCell<Option<Expr>>,
     /// Lexical, storage-free values declared by `let` inside a hardware block.
     /// Each assignment replaces the binding with an expression (a conditional
     /// assignment becomes a `Select`), so event blocks retain next-state
