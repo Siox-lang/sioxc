@@ -225,17 +225,31 @@ fn parse_spec(spec: &str) -> Result<FormatSpec, String> {
         out.zero = true;
         at += 1;
     }
-    let number = |at: &mut usize| -> Option<u32> {
+    // No digits is `Ok(None)`; digits past `u32` are malformed, for a width
+    // as for a precision: the width was dropped without a word (#688).
+    let number = |at: &mut usize| -> Result<Option<u32>, ()> {
         let start = *at;
         while chars.get(*at).is_some_and(char::is_ascii_digit) {
             *at += 1;
         }
-        (start < *at).then(|| chars[start..*at].iter().collect::<String>().parse().ok())?
+        if start == *at {
+            return Ok(None);
+        }
+        chars[start..*at]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .map(Some)
+            .map_err(|_| ())
     };
-    out.width = number(&mut at);
+    out.width = number(&mut at).map_err(|()| malformed())?;
     if chars.get(at) == Some(&'.') {
         at += 1;
-        out.precision = Some(number(&mut at).ok_or_else(malformed)?);
+        out.precision = Some(
+            number(&mut at)
+                .map_err(|()| malformed())?
+                .ok_or_else(malformed)?,
+        );
     }
     out.kind = match chars.get(at) {
         None => FormatKind::Display,
@@ -269,6 +283,14 @@ mod tests {
         let parts = parts("{{}} {}");
         assert!(matches!(&parts[0], FormatPart::Text(text) if text == "{} "));
         assert!(matches!(&parts[1], FormatPart::Placeholder(spec) if spec.is_plain()));
+    }
+
+    #[test]
+    /// A width past `u32` is malformed, as a precision is (#688).
+    fn an_overflowing_width_is_malformed() {
+        assert!(parse_spec("<99999999999999999999").is_err());
+        assert!(parse_spec(".99999999999999999999").is_err());
+        assert!(parse_spec("<12").is_ok());
     }
 
     #[test]
