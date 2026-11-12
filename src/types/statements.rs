@@ -422,6 +422,7 @@ impl<'a> Checker<'a> {
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
                     self.check_type_layout(ty);
+                    self.record_type_attr_reads_in(ty, sym);
                     if !self.in_fn_body.get() {
                         self.check_storable(ty);
                     }

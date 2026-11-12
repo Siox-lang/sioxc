@@ -26,6 +26,15 @@ impl Checker<'_> {
             Expr::Path(path) if matches!(path.segments.as_slice(), [s] if s.text == "Self") => {
                 self.current_impl_owner.borrow().clone()?
             }
+            // `Packet'total_bytes`: a type named by its path declares it,
+            // where read as a value the name had no type (#606).
+            Expr::Path(path)
+                if self
+                    .type_key(&Type::Path(path.clone()))
+                    .is_some_and(|key| self.type_attrs.contains_key(&(key, name.to_string()))) =>
+            {
+                self.type_key(&Type::Path(path.clone()))?
+            }
             _ => self.ty_head(&self.type_of(base, sym))?,
         };
         let declaration = self.type_attrs.get(&(owner.clone(), name.to_string()))?;

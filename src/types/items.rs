@@ -655,6 +655,26 @@ impl<'a> Checker<'a> {
                 if path.segments.last().is_some_and(|s| s.text == "Char")))
     }
 
+    /// [`Self::record_type_attr_reads`] for every index of a declared type.
+    pub(super) fn record_type_attr_reads_in(&mut self, ty: &Type, sym: &HashMap<String, Ty>) {
+        match ty {
+            Type::Indexed { base, index, .. } => {
+                self.record_type_attr_reads_in(base, sym);
+                if let Some(index) = index {
+                    self.record_type_attr_reads(index, sym);
+                }
+            }
+            Type::Generic { base, .. } => self.record_type_attr_reads_in(base, sym),
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.record_type_attr_reads_in(elem, sym);
+                }
+            }
+            Type::View { target, .. } => self.record_type_attr_reads_in(target, sym),
+            Type::Path(_) => {}
+        }
+    }
+
     pub(super) fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -816,6 +836,33 @@ impl<'a> Checker<'a> {
         walk(index, &mut visit, &mut problems);
         for (span, message, code) in problems {
             self.error(code, span, message);
+        }
+        self.record_type_attr_reads(index, &HashMap::new());
+    }
+
+    /// A type attribute sizing a type (`unsigned[Packet'total_bytes]`, or
+    /// `unsigned[p'total_bytes]` with `p` in `sym`) is a read like any
+    /// other, expanded before lowering: unrecorded, the width stayed
+    /// unresolved and a testbench read it as 64 (#606).
+    pub(super) fn record_type_attr_reads(&mut self, index: &Expr, sym: &HashMap<String, Ty>) {
+        let mut reads = Vec::new();
+        let mut pending = vec![index];
+        while let Some(e) = pending.pop() {
+            match e {
+                Expr::SysAttr { base, attr, span } => {
+                    if let Some((owner, declaration)) = self.type_attr(base, &attr.text, sym) {
+                        reads.push((owner, declaration.clone(), *span));
+                    }
+                }
+                Expr::Binary { lhs, rhs, .. } => pending.extend([lhs.as_ref(), rhs.as_ref()]),
+                Expr::Unary { rhs, .. } => pending.push(rhs),
+                Expr::Range { lo, hi, .. } => pending.extend([lo.as_ref(), hi.as_ref()]),
+                Expr::Call { args, .. } => pending.extend(args.iter()),
+                _ => {}
+            }
+        }
+        for (owner, declaration, span) in reads {
+            self.check_type_attr_read(&owner, &declaration, span);
         }
     }
 
