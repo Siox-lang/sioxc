@@ -653,6 +653,26 @@ impl<'a> Lowering<'a> {
         span: crate::diag::Span,
     ) {
         let value = self.bind_block_value(value, &ty, span);
+        // A local from outside an edge-only `if clk.rising()` takes what it
+        // writes only with the edge (#605, #680), whichever statement writes
+        // it: an assignment, a method or procedure call, a destructuring
+        // (#689, #693). One guard here, not one per writer.
+        let guard = self.edge_guard.borrow().clone();
+        let value = match guard {
+            Some((edge, depth)) if scope_index < depth => {
+                let previous = self
+                    .block_scopes
+                    .borrow()
+                    .get(scope_index)
+                    .and_then(|scope| scope.get(&name))
+                    .map(|local| local.value.clone());
+                match previous {
+                    Some(old) => self.source_select_value(edge, value, old, span),
+                    None => value,
+                }
+            }
+            _ => value,
+        };
         if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
             scope.insert(name, BlockLocal { value, ty });
         }
