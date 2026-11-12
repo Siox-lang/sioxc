@@ -664,6 +664,16 @@ impl<'a> Checker<'a> {
                         .unwrap_or(Ty::Error);
                 }
                 let head = self.ty_head(&recv);
+                // A position of a newtype over a tuple (`pair.0` of `struct
+                // Pair((integer, integer))`): its element's type. As an
+                // error it passed every check made on it (#643).
+                if let (Some(head), Ok(index)) = (head.as_ref(), field.text.parse::<usize>()) {
+                    if let Some((Some(Type::Tuple { elems, .. }), _)) = self.structs.get(head) {
+                        if let Some(elem) = elems.get(index).cloned() {
+                            return self.ast_ty(&elem);
+                        }
+                    }
+                }
                 match head
                     .as_ref()
                     .and_then(|head| self.field_decl_ty(head, &field.text))
