@@ -945,6 +945,32 @@ impl Checker<'_> {
         if !matches!(written, crate::syntax::ast::Type::Path(_)) {
             return;
         }
+        // A family itself (`unsigned`, over `Logic[]`) has no width; a
+        // newtype of a sized one (`struct Outer(Inner)`, `Inner` over
+        // `unsigned[8]`) has its base's, which its checked type does not
+        // carry through the chain (#604).
+        let mut key = self.type_key(written);
+        let mut seen = HashSet::new();
+        let unsized_family = loop {
+            let Some(current) = key.take() else {
+                break false;
+            };
+            if !seen.insert(current.clone()) {
+                break false;
+            }
+            match self
+                .structs
+                .get(&current)
+                .and_then(|(base, _)| base.clone())
+            {
+                Some(crate::syntax::ast::Type::Indexed { index: None, .. }) => break true,
+                Some(base @ crate::syntax::ast::Type::Path(_)) => key = self.type_key(&base),
+                _ => break false,
+            }
+        };
+        if !unsized_family {
+            return;
+        }
         let ty = &self.ast_ty(written);
         if let Ty::Array {
             len: 0,
