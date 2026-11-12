@@ -976,13 +976,25 @@ impl<'a> Lowering<'a> {
             .as_ref()
             .and_then(crate::ir::lower_helpers::type_head_name)
             .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head));
+        // A `real`-backed type (`frequency`) has no wider product to unwrap,
+        // and sliced it no longer read as a real: a store into a `frequency`
+        // converted its bits again (#593).
+        let real_backed = family == "real"
+            || struct_derives_kernel(
+                family.rsplit("::").next().unwrap_or(&family),
+                "real",
+                &self.structs,
+                &self.free_fns,
+            );
         match inlined {
-            Val::Scalar(value) if own && width > 1 => Some(Val::Scalar(self.source_slice(
-                &value,
-                width - 1,
-                0,
-                ast::expr_span(lhs).to(ast::expr_span(rhs)),
-            ))),
+            Val::Scalar(value) if own && width > 1 && !real_backed => {
+                Some(Val::Scalar(self.source_slice(
+                    &value,
+                    width - 1,
+                    0,
+                    ast::expr_span(lhs).to(ast::expr_span(rhs)),
+                )))
+            }
             other => Some(other),
         }
     }
