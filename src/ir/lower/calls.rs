@@ -496,6 +496,17 @@ impl<'a> Lowering<'a> {
             return None;
         };
         let mut fenv: HashMap<String, Val> = HashMap::new();
+        // A qualifier forwarding the caller's own value parameter
+        // (`Packet<N>::width()` inside `impl<N: integer> Packet<N>`, or `M`
+        // of `fn helper<M: integer>`) reads it from the inline frame, where
+        // it is a folded constant; the entity's parameters alone named no
+        // `N` (#687).
+        let mut constants = self.cur_env.clone();
+        for (name, value) in env {
+            if let Val::Scalar(Expr::Const(value)) = value {
+                constants.entry(name.clone()).or_insert(*value as i64);
+            }
+        }
         for (written, given) in written.iter().zip(given) {
             let (
                 ast::GenericArg::Positional(ast::Expr::Path(path)),
@@ -513,7 +524,7 @@ impl<'a> Lowering<'a> {
                 .iter()
                 .any(|parameter| parameter.name.text == name.text && parameter.bound.is_some());
             if value_parameter {
-                let value = self.eval_const(value, &self.cur_env)?;
+                let value = self.eval_const(value, &constants)?;
                 fenv.insert(name.text.clone(), Val::Scalar(Expr::Const(value as u64)));
             }
         }
