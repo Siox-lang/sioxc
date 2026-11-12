@@ -125,14 +125,18 @@ fn const_context_substitution_folds_indices_without_forging_boolean_literals() {
 }
 
 #[test]
-fn const_context_ir_calls_share_scalar_signature_restrictions() {
+fn const_context_ir_calls_bind_real_arguments_without_erasing_result_types() {
     let mut sink = DiagnosticSink::default();
     let modules = [crate::syntax::parse_module(
         FileId(0),
         "module model;
          type Float = real;
          fn discard(value: Float) -> integer { return 1; }
-         const RESULT: integer = discard(2);",
+         const RESULT: integer = discard(2);
+         fn fraction() -> Float { return 1.5; }
+         const REAL: Float = fraction();
+         const CONVERTED: integer = integer(fraction());
+         const BAD: integer = discard('a');",
         &mut sink,
     )];
     let resolved = crate::resolve::resolve(&modules, &mut sink);
@@ -146,8 +150,23 @@ fn const_context_ir_calls_share_scalar_signature_restrictions() {
     };
     assert_eq!(
         eval_const_fns(&constant.value, &HashMap::new(), &functions, 0),
-        None
+        Some(1)
     );
+    for (name, expected) in [("REAL", None), ("CONVERTED", Some(1)), ("BAD", None)] {
+        let constant = modules[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Const(constant) if constant.name.text == name => Some(constant),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            eval_const_fns(&constant.value, &HashMap::new(), &functions, 0),
+            expected,
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -499,6 +518,73 @@ fn scalar_constants_use_declared_aliases_and_helper_return_types() {
         assert!(
             matches!(value, Some(Expr::Const(value)) if *value == expected),
             "{name}: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn implementation_constants_publish_the_same_identity_their_reads_select() {
+    let (design, sink) = lower_with_nonzero_false(
+        "module model;
+         const LIMIT: integer = 100;
+         fn module_limit() -> integer { return LIMIT; }
+         struct Pair { pub a: integer, pub b: integer }
+         entity Alpha { value: integer out, outer: integer out, field: integer out }
+         impl Alpha {
+             const LIMIT: integer = 5;
+             const PAIR: Pair = { .a = 11, .b = 13 };
+             value = LIMIT; outer = module_limit(); field = PAIR.a;
+         }
+         entity Beta { value: integer out, outer: integer out, field: integer out }
+         impl Beta {
+             const LIMIT: integer = 9;
+             const PAIR: Pair = { .a = 17, .b = 19 };
+             value = LIMIT; outer = module_limit(); field = PAIR.b;
+         }
+         entity Sized<W: integer> { value: integer out }
+         impl<V: integer> Sized<V> {
+             const LIMIT: integer = INNER + 1;
+             const INNER: integer = V * 3;
+             value = LIMIT;
+         }
+         entity Top { value: integer out }
+         impl Top {
+             let a: Alpha = {}; let b: Beta = {};
+             let small: Sized<W = 2> = {}; let big: Sized<W = 4> = {};
+             value = a.value + b.value + small.value + big.value;
+         }",
+    );
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    for (path, expected) in [
+        ("Top.a.value", 5),
+        ("Top.a.outer", 100),
+        ("Top.a.field", 11),
+        ("Top.b.value", 9),
+        ("Top.b.outer", 100),
+        ("Top.b.field", 19),
+        ("Top.small.value", 7),
+        ("Top.big.value", 13),
+    ] {
+        let signal = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == path)
+            .unwrap();
+        let driver = design
+            .drivers
+            .iter()
+            .find(|driver| driver.target == SignalId(signal as u32))
+            .unwrap();
+        let value = match &driver.expr {
+            Expr::Canonical { value, .. } => {
+                crate::ir::derive::materialize_digital_expression(&design.process_ir, *value)
+                    .unwrap()
+            }
+            value => value.clone(),
+        };
+        assert!(
+            matches!(value, Expr::Const(word) if word == expected),
+            "{path}: {value:?}"
         );
     }
 }

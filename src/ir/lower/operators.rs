@@ -324,7 +324,7 @@ impl<'a> Lowering<'a> {
             let target = self.free_fns.canonical_type_key(&family);
             let source = self.operand_type_name(e)?;
             let impls = self.op_impls.get("From", &target)?;
-            let (function, _) = impls.iter().find(|(f, declared)| {
+            let (function, _, _) = impls.iter().find(|(f, declared, _)| {
                 declared.clone().or_else(|| {
                     f.params
                         .iter()

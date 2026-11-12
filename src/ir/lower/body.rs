@@ -22,7 +22,7 @@ impl<'a> Lowering<'a> {
             })
             .unwrap_or_default();
         for constant in &body_consts {
-            let name = &constant.name.text;
+            let name = &self.free_fns.constant_decl_key(constant);
             self.consts.remove(name);
             self.const_values.remove(name);
             self.const_arrays.remove(name);
@@ -41,10 +41,11 @@ impl<'a> Lowering<'a> {
             for constant in &body_consts {
                 let mut scope = self.consts.clone();
                 scope.extend(env.iter().map(|(name, value)| (name.clone(), *value)));
-                if self.fold_const(&constant.name.text, constant, &scope) {
+                let key = self.free_fns.constant_decl_key(constant);
+                if self.fold_const(&key, constant, &scope) {
                     progressed = true;
-                    if let Some(&value) = self.consts.get(&constant.name.text) {
-                        env.insert(constant.name.text.clone(), value);
+                    if let Some(&value) = self.consts.get(&key) {
+                        env.insert(key, value);
                     }
                 }
             }

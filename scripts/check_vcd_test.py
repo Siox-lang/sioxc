@@ -1,11 +1,78 @@
-"""The alias profiles must inspect each elaborated instance's waveform."""
+"""Semantic waveform profiles must reject incorrect values and declarations."""
 
 from pathlib import Path
 import runpy
+import tempfile
 import unittest
 
 
-check_profile = runpy.run_path(str(Path(__file__).with_name("check-vcd.py")))["check_profile"]
+checker = runpy.run_path(str(Path(__file__).with_name("check-vcd.py")))
+check_profile = checker["check_profile"]
+read_vcd = checker["read_vcd"]
+
+
+class AggregateConstantWaveforms(unittest.TestCase):
+    def wave(self):
+        return "\n".join([
+            "$timescale 1fs $end",
+            "$scope module AggregateConstantContexts $end",
+            "$scope module dut $end",
+            "$var wire 3 v0 source $end",
+            "$var wire 3 v1 result $end",
+            "$var wire 64 v2 lanes[0] $end",
+            "$var wire 64 v3 lanes[1] $end",
+            "$upscope $end", "$upscope $end", "$enddefinitions $end",
+            "#0", "b101 v0", "b101 v1",
+            f"b{10:064b} v2", f"b{11:064b} v3",
+            "#1000000", "b011 v0", "b011 v1", "#2000000",
+        ])
+
+    def verify(self, text):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.vcd"
+            path.write_text(text)
+            declarations = {}
+            changes, timestamps = read_vcd(path, declarations)
+            check_profile("aggregate_constant_contexts_test", changes, declarations)
+            self.assertEqual(read_vcd(path), (changes, timestamps))
+            return timestamps
+
+    def test_source_required_timeline_and_reader_compatibility(self):
+        self.assertEqual(self.verify(self.wave()), [0, 1_000_000, 2_000_000])
+
+    def test_every_required_declaration_is_checked(self):
+        for declaration in [line for line in self.wave().splitlines() if line.startswith("$var ")]:
+            with self.subTest(declaration=declaration):
+                with self.assertRaises(AssertionError):
+                    self.verify(self.wave().replace(declaration, ""))
+
+    def test_wider_declarations_are_not_hidden_by_short_values(self):
+        for old, new in [("wire 3 v0", "wire 4 v0"),
+                         ("wire 3 v1", "wire 8 v1"),
+                         ("wire 64 v2", "wire 65 v2"),
+                         ("wire 64 v3", "wire 128 v3")]:
+            with self.subTest(declaration=new):
+                with self.assertRaises(AssertionError):
+                    self.verify(self.wave().replace(old, new))
+
+    def test_wrong_values_missing_transitions_and_times_are_rejected(self):
+        for old, new in [("b101 v0", "b100 v0"),
+                         ("b011 v1", ""),
+                         ("b011 v0", "b010 v0"),
+                         (f"b{10:064b} v2", f"b{11:064b} v2"),
+                         (f"b{11:064b} v3", f"b{12:064b} v3"),
+                         ("#1000000", "#2000000")]:
+            with self.subTest(mutation=(old, new)):
+                with self.assertRaises(AssertionError):
+                    self.verify(self.wave().replace(old, new))
+
+    def test_wrong_signal_kind_is_rejected(self):
+        with self.assertRaises(AssertionError):
+            self.verify(self.wave().replace("$var wire 3 v1", "$var string 3 v1"))
+
+    def test_missing_declaration_metadata_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, "declaration metadata"):
+            check_profile("aggregate_constant_contexts_test", {})
 
 
 class EntityAliasWaveforms(unittest.TestCase):

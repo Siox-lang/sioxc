@@ -376,11 +376,16 @@ pub(super) fn signed_lit(e: &Expr) -> Option<i64> {
 /// An unsigned integer literal's value, honouring radix prefixes and `_`
 /// separators.
 pub(super) fn unsigned_lit_text(text: &str) -> Option<u64> {
+    u64::try_from(unsigned_lit_magnitude(text)?).ok()
+}
+
+/// Preserve the analysis domain before a consumer chooses its ABI boundary.
+pub(super) fn unsigned_lit_magnitude(text: &str) -> Option<u128> {
     let text = text.replace('_', "");
     if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        u64::from_str_radix(digits, 16).ok()
+        u128::from_str_radix(digits, 16).ok()
     } else if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
-        u64::from_str_radix(digits, 2).ok()
+        u128::from_str_radix(digits, 2).ok()
     } else {
         text.parse().ok()
     }

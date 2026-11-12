@@ -7,7 +7,9 @@ import argparse
 from pathlib import Path
 
 
-def read_vcd(path: Path) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
+def read_vcd(
+    path: Path, declarations: dict[str, tuple[str, int]] | None = None,
+) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
     text = path.read_text()
     for required in ("$timescale 1fs $end", "$enddefinitions $end"):
         if required not in text:
@@ -27,6 +29,8 @@ def read_vcd(path: Path) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
         elif line.startswith("$var "):
             fields = line.split()
             identifiers[fields[3]] = ".".join([*scopes, fields[4]])
+            if declarations is not None:
+                declarations[identifiers[fields[3]]] = (fields[1], int(fields[2]))
             if fields[1] == "wire":
                 wire_widths[fields[3]] = int(fields[2])
         elif line.startswith("#"):
@@ -59,8 +63,26 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
         raise AssertionError(f"missing VCD signal {path}") from error
 
 
-def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "packed_logic_index_test":
+def check_profile(
+    profile: str, changes: dict[str, list[tuple[int, str]]],
+    declarations: dict[str, tuple[str, int]] | None = None,
+) -> None:
+    if profile == "aggregate_constant_contexts_test":
+        assert declarations is not None, "aggregate constants require VCD declaration metadata"
+        root = "AggregateConstantContexts.dut."
+        expected = {
+            name: (3, [(0, "101"), (1_000_000, "011")])
+            for name in ("source", "result")
+        }
+        expected.update({
+            f"lanes[{index}]": (64, [(0, f"{value:064b}")])
+            for index, value in enumerate((10, 11))
+        })
+        for name, (width, events) in expected.items():
+            path = root + name
+            assert declarations.get(path) == ("wire", width), path
+            assert changes.get(path) == events, path
+    elif profile == "packed_logic_index_test":
         root = "PackedLogicIndexTest.probe."
         expected = {
             "index": [(time * 1_000_000, f"{value:064b}")
@@ -403,9 +425,10 @@ def main() -> None:
     parser.add_argument("vcd", type=Path)
     parser.add_argument("--profile")
     args = parser.parse_args()
-    changes, _ = read_vcd(args.vcd)
+    declarations: dict[str, tuple[str, int]] = {}
+    changes, _ = read_vcd(args.vcd, declarations)
     if args.profile:
-        check_profile(args.profile, changes)
+        check_profile(args.profile, changes, declarations)
 
 
 if __name__ == "__main__":

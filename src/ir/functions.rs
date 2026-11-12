@@ -8,6 +8,13 @@ use crate::syntax::ast;
 
 use super::OperatorImpls;
 
+/// One selected body can belong to several implementations through a default.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedOperator<'a> {
+    pub(crate) function: &'a ast::FnDecl,
+    pub(crate) implementation: &'a ast::ImplDecl,
+}
+
 /// A built-in function of `core::intrinsics`, by what it computes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
@@ -298,9 +305,11 @@ impl<'a> FunctionIndex<'a> {
                 continue;
             };
             if function.name.text == method {
-                self.operators
-                    .entry(&symbol, owner.clone())
-                    .push((function, input.clone()));
+                self.operators.entry(&symbol, owner.clone()).push((
+                    function,
+                    input.clone(),
+                    implementation,
+                ));
             }
         }
     }
@@ -319,9 +328,11 @@ impl<'a> FunctionIndex<'a> {
                 continue;
             };
             if let Some(symbol) = comparison_symbol(&function.name.text) {
-                self.operators
-                    .entry(symbol, owner.clone())
-                    .push((function, input.clone()));
+                self.operators.entry(symbol, owner.clone()).push((
+                    function,
+                    input.clone(),
+                    implementation,
+                ));
             }
         }
     }
@@ -344,7 +355,9 @@ impl<'a> FunctionIndex<'a> {
         };
         if !overridden {
             let input = self.comparison_input(implementation);
-            self.operators.entry(symbol, owner).push((function, input));
+            self.operators
+                .entry(symbol, owner)
+                .push((function, input, implementation));
         }
     }
 
@@ -371,6 +384,16 @@ impl<'a> FunctionIndex<'a> {
         owner: &str,
         input: Option<&str>,
     ) -> Option<&'a ast::FnDecl> {
+        self.select_binary_operator(symbol, owner, input)
+            .map(|selected| selected.function)
+    }
+
+    pub(crate) fn select_binary_operator(
+        &self,
+        symbol: &str,
+        owner: &str,
+        input: Option<&str>,
+    ) -> Option<SelectedOperator<'a>> {
         let candidates = self.operators.get(symbol, owner)?;
         // The impl's declared input, else its parameter's type; `Self` is
         // the owner. Borrowed where it can be: this runs per candidate.
@@ -393,40 +416,55 @@ impl<'a> FunctionIndex<'a> {
             };
             (if input == "Self" { owner } else { input }) == wanted
         };
-        match input {
+        let selected = match input {
             Some(input) => candidates
                 .iter()
-                .find(|(function, declared)| matches(function, declared, input))
+                .find(|(function, declared, _)| matches(function, declared, input))
                 .or_else(|| {
                     if input == "integer" {
                         candidates
                             .iter()
-                            .find(|(function, declared)| matches(function, declared, owner))
+                            .find(|(function, declared, _)| matches(function, declared, owner))
                     } else {
                         None
                     }
-                })
-                .map(|(function, _)| *function),
-            None if candidates.len() == 1 => candidates.first().map(|(function, _)| *function),
+                }),
+            None if candidates.len() == 1 => candidates.first(),
             None => None,
-        }
+        }?;
+        Some(SelectedOperator {
+            function: selected.0,
+            implementation: selected.2,
+        })
     }
 
     /// Select the receiver-only `apply(self)` implementation of a unary
     /// operator. Input/output trait parameters describe its contract but do
     /// not add a runtime argument.
     pub fn get_unary_operator(&self, symbol: &str, owner: &str) -> Option<&'a ast::FnDecl> {
+        self.select_unary_operator(symbol, owner)
+            .map(|selected| selected.function)
+    }
+
+    pub(crate) fn select_unary_operator(
+        &self,
+        symbol: &str,
+        owner: &str,
+    ) -> Option<SelectedOperator<'a>> {
         self.operators
             .get(symbol, owner)?
             .iter()
-            .find_map(|(function, _)| {
+            .find_map(|(function, _, implementation)| {
                 (function
                     .params
                     .iter()
                     .filter(|parameter| !parameter.is_self)
                     .count()
                     == 0)
-                    .then_some(*function)
+                    .then_some(SelectedOperator {
+                        function,
+                        implementation,
+                    })
             })
     }
 
@@ -464,7 +502,7 @@ impl<'a> FunctionIndex<'a> {
         let Some(candidates) = self.operators.get("[]=", owner) else {
             return self.get_associated(owner, "index_assign");
         };
-        if let [(function, _)] = candidates.as_slice() {
+        if let [(function, _, _)] = candidates.as_slice() {
             return Some(function);
         }
         let matches = |wanted: Option<&str>, declared: Option<&str>| {
@@ -474,7 +512,7 @@ impl<'a> FunctionIndex<'a> {
                 })
             })
         };
-        let mut matching = candidates.iter().filter(|(function, declared)| {
+        let mut matching = candidates.iter().filter(|(function, declared, _)| {
             let mut parameters = function
                 .params
                 .iter()
@@ -567,24 +605,23 @@ impl<'a> FunctionIndex<'a> {
         None
     }
 
-    /// Stable table key for a module constant declaration. Implementation
-    /// constants have no module-level declaration identity and deliberately
-    /// retain their local leaf spelling.
+    /// Declaration-selected key for the legacy string-keyed constant tables.
+    /// Impl members may share both a leaf name and a module-qualified name.
     pub fn constant_decl_key(&self, constant: &ast::ConstDecl) -> String {
         self.resolved
             .declared(constant.name.span)
             .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Const))
-            .and_then(|id| self.resolved.qualified_name(id))
+            .map(|id| format!("@const:{}", id.0))
             .unwrap_or_else(|| constant.name.text.clone())
     }
 
-    /// Resolver-selected key for a constant path. A bare implementation
-    /// constant or function parameter is local and falls back to its leaf;
+    /// Resolver-selected key for a constant path. A function parameter or an
+    /// unresolved synthetic local retains its leaf spelling;
     /// multi-segment non-constant paths (notably enum variants) return `None`.
     pub fn constant_path_key(&self, path: &ast::Path) -> Option<String> {
         if let Some(id) = self.resolved.resolved(path.span) {
             if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Const) {
-                return self.resolved.qualified_name(id);
+                return Some(format!("@const:{}", id.0));
             }
         }
         match path.segments.as_slice() {

@@ -295,78 +295,140 @@ fn a_last_discriminant_at_the_word_boundary_does_not_overflow_an_unused_successo
 }
 
 #[test]
-fn normalized_helper_lengths_refine_unknown_values_and_report_collisions_once() {
-    let (mut modules, resolved) = parse(&[
-        "module model;
-        fn first() -> integer { return [10, 20]'length; }
-        enum Palette { Low = first(), High = 2 }",
-        include_str!("../../../core/primitive.siox"),
-    ]);
-    let mut sink = DiagnosticSink::default();
-    let mut typed = check(&modules, &resolved, &mut sink);
-    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
-    let palette = owner(&modules, &resolved, "Palette");
-    assert_eq!(numbers(&typed.enum_values, palette), [None, Some(2)]);
-    fold_value_lengths(&mut modules, &typed);
-    refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
-    assert_eq!(numbers(&typed.enum_values, palette), [Some(2), Some(2)]);
-    assert_eq!(
-        sink.diagnostics()
-            .iter()
-            .filter(|diagnostic| diagnostic.code == Some(codes::DUPLICATE_ITEM))
-            .count(),
-        1
-    );
-    refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
-    assert_eq!(sink.diagnostics().len(), 1);
+fn literal_magnitudes_above_a_word_remain_known_analysis_facts() {
+    for literal in ["18446744073709551616", "0x1_0000_0000_0000_0000"] {
+        let source = format!("module model; enum Palette {{ First = {literal}, Next }}");
+        let (modules, resolved) = parse(&[&source]);
+        let declarations = DeclarationIndex::collect(&resolved, &modules);
+        let values = EnumValues::collect(&declarations);
+        let palette = owner(&modules, &resolved, "Palette");
+        assert_eq!(
+            numbers(&values, palette),
+            [Some(1i128 << 64), Some((1i128 << 64) + 1)]
+        );
+        assert_eq!(values.width(palette), Some(65));
+        for (variant, _) in values.members(palette).unwrap() {
+            assert_eq!(
+                values.value(palette, *variant),
+                None,
+                "a known analysis value must not be truncated into a physical word"
+            );
+        }
+    }
 }
 
 #[test]
-fn normalized_negative_discriminants_are_diagnosed_at_the_enum_initializer() {
-    let source = "module model;
-        fn first() -> integer { return 0 - [10]'length; }
-        enum Palette { Low = first(), High }";
-    let (mut modules, resolved) = parse(&[source, include_str!("../../../core/primitive.siox")]);
-    let mut sink = DiagnosticSink::default();
-    let mut typed = check(&modules, &resolved, &mut sink);
-    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
-    fold_value_lengths(&mut modules, &typed);
-    refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
-    let errors: Vec<_> = sink
-        .diagnostics()
-        .iter()
-        .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH))
-        .collect();
-    assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
-    assert!(errors[0].message.contains("negative discriminant -1"));
-    let Item::Enum(declaration) = &modules[0].items[1] else {
-        panic!("enum")
-    };
-    assert_eq!(
-        errors[0].primary,
-        declaration.variants[0].value.as_ref().map(expr_span)
-    );
+fn helper_lengths_report_collisions_once_before_or_after_normalization() {
+    for (operand, initially_known) in [("[10, 20]", true), ("\"ab\"", false)] {
+        let source = format!(
+            "module model;
+            fn first() -> integer {{ return {operand}'length; }}
+            enum Palette {{ Low = first(), High = 2 }}"
+        );
+        let (mut modules, resolved) =
+            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let mut sink = DiagnosticSink::default();
+        let mut typed = check(&modules, &resolved, &mut sink);
+        let palette = owner(&modules, &resolved, "Palette");
+        assert_eq!(
+            numbers(&typed.enum_values, palette),
+            [initially_known.then_some(2), Some(2)]
+        );
+        assert_eq!(sink.diagnostics().len(), usize::from(initially_known));
+        fold_value_lengths(&mut modules, &typed);
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(numbers(&typed.enum_values, palette), [Some(2), Some(2)]);
+        assert_eq!(
+            sink.diagnostics().len(),
+            1,
+            "{operand}: {:?}",
+            sink.diagnostics()
+        );
+        let error = &sink.diagnostics()[0];
+        assert_eq!(error.code, Some(codes::DUPLICATE_ITEM));
+        let Item::Enum(declaration) = &modules[0].items[1] else {
+            panic!("enum");
+        };
+        assert_eq!(error.primary, Some(declaration.variants[1].name.span));
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(sink.diagnostics().len(), 1);
+    }
+}
+
+#[test]
+fn negative_discriminants_keep_initializer_spans_across_normalization() {
+    for (operand, initially_known) in [("[10]", true), ("\"a\"", false)] {
+        let source = format!(
+            "module model;
+            fn first() -> integer {{ return 0 - {operand}'length; }}
+            enum Palette {{ Low = first(), High }}"
+        );
+        let (mut modules, resolved) =
+            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let mut sink = DiagnosticSink::default();
+        let mut typed = check(&modules, &resolved, &mut sink);
+        let palette = owner(&modules, &resolved, "Palette");
+        assert_eq!(
+            numbers(&typed.enum_values, palette),
+            [initially_known.then_some(-1), initially_known.then_some(0)]
+        );
+        assert_eq!(sink.diagnostics().len(), usize::from(initially_known));
+        fold_value_lengths(&mut modules, &typed);
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(numbers(&typed.enum_values, palette), [Some(-1), Some(0)]);
+        assert_eq!(
+            sink.diagnostics().len(),
+            1,
+            "{operand}: {:?}",
+            sink.diagnostics()
+        );
+        let error = &sink.diagnostics()[0];
+        assert_eq!(error.code, Some(codes::TYPE_MISMATCH));
+        assert!(error.message.contains("negative discriminant -1"));
+        let Item::Enum(declaration) = &modules[0].items[1] else {
+            panic!("enum");
+        };
+        assert_eq!(
+            error.primary,
+            declaration.variants[0].value.as_ref().map(expr_span)
+        );
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(sink.diagnostics().len(), 1);
+    }
 }
 
 #[test]
 fn normalized_enum_diagnostics_keep_source_order() {
-    let (mut modules, resolved) = parse(&[
-        "module model;
-        fn count() -> integer { return [10, 20]'length; }
-        enum Duplicate { First = count(), Second = 2 }
-        enum Negative { First = 0 - count() }",
-        include_str!("../../../core/primitive.siox"),
-    ]);
-    let mut sink = DiagnosticSink::default();
-    let mut typed = check(&modules, &resolved, &mut sink);
-    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
-    fold_value_lengths(&mut modules, &typed);
-    refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
-    assert_eq!(
-        sink.diagnostics()
-            .iter()
-            .map(|diagnostic| diagnostic.code)
-            .collect::<Vec<_>>(),
-        [Some(codes::DUPLICATE_ITEM), Some(codes::TYPE_MISMATCH)]
-    );
+    for (operand, initially_known) in [("[10, 20]", true), ("\"ab\"", false)] {
+        let source = format!(
+            "module model;
+            fn count() -> integer {{ return {operand}'length; }}
+            enum Duplicate {{ First = count(), Second = 2 }}
+            enum Negative {{ First = 0 - count() }}"
+        );
+        let (mut modules, resolved) =
+            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let mut sink = DiagnosticSink::default();
+        let mut typed = check(&modules, &resolved, &mut sink);
+        let expected = [Some(codes::DUPLICATE_ITEM), Some(codes::TYPE_MISMATCH)];
+        let codes = |sink: &DiagnosticSink| {
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            codes(&sink),
+            if initially_known {
+                expected.to_vec()
+            } else {
+                vec![]
+            }
+        );
+        fold_value_lengths(&mut modules, &typed);
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(codes(&sink), expected, "{operand}");
+        refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
+        assert_eq!(codes(&sink), expected, "{operand}: no repeated diagnostics");
+    }
 }

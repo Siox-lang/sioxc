@@ -58,11 +58,13 @@ impl Lowering<'_> {
         let chosen = match rhs {
             Some(rhs) => functions
                 .iter()
-                .find(|(function, argument)| declared(function, argument).as_deref() == Some(rhs))
+                .find(|(function, argument, _)| {
+                    declared(function, argument).as_deref() == Some(rhs)
+                })
                 .or_else(|| {
                     (rhs == "integer")
                         .then(|| {
-                            functions.iter().find(|(function, argument)| {
+                            functions.iter().find(|(function, argument, _)| {
                                 declared(function, argument).as_deref() == Some(lhs)
                             })
                         })
@@ -83,15 +85,15 @@ impl Lowering<'_> {
                 span,
             ));
         }
-        chosen.map(|(function, _)| *function)
+        chosen.map(|(function, _, _)| *function)
     }
 
     pub(super) fn source_unary_operator(&self, op: &str, family: &str) -> Option<&ast::FnDecl> {
         self.op_impls
             .get(op, family)?
             .iter()
-            .find(|(function, _)| function.params.iter().all(|parameter| parameter.is_self))
-            .map(|(function, _)| *function)
+            .find(|(function, _, _)| function.params.iter().all(|parameter| parameter.is_self))
+            .map(|(function, _, _)| *function)
     }
 
     /// Borrow the implementation body; bind values, not synthetic caller paths.

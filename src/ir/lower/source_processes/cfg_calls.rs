@@ -736,7 +736,8 @@ fn inline_call_once(
     };
     let body = function.body.as_ref()?;
     function.ret.as_ref()?;
-    if context.inline_functions.contains(&function.span) {
+    let key = InlineFunctionKey::plain(function);
+    if context.active_function(key) {
         if let Some(frame) = context
             .frames
             .iter()
@@ -891,7 +892,7 @@ fn inline_call_once(
         frame_push(site, process, context, *block);
     }
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
-    context.inline_functions.insert(function.span);
+    context.enter_function(key);
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(node.ty);
@@ -980,7 +981,7 @@ fn inline_call_once(
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
-    context.inline_functions.remove(&function.span);
+    context.inline_functions.remove(&key);
     context.inline_scope = previous_scope;
     if !supported {
         return None;

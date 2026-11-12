@@ -79,6 +79,8 @@ use std::sim::time;
 pub struct Bytes(integer);
 impl Suffix<"kB", integer> for Bytes { static fn suffix(v: integer) -> Bytes { return Bytes(v * 1024); } }
 const MEM: Bytes = 4kB;
+const NEGATIVE: Bytes = Bytes(-7);
+const ZERO: Bytes = Bytes(0);
 const HALF: time = 1.5ns;
 entity Top { b: integer out, t: time out, }
 impl Top { b = integer(MEM); t = HALF; }
@@ -90,13 +92,13 @@ impl T {
         let local: time = HALF;
         await 1ns;
         assert!(t == local, "same");
-        print!("{} {}\n", b, integer(MEM));
+        print!("{} {} {} {}\n", b, integer(MEM), integer(NEGATIVE), integer(ZERO));
         await local;
         print!("done\n");
     }
 }
 "#,
-            &[r#"4096 4096"#, r#"done"#],
+            &[r#"4096 4096 -7 0"#, r#"done"#],
         ),
         (
             "249",

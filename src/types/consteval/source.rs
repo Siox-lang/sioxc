@@ -1,9 +1,11 @@
 //! Borrowed scalar semantics shared by constant-evaluation consumers.
 
-use super::{Binding, Environment, LocalKey, Value};
+use super::{Binding, Environment, LocalKey, SelectedFunction, Value};
 use crate::resolve::declarations::{AppliedArguments, DeclarationIndex};
 use crate::resolve::{DefId, DefKind, Resolved};
-use crate::syntax::ast::{BinOp, Expr, FnDecl, FnParam, Ident, ImplItem, Path, Type, UnOp};
+use crate::syntax::ast::{
+    BinOp, Expr, FnDecl, FnParam, Ident, ImplItem, Path, StructDecl, Type, UnOp,
+};
 use crate::types::enum_values::EnumValues;
 
 #[derive(Clone, Copy)]
@@ -31,25 +33,72 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(crate) fn word(&self, value: Value) -> Option<i64> {
         match value {
             Value::Integer(value) => i64::try_from(value).ok(),
+            Value::Natural(_) | Value::Real(_) => None,
             Value::Character(ch) => Some(i64::from(u32::from(ch))),
             Value::Enum { discriminant, .. } => Some(discriminant as i64),
             Value::Variant { owner, variant } => Some(self.enums?.value(owner, variant)? as i64),
+            Value::Array { .. } | Value::Record { .. } | Value::Tuple(_) => None,
         }
     }
 
-    fn enum_number(&self, value: Value) -> Option<i128> {
+    pub(super) fn range_value(&self, left: Value, right: Value) -> Option<Value> {
+        let owner = self.resolved().lang("range")?;
+        let declaration = self.structure(owner)?;
+        if declaration.base.is_some()
+            || !declaration.params.params.is_empty()
+            || declaration.fields.len() != 2
+            || declaration
+                .fields
+                .iter()
+                .any(|field| self.type_id(&field.ty, None) != self.resolved().builtin("integer"))
+            || left.integer().is_none()
+            || right.integer().is_none()
+        {
+            return None;
+        }
+        Some(Value::Record {
+            owner,
+            fields: [left, right].into(),
+        })
+    }
+
+    /// Range syntax uses the registered nominal declaration, not a lookalike record.
+    pub(crate) fn range_bounds(&self, value: &Value) -> Option<(i128, i128)> {
+        let Value::Record { owner, fields } = value else {
+            return None;
+        };
+        if Some(*owner) != self.resolved().lang("range") {
+            return None;
+        }
+        let [left, right] = fields.as_ref() else {
+            return None;
+        };
+        Some((left.integer()?, right.integer()?))
+    }
+
+    fn enum_number(&self, value: &Value) -> Option<i128> {
         match value {
-            Value::Enum { discriminant, .. } => Some(i128::from(discriminant)),
-            Value::Variant { owner, variant } => self.enums?.number(owner, variant),
+            Value::Enum { discriminant, .. } => Some(i128::from(*discriminant)),
+            Value::Variant { owner, variant } => self.enums?.number(*owner, *variant),
             _ => None,
         }
     }
 
-    pub(super) fn equivalent(&self, left: Value, right: Value) -> Option<bool> {
+    pub(super) fn equivalent(&self, left: &Value, right: &Value) -> Option<bool> {
         match (left, right) {
             (Value::Variant { .. }, Value::Variant { .. }) => Some(left == right),
             _ if left.enum_owner().is_some() && left.enum_owner() == right.enum_owner() => {
                 Some(self.enum_number(left)? == self.enum_number(right)?)
+            }
+            _ if matches!(
+                left,
+                Value::Array { .. } | Value::Record { .. } | Value::Tuple(_)
+            ) || matches!(
+                right,
+                Value::Array { .. } | Value::Record { .. } | Value::Tuple(_)
+            ) =>
+            {
+                None
             }
             _ => Some(left == right),
         }
@@ -71,15 +120,18 @@ impl<'i, 'a> Source<'i, 'a> {
         })
     }
 
-    fn boolean(&self, value: bool) -> Option<Value> {
+    pub(super) fn boolean(&self, value: bool) -> Option<Value> {
         self.named(
             self.resolved().lang("bool")?,
             if value { "true" } else { "false" },
         )
     }
 
-    fn type_id(&self, ty: &Type, receiver: Option<DefId>) -> Option<DefId> {
+    pub(super) fn type_id(&self, ty: &Type, receiver: Option<DefId>) -> Option<DefId> {
         let id = self.declarations.scalar_type_id(ty)?;
+        if Some(id) == self.resolved().builtin("range") {
+            return self.resolved().lang("range");
+        }
         if self.resolved().def(id).is_some_and(|definition| {
             definition.kind == DefKind::Local
                 && definition.name == "Self"
@@ -92,19 +144,102 @@ impl<'i, 'a> Source<'i, 'a> {
     }
 
     pub(super) fn supported(&self, ty: &Type, receiver: Option<DefId>) -> bool {
+        let Some(normalized) = self.declarations.normalize_type(ty) else {
+            return false;
+        };
+        match normalized.as_ref() {
+            Type::Indexed { base, .. } => return self.supported(base, receiver),
+            Type::Tuple { elems, .. } => {
+                return elems.iter().all(|ty| self.supported(ty, receiver))
+            }
+            _ => {}
+        }
         self.type_id(ty, receiver).is_some_and(|id| {
-            self.resolved().kind_of(id) == Some(DefKind::Enum)
-                || Some(id) == self.resolved().builtin("integer")
-                || Some(id) == self.resolved().builtin("Char")
+            self.supported_scalar(id)
+                || self
+                    .structure(id)
+                    .is_some_and(|s| s.base.is_none() && s.params.params.is_empty())
         })
     }
 
-    fn value_type(&self, value: Value) -> Option<DefId> {
+    fn supported_scalar(&self, id: DefId) -> bool {
+        self.resolved().kind_of(id) == Some(DefKind::Enum)
+            || ["integer", "natural", "real", "Char"]
+                .iter()
+                .any(|name| Some(id) == self.resolved().builtin(name))
+    }
+
+    pub(super) fn bind_value(
+        &self,
+        ty: &Type,
+        value: Value,
+        receiver: Option<DefId>,
+        literal: bool,
+    ) -> Option<Value> {
+        let id = self.type_id(ty, receiver)?;
+        if Some(id) == self.resolved().builtin("integer") {
+            let Value::Integer(value) = value else {
+                return None;
+            };
+            return i64::try_from(value)
+                .ok()
+                .map(|value| Value::Integer(i128::from(value)));
+        }
+        if self.value_type(&value) == Some(id) {
+            return Some(value);
+        }
+        if literal {
+            if let Value::Integer(value) = value {
+                if Some(id) == self.resolved().builtin("natural") {
+                    return u64::try_from(value).ok().map(Value::Natural);
+                }
+                if Some(id) == self.resolved().builtin("real") {
+                    return Some(Value::Real(value as f64));
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn normalized_type<'t>(&self, ty: &'t Type) -> Option<std::borrow::Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        self.declarations.normalize_type(ty)
+    }
+
+    pub(super) fn instantiated_type<'t>(
+        &self,
+        arguments: &AppliedArguments<'_>,
+        ty: &'t Type,
+    ) -> Option<std::borrow::Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        self.declarations.instantiate_type(arguments, ty)
+    }
+
+    pub(super) fn structure(&self, owner: DefId) -> Option<&'a StructDecl> {
+        self.declarations
+            .structure(owner)
+            .or_else(|| self.functions?.structure(owner))
+    }
+
+    pub(super) fn value_type(&self, value: &Value) -> Option<DefId> {
         match value {
             Value::Integer(_) => self.resolved().builtin("integer"),
+            Value::Natural(_) => self.resolved().builtin("natural"),
+            Value::Real(_) => self.resolved().builtin("real"),
             Value::Character(_) => self.resolved().builtin("Char"),
-            Value::Enum { owner, .. } | Value::Variant { owner, .. } => Some(owner),
+            Value::Enum { owner, .. }
+            | Value::Variant { owner, .. }
+            | Value::Record { owner, .. } => Some(*owner),
+            Value::Array { .. } | Value::Tuple(_) => None,
         }
+    }
+
+    pub(super) fn primitive_id(&self, name: &str) -> Option<DefId> {
+        self.resolved().builtin(name)
     }
 
     pub(crate) fn binding(&self, path: &Path) -> Option<Binding<'a>> {
@@ -117,7 +252,7 @@ impl<'i, 'a> Source<'i, 'a> {
             }
             return Some(Binding::TypedExpression {
                 value: &constant.value,
-                enum_owner: self.enum_type(&constant.ty, None),
+                ty: &constant.ty,
             });
         }
         let (owner, variant) = self.declarations.enum_variant(path)?;
@@ -176,7 +311,7 @@ impl<'i, 'a> Source<'i, 'a> {
             })
     }
 
-    pub(super) fn method_function(&self, method: &Ident, receiver: Value) -> Option<&'a FnDecl> {
+    pub(super) fn method_function(&self, method: &Ident, receiver: &Value) -> Option<&'a FnDecl> {
         let owner = self.value_type(receiver)?;
         let supported = |function: &&FnDecl| {
             function.name.text == method.text
@@ -246,9 +381,15 @@ impl<'i, 'a> Source<'i, 'a> {
         let Expr::Path(path) = callee else {
             return None;
         };
-        let id = self.resolved().resolved(path.span)?;
+        let id = self
+            .declarations
+            .scalar_type_id(&Type::Path(path.clone()))?;
         if Some(id) == self.resolved().builtin("integer") {
             Some("integer")
+        } else if Some(id) == self.resolved().builtin("natural") {
+            Some("natural")
+        } else if Some(id) == self.resolved().builtin("real") {
+            Some("real")
         } else if Some(id) == self.resolved().builtin("Char") {
             Some("Char")
         } else {
@@ -262,7 +403,17 @@ impl<'i, 'a> Source<'i, 'a> {
 
     pub(super) fn convert_value(&self, callee: &Expr, value: Value) -> Option<Value> {
         match (self.constructor(callee)?, value) {
-            ("integer", Value::Integer(_)) => Some(value),
+            ("integer", Value::Integer(value)) => i64::try_from(value)
+                .ok()
+                .map(|value| Value::Integer(i128::from(value))),
+            ("integer", Value::Natural(value)) => i64::try_from(value)
+                .ok()
+                .map(|value| Value::Integer(i128::from(value))),
+            ("integer", Value::Real(value))
+                if (i64::MIN as f64..-(i64::MIN as f64)).contains(&value) =>
+            {
+                Some(Value::Integer(i128::from(value as i64)))
+            }
             ("integer", Value::Character(ch)) => Some(Value::Integer(i128::from(ch as u32))),
             ("integer", Value::Enum { discriminant, .. }) => {
                 Some(Value::Integer(i128::from(discriminant as i64)))
@@ -270,10 +421,24 @@ impl<'i, 'a> Source<'i, 'a> {
             ("integer", Value::Variant { owner, variant }) => Some(Value::Integer(i128::from(
                 self.enums?.value(owner, variant)? as i64,
             ))),
-            ("Char", Value::Character(_)) => Some(value),
+            ("Char", value @ Value::Character(_)) => Some(value),
             ("Char", Value::Integer(value)) => {
                 char::from_u32(u32::try_from(value).ok()?).map(Value::Character)
             }
+            ("natural", value @ Value::Natural(_)) | ("real", value @ Value::Real(_)) => {
+                Some(value)
+            }
+            ("natural", Value::Integer(value)) => i64::try_from(value)
+                .ok()
+                .and_then(|value| u64::try_from(value).ok())
+                .map(Value::Natural),
+            ("natural", Value::Real(value)) if (0.0..u64::MAX as f64).contains(&value) => {
+                Some(Value::Natural(value as u64))
+            }
+            ("real", Value::Integer(value)) => i64::try_from(value)
+                .ok()
+                .map(|value| Value::Real(value as f64)),
+            ("real", Value::Natural(value)) => Some(Value::Real(value as f64)),
             _ => None,
         }
     }
@@ -282,7 +447,7 @@ impl<'i, 'a> Source<'i, 'a> {
         &self,
         function: &FnDecl,
         owner: DefId,
-        values: &[Value],
+        values: &[&Value],
         arguments: Option<&AppliedArguments<'_>>,
     ) -> bool {
         let type_id = |ty: &Type| {
@@ -299,18 +464,18 @@ impl<'i, 'a> Source<'i, 'a> {
                 .params
                 .first()
                 .is_some_and(|parameter| parameter.is_self)
-            && function.ret.as_ref().and_then(type_id).is_some_and(|id| {
-                self.resolved().kind_of(id) == Some(DefKind::Enum)
-                    || Some(id) == self.resolved().builtin("integer")
-                    || Some(id) == self.resolved().builtin("Char")
-            })
+            && function
+                .ret
+                .as_ref()
+                .and_then(type_id)
+                .is_some_and(|id| self.supported_scalar(id))
             && function
                 .params
                 .iter()
                 .zip(values)
                 .all(|(parameter, value)| {
                     parameter.is_self
-                        || parameter.ty.as_ref().and_then(type_id) == self.value_type(*value)
+                        || parameter.ty.as_ref().and_then(type_id) == self.value_type(value)
                 })
     }
 
@@ -318,12 +483,12 @@ impl<'i, 'a> Source<'i, 'a> {
         &self,
         role: &str,
         method: &str,
-        values: &[Value],
+        values: &[&Value],
         symbol: Option<&str>,
-    ) -> Option<&'a FnDecl> {
-        let owner = self.value_type(*values.first()?)?;
+    ) -> Option<SelectedFunction<'a>> {
+        let owner = self.value_type(values.first()?)?;
         let trait_id = self.resolved().lang(role)?;
-        let mut selected: Option<&'a FnDecl> = None;
+        let mut selected: Option<SelectedFunction<'a>> = None;
         for implementation in self.declarations.implementations_for(owner).chain(
             self.functions
                 .into_iter()
@@ -351,7 +516,11 @@ impl<'i, 'a> Source<'i, 'a> {
             });
             let candidate = if let Some(function) = explicit {
                 self.signature_matches(function, owner, values, None)
-                    .then_some(function)
+                    .then_some(SelectedFunction {
+                        function,
+                        implementation: Some(implementation),
+                        applied: None,
+                    })
             } else {
                 let declaration = self.declarations.trait_decl(trait_id).or_else(|| {
                     self.functions
@@ -361,13 +530,26 @@ impl<'i, 'a> Source<'i, 'a> {
                     .declarations
                     .arguments(&declaration.params, &implementation.trait_args)
                     .ok()?;
-                declaration.items.iter().find(|function| {
-                    function.name.text == method
-                        && self.signature_matches(function, owner, values, Some(&arguments))
-                })
+                declaration
+                    .items
+                    .iter()
+                    .find(|function| {
+                        function.name.text == method
+                            && self.signature_matches(function, owner, values, Some(&arguments))
+                    })
+                    .map(|function| SelectedFunction {
+                        function,
+                        implementation: Some(implementation),
+                        applied: Some(arguments),
+                    })
             };
             if let Some(function) = candidate {
-                if selected.is_some_and(|previous| !std::ptr::eq(previous, function)) {
+                if selected.as_ref().is_some_and(|previous| {
+                    !std::ptr::eq(previous.function, function.function)
+                        || previous
+                            .implementation
+                            .is_none_or(|previous| !std::ptr::eq(previous, implementation))
+                }) {
                     return None;
                 }
                 selected = Some(function);
@@ -379,9 +561,9 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(super) fn operator_function(
         &self,
         expression: &Expr,
-        left: Value,
-        right: Option<Value>,
-    ) -> Option<&'a FnDecl> {
+        left: &Value,
+        right: Option<&Value>,
+    ) -> Option<SelectedFunction<'a>> {
         let (role, method, symbol) = match expression {
             Expr::Unary { op: UnOp::Not, .. } => ("not", "not", None),
             Expr::Unary { op: UnOp::Neg, .. } => ("neg", "neg", None),
@@ -394,9 +576,9 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(super) fn binary_function(
         &self,
         op: &BinOp,
-        left: Value,
-        right: Value,
-    ) -> Option<&'a FnDecl> {
+        left: &Value,
+        right: &Value,
+    ) -> Option<SelectedFunction<'a>> {
         let (role, method, symbol) = match op {
             BinOp::Eq => ("eq", "eq", None),
             BinOp::Ne => ("eq", "ne", None),
@@ -418,31 +600,31 @@ impl<'i, 'a> Source<'i, 'a> {
         self.hook(role, method, &[left, right], symbol)
     }
 
-    pub(super) fn condition_function(&self, value: Value) -> Option<&'a FnDecl> {
+    pub(super) fn condition_function(&self, value: &Value) -> Option<SelectedFunction<'a>> {
         self.hook("boolean", "as_bool", &[value], None)
     }
 
-    pub(super) fn condition_value(&self, value: Value) -> Option<bool> {
+    pub(super) fn condition_value(&self, value: &Value) -> Option<bool> {
         let owner = self.resolved().lang("bool")?;
-        if Some(value) == self.named(owner, "true") {
+        if Some(value) == self.named(owner, "true").as_ref() {
             Some(true)
-        } else if Some(value) == self.named(owner, "false") {
+        } else if Some(value) == self.named(owner, "false").as_ref() {
             Some(false)
         } else if let Value::Enum {
             owner: actual,
             discriminant,
         } = value
         {
-            if actual != owner {
+            if *actual != owner {
                 return None;
             }
             let encoded = |name| {
                 self.enums?
                     .value(owner, self.resolved().enum_variant(owner, name)?)
             };
-            if encoded("true") == Some(discriminant) {
+            if encoded("true") == Some(*discriminant) {
                 Some(true)
-            } else if encoded("false") == Some(discriminant) {
+            } else if encoded("false") == Some(*discriminant) {
                 Some(false)
             } else {
                 None
@@ -455,8 +637,8 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(super) fn binary_value(
         &self,
         expression: &Expr,
-        left: Value,
-        right: Value,
+        left: &Value,
+        right: &Value,
         intrinsic: bool,
     ) -> Option<Value> {
         let Expr::Binary { op, .. } = expression else {
@@ -468,17 +650,33 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(super) fn binary_values(
         &self,
         op: &BinOp,
-        left: Value,
-        right: Value,
+        left: &Value,
+        right: &Value,
         intrinsic: bool,
     ) -> Option<Value> {
         let order = match (left, right) {
             (Value::Integer(left), Value::Integer(right)) => match op {
                 BinOp::And => return Some(Value::Integer(left & right)),
                 BinOp::Or => return Some(Value::Integer(left | right)),
-                _ => left.cmp(&right),
+                _ => left.cmp(right),
             },
-            (Value::Character(left), Value::Character(right)) => left.cmp(&right),
+            (Value::Natural(left), Value::Natural(right)) => match op {
+                BinOp::And => return Some(Value::Natural(left & right)),
+                BinOp::Or => return Some(Value::Natural(left | right)),
+                _ => left.cmp(right),
+            },
+            (Value::Real(left), Value::Real(right)) => {
+                return self.boolean(match op {
+                    BinOp::Eq => left == right,
+                    BinOp::Ne => left != right,
+                    BinOp::Lt => left < right,
+                    BinOp::Le => left <= right,
+                    BinOp::Gt => left > right,
+                    BinOp::Ge => left >= right,
+                    _ => return None,
+                });
+            }
+            (Value::Character(left), Value::Character(right)) => left.cmp(right),
             (
                 Value::Variant {
                     owner: a,
@@ -493,8 +691,8 @@ impl<'i, 'a> Source<'i, 'a> {
                 BinOp::Ne => return self.boolean(left != right),
                 _ if intrinsic => self
                     .enums?
-                    .number(a, left)?
-                    .cmp(&self.enums?.number(b, right)?),
+                    .number(*a, *left)?
+                    .cmp(&self.enums?.number(*b, *right)?),
                 _ => return None,
             },
             (left, right)

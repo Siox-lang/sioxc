@@ -2,6 +2,9 @@ use super::*;
 use crate::diag::{DiagnosticSink, FileId};
 use crate::syntax::{ast::Item, parse_module};
 
+mod aggregate;
+mod numeric;
+
 fn expression(text: &str) -> Expr {
     let source = format!("module constants; const VALUE: integer = {text};");
     let mut sink = DiagnosticSink::default();
@@ -44,12 +47,12 @@ fn physical_and_symbolic_enum_values_are_semantically_equivalent() {
         owner: resolved.lang("bool").unwrap(),
         discriminant: 17,
     };
-    let result = evaluate_function(function, vec![value], &source, 0);
-    assert_eq!(result, Ok(value));
+    let result = evaluate_function(function, vec![value.clone()], &source, 0);
+    assert_eq!(result, Ok(value.clone()));
     assert_eq!(
         source.equivalent(
-            value,
-            Value::Variant {
+            &value,
+            &Value::Variant {
                 owner: resolved.lang("bool").unwrap(),
                 variant: resolved
                     .enum_variant(resolved.lang("bool").unwrap(), "true")
@@ -130,6 +133,60 @@ fn arithmetic_keeps_the_analysis_domain() {
     ] {
         assert_eq!(literal(text), Ok(expected), "{text}");
     }
+}
+
+#[test]
+fn literals_use_the_analysis_domain_before_word_projection() {
+    for (text, expected) in [
+        ("18446744073709551616", 1i128 << 64),
+        ("0x1_0000_0000_0000_0000", 1i128 << 64),
+        ("0X7fff_ffff_ffff_ffff_ffff_ffff_ffff_ffff", i128::MAX),
+        ("-170141183460469231731687303715884105728", i128::MIN),
+        ("-0x8000_0000_0000_0000_0000_0000_0000_0000", i128::MIN),
+    ] {
+        assert_eq!(literal(text), Ok(expected), "{text}");
+    }
+    for text in [
+        "170141183460469231731687303715884105728",
+        "340282366920938463463374607431768211456",
+        "-170141183460469231731687303715884105729",
+    ] {
+        assert_eq!(
+            literal(text).unwrap_err().reason,
+            Reason::Overflow,
+            "{text}"
+        );
+    }
+    let environment = Functions::new("");
+    let word = Functions {
+        domain: IntegerDomain::NativeWord,
+        ..environment
+    };
+    assert_eq!(
+        word.eval("18446744073709551616").unwrap_err().reason,
+        Reason::Overflow
+    );
+    assert_eq!(word.eval("-9223372036854775808"), Ok(i128::from(i64::MIN)));
+}
+
+#[test]
+fn extreme_analysis_ranges_do_not_overflow_or_fabricate_native_labels() {
+    use super::super::Checker;
+
+    let mut sink = DiagnosticSink::default();
+    let resolved = crate::resolve::resolve(&[], &mut sink);
+    let checker = Checker::new(&mut sink, &resolved, &[]);
+    for text in [
+        "(-170141183460469231731687303715884105728)..170141183460469231731687303715884105727",
+        "170141183460469231731687303715884105727..170141183460469231731687303715884105727",
+    ] {
+        assert_eq!(checker.index_shape(&expression(text)), (0, 0), "{text}");
+    }
+    assert_eq!(
+        checker.index_shape(&expression("(-9223372036854775808)..9223372036854775807")),
+        (0, i64::MIN)
+    );
+    assert_eq!(checker.index_shape(&expression("11..10")), (2, 10));
 }
 
 #[test]

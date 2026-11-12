@@ -54,7 +54,7 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
         value: u64,
     ) -> Option<bool> {
         self.evaluate(function, owner, value, None)
-            .and_then(|result| self.condition_value(result))
+            .and_then(|result| self.condition_value(&result))
     }
 
     pub(super) fn enumeration(
@@ -75,7 +75,7 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
 
     pub(super) fn binary(
         &self,
-        functions: &[(&ast::FnDecl, Option<String>)],
+        functions: &[(&ast::FnDecl, Option<String>, &ast::ImplDecl)],
         owner: DefId,
         left: u64,
         right: u64,
@@ -92,7 +92,7 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
         ];
         let mut matching = functions
             .iter()
-            .filter_map(|(function, _)| self.matches(function, &values).then_some(*function));
+            .filter_map(|(function, _, _)| self.matches(function, &values).then_some(*function));
         let function = matching.next()?;
         if matching.next().is_some() {
             return None;
@@ -191,6 +191,11 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
                         }
                         Value::Integer(_) => self.primitive_type(ty, "integer"),
                         Value::Character(_) => self.primitive_type(ty, "Char"),
+                        Value::Natural(_)
+                        | Value::Real(_)
+                        | Value::Array { .. }
+                        | Value::Record { .. }
+                        | Value::Tuple(_) => false,
                     }
                 })
     }

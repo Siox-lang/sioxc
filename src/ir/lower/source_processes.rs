@@ -25,6 +25,55 @@ use crate::types::Typed;
 
 mod cfg_calls;
 
+#[derive(Clone, Copy)]
+struct FunctionInstance<'a> {
+    function: &'a ast::FnDecl,
+    implementation: Option<&'a ast::ImplDecl>,
+}
+
+impl<'a> FunctionInstance<'a> {
+    fn plain(function: &'a ast::FnDecl) -> Self {
+        Self {
+            function,
+            implementation: None,
+        }
+    }
+
+    fn operator(selected: crate::ir::SelectedOperator<'a>) -> Self {
+        Self {
+            function: selected.function,
+            implementation: Some(selected.implementation),
+        }
+    }
+
+    fn key(self) -> InlineFunctionKey {
+        InlineFunctionKey {
+            declaration: self.function.span,
+            // Local identity only: the AST is immutable for this lowering pass.
+            implementation: self.implementation.map(std::ptr::from_ref),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InlineFunctionKey {
+    declaration: crate::diag::Span,
+    implementation: Option<*const ast::ImplDecl>,
+}
+
+impl InlineFunctionKey {
+    fn plain(function: &ast::FnDecl) -> Self {
+        FunctionInstance::plain(function).key()
+    }
+
+    fn conflicts(self, other: Self) -> bool {
+        self.declaration == other.declaration
+            && (self.implementation.is_none()
+                || other.implementation.is_none()
+                || self.implementation == other.implementation)
+    }
+}
+
 struct ConstantSuffix<'a> {
     target: crate::resolve::DefId,
     declarations: &'a crate::resolve::declarations::DeclarationIndex<'a>,
@@ -63,7 +112,6 @@ struct LoweringContext<'a> {
     root_path: &'a str,
     process_ir: &'a mut ProcessIr,
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix<'a>>>,
-    constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
     /// Type aliases by resolver identity, for a local declared through one
     /// (`let h: binary16`) to find the index range its type denotes.
     type_aliases: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Type>,
@@ -81,7 +129,7 @@ struct LoweringContext<'a> {
     inline_return_types: Vec<Option<crate::types::Ty>>,
     /// Procedure returns resume the enclosing caller, not the whole process.
     inline_return_blocks: Vec<(ProcessBlockId, Option<ProcessValueId>)>,
-    inline_functions: std::collections::HashSet<crate::diag::Span>,
+    inline_functions: std::collections::HashSet<InlineFunctionKey>,
     /// Current canonical source call instance while expanding a CFG body.
     inline_scope: Option<u32>,
     inline_value_locals: Vec<Vec<crate::ir::ProcessValueBinding>>,
@@ -110,6 +158,18 @@ struct LoweringContext<'a> {
     frame_functions: std::collections::HashSet<crate::diag::Span>,
 }
 
+impl LoweringContext<'_> {
+    fn active_function(&self, key: InlineFunctionKey) -> bool {
+        self.inline_functions
+            .iter()
+            .any(|active| active.conflicts(key))
+    }
+
+    fn enter_function(&mut self, key: InlineFunctionKey) -> bool {
+        !self.active_function(key) && self.inline_functions.insert(key)
+    }
+}
+
 /// A shared value-function body per signature; `None` marks a signature whose
 /// body cannot be shared (it reads state, has effects or uses caller values).
 type SharedFunctions = std::collections::HashMap<String, Option<crate::ir::ProcessFunctionId>>;
@@ -135,37 +195,6 @@ fn source_type_aliases<'a>(
             _ => None,
         })
         .collect()
-}
-
-/// Source constants indexed by resolver identity. Module and impl-scoped
-/// declarations use the same arena aliasing rule; keeping both here also lets
-/// two test entities declare the same leaf name without colliding.
-fn source_constants<'a>(
-    modules: &'a [Module],
-    resolved: &Resolved,
-) -> std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr> {
-    let mut constants = std::collections::HashMap::new();
-    for item in modules.iter().flat_map(|module| &module.items) {
-        match item {
-            ast::Item::Const(constant) => {
-                if let Some(definition) = resolved.declared(constant.name.span) {
-                    constants.insert(definition, &constant.value);
-                }
-            }
-            ast::Item::Impl(implementation) => {
-                for constant in implementation.items.iter().filter_map(|item| match item {
-                    ImplItem::Const(constant) => Some(constant),
-                    _ => None,
-                }) {
-                    if let Some(definition) = resolved.declared(constant.name.span) {
-                        constants.insert(definition, &constant.value);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    constants
 }
 
 /// Functions whose bodies may be evaluated while their arguments are constant
@@ -446,8 +475,8 @@ fn process_declared_type_inner(
         .or_else(|| declared_process_type(ty, context.resolved)),
         ast::Type::Indexed { base, index, .. } => {
             let base = process_declared_type_inner(base, context, aliases)?;
-            let length = match index.as_deref() {
-                None => 0,
+            let (length, low) = match index.as_deref() {
+                None => (0, 0),
                 Some(ast::Expr::Range { lo, hi, .. }) => {
                     let left = crate::ir::eval_const_fns(
                         lo,
@@ -461,15 +490,31 @@ fn process_declared_type_inner(
                         context.functions,
                         0,
                     )?;
-                    u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?
+                    (
+                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
+                        left.min(right),
+                    )
                 }
-                Some(index) => u32::try_from(crate::ir::eval_const_fns(
+                Some(index) => match crate::ir::eval_range_fns(
                     index,
                     context.constant_integers,
                     context.functions,
-                    0,
-                )?)
-                .ok()?,
+                ) {
+                    Some((left, right)) => (
+                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
+                        left.min(right),
+                    ),
+                    None => (
+                        u32::try_from(crate::ir::eval_const_fns(
+                            index,
+                            context.constant_integers,
+                            context.functions,
+                            0,
+                        )?)
+                        .ok()?,
+                        0,
+                    ),
+                },
             };
             match base {
                 crate::types::Ty::Array {
@@ -481,7 +526,7 @@ fn process_declared_type_inner(
                     elem,
                     len: length,
                     family: Some(family),
-                    low: 0,
+                    low,
                 }),
                 // A sized index fills an unconstrained array's hole
                 // (`string[5]` is `Char[5]`); `[]` nests (`integer[][]`).
@@ -494,13 +539,13 @@ fn process_declared_type_inner(
                     elem,
                     len: length,
                     family: None,
-                    low: 0,
+                    low,
                 }),
                 element => Some(crate::types::Ty::Array {
                     elem: Box::new(element),
                     len: length,
                     family: None,
-                    low: 0,
+                    low,
                 }),
             }
         }
@@ -829,12 +874,16 @@ fn process_layout_for_type(
             elem,
             len,
             family: None,
-            ..
+            low,
         } => LayoutKind::Array {
-            range: (*len != 0).then(|| crate::ir::LayoutRange {
-                left: 0,
-                right: i64::from(*len) - 1,
-            }),
+            range: if *len == 0 {
+                None
+            } else {
+                Some(crate::ir::LayoutRange {
+                    left: *low,
+                    right: low.checked_add(i64::from(*len) - 1)?,
+                })
+            },
             element: Box::new(process_layout_for_type(elem, span, context)?),
         },
         crate::types::Ty::Named(definition) => {
@@ -1243,7 +1292,6 @@ pub fn lower(
     // to preserve the runtime's foreground/clock dispatch order.
     let mut process_ir = std::mem::take(&mut design.process_ir);
     let hardware_processes = std::mem::take(&mut process_ir.processes);
-    let constants = source_constants(modules, resolved);
     let type_aliases = source_type_aliases(modules, resolved);
     let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
     let recursive_calls = std::cell::RefCell::new(Vec::new());
@@ -1346,7 +1394,6 @@ pub fn lower(
                 root_path: &root_path,
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
-                constants: &constants,
                 type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
@@ -1415,7 +1462,6 @@ pub fn lower(
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
-                            constants: &constants,
                             type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
@@ -1477,7 +1523,6 @@ pub fn lower(
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
-                            constants: &constants,
                             type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
@@ -1556,7 +1601,6 @@ pub fn lower(
                     root_path: &root_path,
                     process_ir: &mut process_ir,
                     suffixes: &suffixes,
-                    constants: &constants,
                     type_aliases: &type_aliases,
                     constant_stack: std::collections::HashSet::new(),
                     functions: &functions,
@@ -1655,7 +1699,6 @@ pub fn lower(
                 root_path: &item.path,
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
-                constants: &constants,
                 type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
@@ -3662,7 +3705,8 @@ fn inline_process_procedure_call(
         give_literal_parameter_layout(parameter, argument, process, context);
         bindings.push((definition, argument));
     }
-    if !context.inline_functions.insert(function.span) {
+    let key = InlineFunctionKey::plain(function);
+    if !context.enter_function(key) {
         truncate_process_values(context, first_value);
         return None;
     }
@@ -3695,7 +3739,7 @@ fn inline_process_procedure_call(
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
-    context.inline_functions.remove(&function.span);
+    context.inline_functions.remove(&key);
 
     // A recursive/unknown statement call anywhere in this inline must fail
     // before its entry captures or earlier callee effects can run. Restore
@@ -4108,7 +4152,8 @@ fn lower_format_display(
     context: &mut LoweringContext<'_>,
 ) -> Option<()> {
     // A `fmt` that prints its own type would expand forever.
-    if !context.inline_functions.insert(function.span) {
+    let key = InlineFunctionKey::plain(function);
+    if !context.enter_function(key) {
         return None;
     }
     context.inline_self_values.push(Some(value));
@@ -4150,7 +4195,7 @@ fn lower_format_display(
     }
     context.value_bindings.pop();
     context.inline_self_values.pop();
-    context.inline_functions.remove(&function.span);
+    context.inline_functions.remove(&key);
     expanded
 }
 
@@ -5770,14 +5815,16 @@ fn compare_values(
         let input = right_type
             .as_ref()
             .and_then(|ty| process_type_key(ty, context));
-        if let Some(function) = context
+        if let Some(selected) = context
             .functions
-            .get_binary_operator(symbol, &owner, input.as_deref())
-            .filter(|function| !context.inline_functions.contains(&function.span))
+            .select_binary_operator(symbol, &owner, input.as_deref())
+            .filter(|selected| {
+                !context.active_function(FunctionInstance::operator(*selected).key())
+            })
         {
             let result = bool_type(context.resolved);
-            if let Some(value) = inline_process_function(
-                function,
+            if let Some(value) = inline_selected_function(
+                FunctionInstance::operator(selected),
                 span,
                 Some(left),
                 &[right],
@@ -6510,11 +6557,18 @@ fn apply_process_declared_ranges(
             }
         }
         ast::Type::Indexed { base, index, .. } => {
-            if let Some(ast::Expr::Range { lo, hi, .. }) = index.as_deref() {
-                let left =
-                    crate::ir::eval_const_fns(lo, context.constant_integers, context.functions, 0)?;
-                let right =
-                    crate::ir::eval_const_fns(hi, context.constant_integers, context.functions, 0)?;
+            let bounds = match index.as_deref() {
+                Some(index @ ast::Expr::Range { .. }) => Some(crate::ir::eval_range_fns(
+                    index,
+                    context.constant_integers,
+                    context.functions,
+                )?),
+                Some(index) => {
+                    crate::ir::eval_range_fns(index, context.constant_integers, context.functions)
+                }
+                None => None,
+            };
+            if let Some((left, right)) = bounds {
                 let declared_range = crate::ir::LayoutRange { left, right };
                 match &mut layout.kind {
                     LayoutKind::Packed { width, range, .. } => {
@@ -7627,9 +7681,9 @@ fn custom_index_value(
         .expr_type(ast::expr_span(index))
         .and_then(|ty| process_type_key(ty, context))
         .or_else(|| (!matches!(index, ast::Expr::Range { .. })).then(|| "integer".to_string()))?;
-    let function = context
+    let selected = context
         .functions
-        .get_binary_operator("[]", &owner, Some(&input))?;
+        .select_binary_operator("[]", &owner, Some(&input))?;
     let span = ast::expr_span(expression);
     let receiver = value_ref(base, process, context);
     // Integer literals fill the parameter's ABI width; ranges fill the
@@ -7641,8 +7695,8 @@ fn custom_index_value(
     };
     let argument = value_ref_with_type(index, process, context, argument_type.as_ref());
     let result = context.typed.expr_type(span).cloned();
-    inline_process_function(
-        function,
+    inline_selected_function(
+        FunctionInstance::operator(selected),
         span,
         Some(receiver),
         &[argument],
@@ -9279,9 +9333,31 @@ fn inline_process_function(
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
+    inline_selected_function(
+        FunctionInstance::plain(function),
+        call,
+        receiver,
+        arguments,
+        process,
+        context,
+        return_type,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inline_selected_function(
+    selected: FunctionInstance<'_>,
+    call: crate::diag::Span,
+    receiver: Option<ProcessValueId>,
+    arguments: &[ProcessValueId],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let function = selected.function;
     let first_value = context.process_ir.values.len();
     let result = expand_process_function(
-        function,
+        selected,
         call,
         receiver,
         arguments,
@@ -9340,7 +9416,7 @@ fn inline_process_function(
     }
     let body = context.process_ir.values.len();
     let Some(shared) = shared_process_function(
-        function,
+        selected,
         &operands,
         receiver.is_some(),
         process,
@@ -9409,19 +9485,20 @@ fn self_calls(
 /// alone: it reads state, has an effect, checks at run time, or depends on a
 /// value of its caller.
 fn shared_process_function(
-    function: &ast::FnDecl,
+    selected: FunctionInstance<'_>,
     operands: &[ProcessValueId],
     has_receiver: bool,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<crate::ir::ProcessFunctionId> {
+    let function = selected.function;
     let layouts = operands
         .iter()
         .map(|operand| operand_source_layout(*operand, process, context))
         .collect::<Vec<_>>();
     // The signature is the operands' shapes, never where they were declared.
-    let mut key = format!("{:?}->{:?}", function.span, return_type);
+    let mut key = format!("{:?}->{:?}", selected.key(), return_type);
     if let Some(layout) = context
         .self_formats
         .last()
@@ -9497,7 +9574,7 @@ fn shared_process_function(
         (None, &parameters[..])
     };
     let result = expand_process_function(
-        function,
+        selected,
         function.span,
         receiver,
         arguments,
@@ -9674,7 +9751,7 @@ fn standalone_body(
 /// overload bodies, recursion recovery, and result typing cannot drift.
 #[allow(clippy::too_many_arguments)]
 fn expand_process_function(
-    function: &ast::FnDecl,
+    selected: FunctionInstance<'_>,
     call: crate::diag::Span,
     receiver: Option<ProcessValueId>,
     arguments: &[ProcessValueId],
@@ -9682,6 +9759,7 @@ fn expand_process_function(
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
+    let function = selected.function;
     let body = function.body.as_ref()?;
     let first_expanded = context.process_ir.values.len();
     if function.ret.is_none()
@@ -9713,7 +9791,8 @@ fn expand_process_function(
         give_literal_parameter_layout(parameter, argument, process, context);
         bindings.insert(definition, argument);
     }
-    if !context.inline_functions.insert(function.span) {
+    let key = selected.key();
+    if !context.enter_function(key) {
         return None;
     }
 
@@ -9758,7 +9837,7 @@ fn expand_process_function(
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
-    context.inline_functions.remove(&function.span);
+    context.inline_functions.remove(&key);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
     let (result, result_span) = result?;
     if drops_effect(first_expanded, result, context) {
@@ -10041,9 +10120,9 @@ fn inline_process_array_binary_operator(
     }
     let owner = process_type_key(left_element, context)?;
     let input = process_type_key(right_element, context)?;
-    let function = context
+    let selected = context
         .functions
-        .get_binary_operator(symbol, &owner, Some(&input))?;
+        .select_binary_operator(symbol, &owner, Some(&input))?;
     let span = ast::expr_span(lhs);
     let left = value_ref_with_type(lhs, process, context, Some(left_type));
     let right = value_ref_with_type(rhs, process, context, Some(right_type));
@@ -10053,8 +10132,8 @@ fn inline_process_array_binary_operator(
         .into_iter()
         .zip(right)
         .map(|(left, right)| {
-            inline_process_function(
-                function,
+            inline_selected_function(
+                FunctionInstance::operator(selected),
                 span,
                 Some(left),
                 &[right],
@@ -10090,15 +10169,15 @@ fn inline_process_array_unary_operator(
         return None;
     };
     let owner = process_type_key(elem, context)?;
-    let function = context.functions.get_unary_operator(symbol, &owner)?;
+    let selected = context.functions.select_unary_operator(symbol, &owner)?;
     let span = ast::expr_span(rhs);
     let operand = value_ref_with_type(rhs, process, context, Some(operand_type));
     let operands = process_array_elements(operand, operand_type, span, context)?;
     let elements = operands
         .into_iter()
         .map(|operand| {
-            inline_process_function(
-                function,
+            inline_selected_function(
+                FunctionInstance::operator(selected),
                 span,
                 Some(operand),
                 &[],
@@ -10198,9 +10277,10 @@ fn inline_process_binary_operator(
     let input = right_type
         .as_ref()
         .and_then(|ty| process_type_key(ty, context));
-    let function = context
+    let selected = context
         .functions
-        .get_binary_operator(symbol, &owner, input.as_deref())?;
+        .select_binary_operator(symbol, &owner, input.as_deref())?;
+    let function = selected.function;
 
     let first_value = context.process_ir.values.len();
     let left = value_ref_with_type(lhs, process, context, Some(&left_type));
@@ -10254,8 +10334,8 @@ fn inline_process_binary_operator(
         .and_then(crate::ir::lower_helpers::type_head_name)
         .is_some_and(|head| head == "Self" || owner.rsplit("::").next() == Some(head));
     let return_type = return_type.or(own_type.then_some(&left_type));
-    let result = inline_process_function(
-        function,
+    let result = inline_selected_function(
+        FunctionInstance::operator(selected),
         ast::expr_span(lhs),
         Some(left),
         &[right],
@@ -10312,10 +10392,10 @@ fn inline_process_comparison(
     }
     let owner = process_type_key(left_type, context)?;
     let input = right_type.and_then(|ty| process_type_key(ty, context));
-    let function = context
+    let selected = context
         .functions
-        .get_binary_operator(symbol, &owner, input.as_deref())?;
-    if context.inline_functions.contains(&function.span) {
+        .select_binary_operator(symbol, &owner, input.as_deref())?;
+    if context.active_function(FunctionInstance::operator(selected).key()) {
         return None;
     }
     let first_value = context.process_ir.values.len();
@@ -10343,8 +10423,8 @@ fn inline_process_comparison(
     // wraps to the type first, as the built-in comparison would.
     let left = narrow_to_type(left, Some(left_type), context);
     let right = narrow_to_type(right, right_context, context);
-    let result = inline_process_function(
-        function,
+    let result = inline_selected_function(
+        FunctionInstance::operator(selected),
         ast::expr_span(lhs),
         Some(left),
         &[right],
@@ -10558,12 +10638,12 @@ fn inline_process_unary_operator(
         }));
     }
     let owner = process_type_key(&operand_type, context)?;
-    let function = context.functions.get_unary_operator(symbol, &owner)?;
+    let selected = context.functions.select_unary_operator(symbol, &owner)?;
 
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(rhs, process, context, Some(&operand_type));
-    let result = inline_process_function(
-        function,
+    let result = inline_selected_function(
+        FunctionInstance::operator(selected),
         ast::expr_span(rhs),
         Some(operand),
         &[],
@@ -11313,10 +11393,51 @@ fn value_ref_with_type_inner(
     // best-effort recovery for a rejected constant cycle.
     if let ast::Expr::Path(path) = expression {
         if let Some(definition) = context.resolved.resolved(path.span) {
-            if let Some(initializer) = context.constants.get(&definition).copied() {
+            if let Some(declaration) = context.functions.declarations().constant(definition) {
                 if context.constant_stack.insert(definition) {
-                    let value = value_ref_with_type(initializer, process, context, ty.as_ref());
+                    let declared = process_declared_type(&declaration.ty, context)
+                        .filter(|ty| is_concrete_type(ty, context));
+                    let constant_type = context
+                        .typed
+                        .expr_type(span)
+                        .filter(|ty| is_concrete_type(ty, context))
+                        .cloned()
+                        .or(declared)
+                        .or_else(|| ty.clone());
+                    let mut value = value_ref_with_type(
+                        &declaration.value,
+                        process,
+                        context,
+                        constant_type.as_ref(),
+                    );
                     context.constant_stack.remove(&definition);
+                    if let Some(layout) =
+                        process_binding_layout(Some(&declaration.ty), span, value, process, context)
+                    {
+                        if let Some(width) = layout
+                            .packed_width()
+                            .filter(|_| matches!(layout.kind, LayoutKind::Scalar { .. }))
+                            .filter(|width| {
+                                context.process_ir.values[value.0 as usize]
+                                    .bit_width
+                                    .is_some_and(|actual| actual != *width)
+                            })
+                        {
+                            // Keep the initializer's execution format; bind at the declaration's.
+                            let target = constant_type
+                                .or_else(|| context.process_ir.values[value.0 as usize].ty.clone());
+                            value = push_value(
+                                span,
+                                target,
+                                Some(width),
+                                ProcessValueKind::RawResize { operand: value },
+                                context,
+                            );
+                        }
+                        let node = &mut context.process_ir.values[value.0 as usize];
+                        node.bit_width = node.bit_width.or_else(|| layout.packed_width());
+                        context.process_ir.value_layouts[value.0 as usize] = Some(layout);
+                    }
                     return value;
                 }
             }
@@ -13403,6 +13524,359 @@ mod tests {
     use crate::diag::{DiagnosticSink, FileId};
 
     #[test]
+    fn selected_operator_instances_keep_shared_default_implementations_distinct() {
+        let mut sources = [
+            "module model;
+             pub enum Group { First = 3, Second = 9 }
+             pub enum Token { A = 9, B = 2 }
+             impl core::cmp::Equal<Group> for Group {
+                 fn eq(self, rhs: Group) -> core::primitive::Flag { return core::primitive::Flag::true; }
+             }
+             impl core::cmp::Equal<Token> for Group {
+                 fn eq(self, rhs: Token) -> core::primitive::Flag { return core::primitive::Flag::false; }
+             }
+             impl core::cmp::Equal<Token> for Token {
+                 fn eq(self, rhs: Token) -> core::primitive::Flag { return self == rhs; }
+             }",
+            "module core::cmp;
+             pub trait Equal<Rhs> {
+                 fn eq(self, rhs: Rhs) -> core::primitive::Flag;
+                 fn ne(self, rhs: Rhs) -> core::primitive::Flag {
+                     return if self.eq(rhs) { core::primitive::Flag::false } else { core::primitive::Flag::true };
+                 }
+             }
+             attr lang for Equal = \"eq\";",
+            "module core::primitive;
+             pub enum Flag { false = 5, true = 17 } attr lang for Flag = \"bool\";",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let mut functions = crate::ir::FunctionIndex::new(&resolved);
+            for item in modules.iter().flat_map(|module| &module.items) {
+                functions.insert_declaration(item);
+            }
+            let default = modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .find_map(|item| {
+                    let ast::Item::Trait(declaration) = item else {
+                        return None;
+                    };
+                    declaration
+                        .items
+                        .iter()
+                        .find(|function| function.name.text == "ne")
+                })
+                .unwrap();
+            let implementations = modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .filter_map(|item| {
+                    if let ast::Item::Impl(implementation) = item {
+                        Some(implementation)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            for implementation in &implementations {
+                functions.insert_operator_impl(implementation);
+                functions.insert_comparison_default(implementation, default);
+            }
+            let mut keys = Vec::new();
+            for implementation in implementations {
+                let owner = functions.type_head_key(&implementation.target).unwrap();
+                let input = functions
+                    .trait_arg_key(&implementation.trait_args[0].as_type().unwrap())
+                    .unwrap();
+                let selected = functions
+                    .select_binary_operator("!=", &owner, Some(&input))
+                    .unwrap();
+                assert!(std::ptr::eq(selected.function, default));
+                assert!(std::ptr::eq(selected.implementation, implementation));
+                let key = FunctionInstance::operator(selected).key();
+                assert!(key.conflicts(key));
+                assert!(InlineFunctionKey::plain(default).conflicts(key));
+                assert!(keys
+                    .iter()
+                    .all(|previous: &InlineFunctionKey| !previous.conflicts(key)));
+                keys.push(key);
+            }
+            assert_eq!(
+                keys.len(),
+                3,
+                "different receivers and rhs implementations must coexist"
+            );
+            sources.reverse();
+        }
+    }
+
+    #[test]
+    fn constant_arrays_keep_declaration_ranges_and_nominal_scope() {
+        let mut sources = [
+            "module left; pub const VALUES: integer[6..4] = [11, 13, 17];
+             pub struct Config { pub width: integer, pub count: integer }
+             pub const CFG: Config = match 0 {
+                 0 => { .width = 6, .count = 2 },
+                 _ => { .width = 1, .count = 1 },
+             };",
+            "module right; pub const VALUES: integer[-1..-2] = [23, 29];",
+            "module tests;
+             #[test] entity Smoke {}
+             impl Smoke {
+                 const VALUES: integer[10..11] = [31, 37];
+                 process { print!(\"{} {} {} {}\", left::VALUES[6], right::VALUES[-2], VALUES[11], left::CFG.width); }
+             }",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; pub attr test: std::logic::Bool for entity; attr lang for test = \"test\";",
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test;",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            let typed = crate::types::check(&modules, &resolved, &mut sink);
+            let (hierarchy, plan) =
+                crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+            let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            lower(
+                &modules,
+                &resolved,
+                &typed,
+                &hierarchy,
+                Some(&plan),
+                &mut design,
+                &mut sink,
+            )
+            .expect("constant source layouts must lower");
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            assert!(design.process_ir.validate(0).is_empty());
+            let mut records = 0;
+            for (value, layout) in design
+                .process_ir
+                .values
+                .iter()
+                .zip(&design.process_ir.value_layouts)
+            {
+                if let Some(layout) = layout {
+                    if matches!(layout.kind, LayoutKind::Struct { .. }) {
+                        records += 1;
+                    }
+                    assert_eq!(
+                        value.bit_width,
+                        layout.packed_width(),
+                        "{value:?}: {layout:?}"
+                    );
+                }
+            }
+            assert!(
+                records > 0,
+                "the record match must retain its binding layout"
+            );
+            let ranges = design
+                .process_ir
+                .values
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| matches!(value.kind, ProcessValueKind::Array(_)))
+                .map(|(index, value)| {
+                    let range = design.process_ir.value_layouts[index]
+                        .as_ref()
+                        .and_then(SourceLayout::index_range)
+                        .expect("each constant array retains its source range");
+                    let Some(crate::types::Ty::Array { low, .. }) = value.ty.as_ref() else {
+                        panic!("constant array needs its declared type: {value:?}");
+                    };
+                    assert_eq!(*low, range.left.min(range.right));
+                    range
+                })
+                .collect::<Vec<_>>();
+            for (left, right) in [(6, 4), (-1, -2), (10, 11)] {
+                assert!(
+                    ranges.contains(&crate::ir::LayoutRange { left, right }),
+                    "missing {left}..{right}: {ranges:?}"
+                );
+            }
+            sources.reverse();
+        }
+    }
+
+    #[test]
+    fn scalar_constants_bind_their_format_without_relabelling_initializers() {
+        let mut sources = [
+            "module units;
+             pub struct Bytes(integer);
+             pub type Alias = Bytes;
+             impl Suffix<\"kB\", integer> for Bytes {
+                 static fn suffix(value: integer) -> Bytes { return Bytes(value * 1024); }
+             }
+             pub struct Tick(integer);
+             impl Suffix<\"ns\", integer> for Tick {
+                 static fn suffix(value: integer) -> Tick { return Tick(value * 1000000); }
+             }
+             pub const MEM: Bytes = 4kB;
+             pub const COPY: Alias = MEM;
+             pub const HALF: Tick = 1.5ns;
+             pub entity Dut { mem: Bytes out, half: Tick out }
+             impl Dut { mem = MEM; half = HALF; }",
+            "module tests;
+             #[test] entity Smoke {}
+             impl Smoke {
+                 let dut: units::Dut = {};
+                 process { print!(\"{} {} {}\", integer(units::MEM), integer(units::COPY), integer(units::HALF)); }
+             }",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; pub attr test: std::logic::Bool for entity; attr lang for test = \"test\";",
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test;",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            let typed = crate::types::check(&modules, &resolved, &mut sink);
+            let (hierarchy, plan) =
+                crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+            let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            lower(
+                &modules,
+                &resolved,
+                &typed,
+                &hierarchy,
+                Some(&plan),
+                &mut design,
+                &mut sink,
+            )
+            .expect("scalar constant bindings must lower");
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            let errors = design
+                .process_ir
+                .validate(u32::try_from(design.signals.len()).unwrap());
+            assert!(errors.is_empty(), "{errors:?}");
+            let mut resized = Vec::new();
+            for (node, layout) in design
+                .process_ir
+                .values
+                .iter()
+                .zip(&design.process_ir.value_layouts)
+            {
+                let (ProcessValueKind::RawResize { operand }, Some(layout)) = (&node.kind, layout)
+                else {
+                    continue;
+                };
+                if !matches!(layout.kind, LayoutKind::Scalar { .. }) {
+                    continue;
+                }
+                let original = &design.process_ir.values[operand.0 as usize];
+                let ProcessValueKind::Number(ProcessNumber::Integer(words)) = &original.kind else {
+                    continue;
+                };
+                if words.as_slice() == [4096] || words.as_slice() == [1_500_000] {
+                    assert_eq!(node.bit_width, layout.packed_width());
+                    assert_eq!(node.bit_width, Some(i64::BITS));
+                    assert_ne!(
+                        original.bit_width, node.bit_width,
+                        "the binding must not mutate its minimal-width initializer"
+                    );
+                    resized.push(words[0]);
+                }
+            }
+            assert!(
+                resized.contains(&4096) && resized.contains(&1_500_000),
+                "{resized:?}"
+            );
+            sources.reverse();
+        }
+    }
+
+    #[test]
+    fn range_constant_aliases_retain_process_array_width_and_direction() {
+        let mut sources = [
+            "module tests;
+             #[test] entity Smoke {}
+             impl Smoke {
+                 const SPAN: range = 2..0;
+                 const COPY: range = SPAN;
+                 process {
+                     let xs: integer[COPY] = [11, 13, 17];
+                     print!(\"{} {} {}\", xs'left, xs'right, xs[2]);
+                 }
+             }",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; pub attr test: std::logic::Bool for entity; attr lang for test = \"test\";",
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test;",
+            "module core::ops; pub struct Bounds { pub l: integer, pub r: integer } attr lang for Bounds = \"range\";",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            let typed = crate::types::check(&modules, &resolved, &mut sink);
+            let (hierarchy, plan) =
+                crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+            let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            lower(
+                &modules,
+                &resolved,
+                &typed,
+                &hierarchy,
+                Some(&plan),
+                &mut design,
+                &mut sink,
+            )
+            .expect("range constant declarations must lower");
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let errors = design
+                .process_ir
+                .validate(u32::try_from(design.signals.len()).unwrap());
+            assert!(errors.is_empty(), "{errors:?}");
+            let local = design
+                .process_ir
+                .processes
+                .iter()
+                .flat_map(|process| &process.locals)
+                .find(|local| local.name == "xs")
+                .expect("range-sized local");
+            let layout = local.layout.as_ref().expect("declared local layout");
+            assert_eq!(layout.packed_width(), Some(3 * i64::BITS));
+            assert_eq!(
+                layout.index_range(),
+                Some(crate::ir::LayoutRange { left: 2, right: 0 })
+            );
+            sources.reverse();
+        }
+    }
+
+    #[test]
     fn checked_scalar_aliases_fill_only_incomplete_layouts() {
         let span = crate::diag::Span::new(FileId(0), 0..1);
         let opaque = SourceLayout {
@@ -13492,7 +13966,6 @@ mod tests {
             root_path: "",
             process_ir: &mut ir,
             suffixes: &Default::default(),
-            constants: &Default::default(),
             type_aliases: &Default::default(),
             constant_stack: Default::default(),
             functions: &crate::ir::FunctionIndex::new(&resolved),

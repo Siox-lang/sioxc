@@ -28,7 +28,7 @@ impl<'a> Lowering<'a> {
             let method = |name: &str| {
                 methods
                     .iter()
-                    .find_map(|(function, _)| (function.name.text == name).then_some(*function))
+                    .find_map(|(function, _, _)| (function.name.text == name).then_some(*function))
             };
             let (Some(to_bool), Some(is_binary), Some(is_high_impedance), Some(to_x01)) = (
                 method("to_bool"),
@@ -97,7 +97,7 @@ impl<'a> Lowering<'a> {
                 }
                 encoding.binary_ops.insert(op.to_string(), table);
             }
-            if let Some((function, _)) = self
+            if let Some((function, _, _)) = self
                 .op_impls
                 .get("not", ty)
                 .and_then(|functions| functions.first())

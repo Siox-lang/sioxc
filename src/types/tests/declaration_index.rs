@@ -2,7 +2,7 @@ use super::*;
 use crate::diag::{DiagnosticSink, FileId};
 use crate::resolve::declarations::DeclarationIndex;
 use crate::syntax::ast::Expr;
-use crate::types::consteval::{evaluate, Reason};
+use crate::types::consteval::{evaluate, evaluate_value, Reason, Source, Value};
 
 fn parse(sources: &[&str]) -> (Vec<Module>, Resolved) {
     let mut sink = DiagnosticSink::default();
@@ -1237,15 +1237,23 @@ fn integer_analysis_follows_aliases_but_does_not_erase_other_value_types() {
         fn calculate(n: Alias) -> Count { return n + 1; }
         fn array() -> integer[2] { return [1, 2]; }
         fn real_argument(n: real) -> integer { return 1; }
+        fn real_value() -> real { return 2.5; }
+        fn count_value() -> natural { return 3; }
         const RESULT: integer = calculate(6);
         const ARRAY: integer[2] = array();
-        const REAL: integer = real_argument(1);"]);
+        const REAL: integer = real_argument(1);
+        const FRACTION: real = real_value();
+        const COUNT: natural = count_value();"]);
     let index = DeclarationIndex::collect(&resolved, &modules);
     assert_eq!(
         evaluate(&constant(&modules[0], "RESULT").value, &index, 0),
         Ok(7)
     );
-    for name in ["ARRAY", "REAL"] {
+    assert_eq!(
+        evaluate(&constant(&modules[0], "REAL").value, &index, 0),
+        Ok(1)
+    );
+    for name in ["ARRAY", "REAL", "FRACTION", "COUNT"] {
         let Expr::Call { callee, .. } = &constant(&modules[0], name).value else {
             unreachable!()
         };
@@ -1257,14 +1265,38 @@ fn integer_analysis_follows_aliases_but_does_not_erase_other_value_types() {
             "the declaration still exists"
         );
         assert!(
-            crate::types::consteval::Environment::function(&index, callee).is_none(),
-            "the value needs a typed interpreter"
+            crate::types::consteval::Environment::function(&index, callee).is_some(),
+            "the shared typed interpreter supports this declaration"
         );
+    }
+    let Value::Array {
+        element,
+        values,
+        left,
+        descending,
+    } = evaluate_value(&constant(&modules[0], "ARRAY").value, &index, None, 0).unwrap()
+    else {
+        panic!("array value");
+    };
+    assert_eq!(element.as_ref(), &Ty::Integer);
+    assert_eq!(values.as_ref(), &[Value::Integer(1), Value::Integer(2)]);
+    assert_eq!((left, descending), (0, false));
+    for (name, expected) in [("FRACTION", Value::Real(2.5)), ("COUNT", Value::Natural(3))] {
+        let value = evaluate_value(&constant(&modules[0], name).value, &index, None, 0).unwrap();
+        assert_eq!(value, expected, "{name}");
+        assert_eq!(
+            Source::new(&index).word(value),
+            None,
+            "{name}: no untyped ABI word"
+        );
+    }
+    for name in ["ARRAY", "FRACTION", "COUNT"] {
         assert_eq!(
             evaluate(&constant(&modules[0], name).value, &index, 0)
                 .unwrap_err()
                 .reason,
-            Reason::Unsupported
+            Reason::Unsupported,
+            "{name}: an integer query must not erase the value type"
         );
     }
 }

@@ -539,7 +539,7 @@ impl<'a> Lowering<'a> {
         layout: Option<&SourceLayout>,
     ) -> Option<Expr> {
         let fns = self.op_impls.get("Resolve", ty)?;
-        let (f, _) = fns.first()?;
+        let (f, _, _) = fns.first()?;
         f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), Val::Scalar(a));

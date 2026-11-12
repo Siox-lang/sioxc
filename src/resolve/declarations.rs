@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, Item, Module, Params, Path,
-    StructDecl, TraitDecl, Type, Using, UsingKind,
+    ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, ImplItem, Item, Module, Params,
+    Path, StructDecl, TraitDecl, Type, Using, UsingKind,
 };
 
 pub(crate) mod expand;
@@ -113,6 +113,11 @@ impl<'a> DeclarationIndex<'a> {
                 }
             }
             Item::Impl(implementation) => {
+                for item in &implementation.items {
+                    if let ImplItem::Const(constant) = item {
+                        self.insert_constant(constant);
+                    }
+                }
                 let mut target = &implementation.target;
                 loop {
                     match target {
@@ -188,6 +193,13 @@ impl<'a> DeclarationIndex<'a> {
     pub(crate) fn enumeration(&self, id: DefId) -> Option<&'a EnumDecl> {
         match self.declarations.get(&id)? {
             Declaration::Enum(declaration) => Some(declaration),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn structure(&self, id: DefId) -> Option<&'a StructDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::Struct(declaration) => Some(declaration),
             _ => None,
         }
     }

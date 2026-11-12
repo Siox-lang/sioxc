@@ -1864,7 +1864,16 @@ impl<'a> Resolver<'a> {
         for it in &im.items {
             match it {
                 ImplItem::Let(l) => self.bind_local(&l.name.text, l.name.span),
-                ImplItem::Const(c) => self.bind_local(&c.name.text, c.name.span),
+                ImplItem::Const(c) => {
+                    let id = self.add_def(
+                        c.name.text.clone(),
+                        DefKind::Const,
+                        c.is_pub,
+                        Some(c.name.span),
+                        None,
+                    );
+                    self.bind(&c.name.text, id);
+                }
                 ImplItem::Fn(f) => self.bind_local(&f.name.text, f.name.span),
                 ImplItem::ModeField { name, .. } => self.bind_local(&name.text, name.span),
                 ImplItem::Process(_) => {}
@@ -3817,6 +3826,47 @@ mod tests {
             diagnostic.code == Some(codes::DUPLICATE_ITEM)
                 && diagnostic.message.contains("inherent member `state`")
         }));
+    }
+
+    #[test]
+    fn impl_constants_have_constant_ids_without_exporting_lexical_locals() {
+        let source = "module constants;
+            const VALUE: integer = 1;
+            entity Device {}
+            impl Device {
+                const VALUE: integer = 2;
+                process { let value: integer = VALUE; }
+            }";
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        let resolved = resolve(std::slice::from_ref(&module), &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let Item::Const(outer) = &module.items[0] else {
+            panic!("module constant");
+        };
+        let Item::Impl(implementation) = &module.items[2] else {
+            panic!("impl");
+        };
+        let ImplItem::Const(inner) = &implementation.items[0] else {
+            panic!("impl constant");
+        };
+        let ImplItem::Process(process) = &implementation.items[1] else {
+            panic!("process");
+        };
+        let Stmt::Let(local) = &process.body.stmts[0] else {
+            panic!("process local");
+        };
+        let Some(Expr::Path(value)) = &local.value else {
+            panic!("constant reference");
+        };
+        let outer = resolved.declared(outer.name.span).unwrap();
+        let inner = resolved.declared(inner.name.span).unwrap();
+        let local = resolved.declared(local.name.span).unwrap();
+        assert_ne!(outer, inner);
+        assert_eq!(resolved.kind_of(outer), Some(DefKind::Const));
+        assert_eq!(resolved.kind_of(inner), Some(DefKind::Const));
+        assert_eq!(resolved.kind_of(local), Some(DefKind::Local));
+        assert_eq!(resolved.resolved(value.span), Some(inner));
     }
 
     #[test]

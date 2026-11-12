@@ -92,8 +92,15 @@ impl<'a> Checker<'a> {
             let Some((lo, hi)) = self.const_int(lo).zip(self.const_int(hi)) else {
                 return (width_of(index), 0);
             };
-            let len = u32::try_from((hi - lo).abs() + 1).unwrap_or(0);
-            return (len, i64::try_from(lo.min(hi)).unwrap_or(0));
+            let (Ok(left), Ok(right)) = (i64::try_from(lo), i64::try_from(hi)) else {
+                return (0, 0);
+            };
+            let len = lo
+                .abs_diff(hi)
+                .checked_add(1)
+                .and_then(|len| u32::try_from(len).ok())
+                .unwrap_or(0);
+            return (len, left.min(right));
         }
         (
             self.const_int(index)

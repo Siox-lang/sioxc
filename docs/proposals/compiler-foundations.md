@@ -9,6 +9,39 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
+Local acceptance (reviewed 2026-11-12, typed values/constant identity/ranges):
+guarded unit `1794150078265241988-398244` completed exited/success/0 on
+November 8, peak 1,612,656,640 bytes under the normal 2 GiB cap. The complete
+matrix passes 754 frontend and 14 import API tests, both Rust suites (811
+default / 790 bitpack library cases, all integration tests and all 23 DWARF
+tests per mode), strict all-target/all-feature Clippy, 70 runner tests including
+36 waveform-checker tests, and 12 specified example artifacts. Both ACTUAL
+274-program corpora pass; each storage mode passes 71 text UI and 71 JSON
+cases, all 56 active diagnostic codes and two apply/recompile migrations.
+All 68 additional directly executed native/debug binaries and four aggregate
+native/VCD runs pass, including exact declaration/value/timing and normalized
+cross-mode/debug waveform parity. The scalar binding, same-leaf impl constants
+and range-sized testbench regressions are included, not excluded from coverage.
+
+Source fingerprint `79f088631fca9d539b75e0724990abdd90ad23fa4a723a3f41b63a11303278cd`
+and actual-corpus fingerprint
+`04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after the gate and independent November 12 current-state review.
+Only acceptance Markdown and coordination-log rotation change afterward. The
+paired corpus commit is local `38f4e01`; its 20 original peer files remain
+untracked and excluded. The successful gate's temporary timeout override was
+removed after completion, without restarting the job or raising memory limits.
+
+This accepts integer/natural/real/aggregate and inclusive-integer-range contexts,
+declaration-owned constant materialization, explicit scalar format boundaries,
+and implementation-aware operator selection. It does NOT accept the separate
+derived/From/record-boundary draft. The engineering estimate stays about 85%
+of compiler foundations, not the whole compiler. All five sections remain
+required: generic/associated applied contexts, packed/string/open/enum-range
+values, structural defaults, suffix-folder migration, remaining declaration
+registries and residual name-hook consumers are still unfinished. No push or
+wiki publication is implied.
+
 Local acceptance (2026-11-06, combined main integration and identity fixes):
 the integration combines accepted foundations with main `801ec40`, including
 implicit/static receivers, generate processes, timed waits and entity methods.
@@ -52,7 +85,77 @@ the whole compiler. All five sections remain required. Fully typed values and
 attributes, remaining declaration registries and residual hook consumers are
 not complete. Generic conversions need per-instantiation lowering facts, and
 the old scalar suffix folders still need migration to the shared evaluator.
-The separate real/natural draft is untested and not claimed accepted here.
+The separate real/natural draft is not claimed accepted here.
+
+Local followup in progress (2026-11-06): the integration now combines that draft
+with owned aggregate values in the existing interpreter. Arrays retain element
+types and declared labels/direction; records retain nominal owners and declaration
+order; tuples retain their element types. Storage is shared through Arc, and
+unchanged nested conformance keeps its allocation even with NaN/signed-zero
+elements. Typed module constants, arguments, locals, assignments and returns
+use the same borrowed declaration contracts. Static array metadata falls back
+to shared values only when the existing stage adapter cannot answer; Boolean
+direction comes from the registered enum. Integer/natural/real domains stay
+distinct, including checked explicit conversions and contextual numeric literals.
+The combined snapshot is UNACCEPTED until its focused/full Rust, native,
+actual-corpus and diagnostic gates pass. The earlier isolated runs compiled,
+but stopped on fixture phase/privilege errors and an attribute failure-reason
+regression; those repairs remain in the combined regression suite. Generic/
+packed/range values, structural defaults, further statements/attributes and
+remaining registries/hooks are still required. This is not five-section completion.
+
+Followup preview (2026-11-08): guarded job 4010271 completed successfully within
+the normal 2 GiB limit. All 750 frontend tests, 40 shared-evaluator tests and
+strict frontend Clippy pass. The actual aggregate-constant fixture runs in all
+four ordinary/debug and default/bitpack combinations; all four DUT signal
+declarations and exact value/timing sequences agree across modes. Constants
+retain their declared array labels and nominal scope through Process IR;
+operator expansion retains the selected implementation when multiple instances
+share one trait-default function. This is preview evidence, not full acceptance.
+The VCD profile and negative tests are now versioned; all 36 checker tests pass,
+including missing declaration metadata and unchanged two-value reader behavior.
+The complete Rust, DWARF, actual-corpus and diagnostics matrix must pass on this
+final source before committing. Generic/associated-call contexts, additional
+constant value forms and the remaining registries/hooks are still open.
+
+Full-gate followup (2026-11-08): unit 4112157 additionally passes all 23 default
+DWARF tests, but the default Rust integration suite exposes #247: the `4kB`
+constant's minimal 13-bit executable value was assigned its declared 64-bit
+integer-backed scalar layout without an actual binding boundary. Stop that
+owned failed matrix; its dead service is not a passing gate. The repair inserts
+an explicit scalar RawResize only when a known initializer width differs from
+the declaration, preserving the initializer's original width and leaving
+aggregate validation strict. A reversed-module-order IR regression covers
+custom suffixes, aliases and fractional time, including positive values whose
+highest minimal-width bit is set. It compiled, but its first validation call
+incorrectly passed zero signals for a design containing a DUT. The fixture now
+supplies the actual signal count and reports all validation errors. Rerun that focus and
+issues_243_249 in both storage modes before the complete frozen matrix. No
+acceptance/commit/push is claimed, and the isolated newtype draft stays separate.
+
+Constant identity/range followup (2026-11-08): the next complete matrix passes
+both Rust suites, all 23 DWARF tests per mode and strict Clippy, but both actual
+corpora stop at 271/274. The remaining hardware paths publish impl constants
+under bare names even though reads now use resolved declarations. Both
+declarations and reads now use the same declaration-ID key in existing legacy
+tables, so same-named module and impl constants cannot capture one another.
+Inclusive integer ranges now reuse the registered range record in the shared
+typed evaluator; aliases, pure helper returns and array bounds retain endpoint
+order. Process declarations/layouts consume those shared range values. No
+separate range-value registry or new constant-value variant is added. The text
+UI fixture changes only the ordering of three unchanged enum diagnostics to
+source order; error counts/messages/spans are retained.
+
+Focused unit 392171 completed exited/success/0, peak 1,550,114,816 bytes:
+754 frontend tests, strict frontend Clippy and all twelve directly executed
+regression binaries pass (three previous corpus failures x ordinary/debug x
+default/bitpack). New frontend coverage checks same-leaf module/impl identities,
+per-instance renamed parameters, range aliases/helper calls, negative/singleton
+endpoints, nominal lookalikes and effectful bounds. This is preview evidence;
+the complete frozen matrix must rerun before any local commit. Open/enum ranges,
+packed/string values, generic contexts, structural defaults, remaining
+registries and hook consumers are not complete. The estimate remains about
+85% of compiler foundations; the separate derived/From draft is still uncompiled.
 
 Local acceptance (reviewed 2026-11-04, checker alias registry migration): shared
 declaration normalization replaces the checker's copied alias table and separate
@@ -453,8 +556,9 @@ four builds. Strict waveform mutation tests reject missing signals, wrong widths
 values/times and missing/reversed delta updates. Nonstandard-encoding and raw-bit
 control cases pin reconstruction without hardcoding production discriminants.
 
-**Remaining.** Unify callable/attribute availability through resolved contracts;
-support packed, real, natural, aggregate and directional-range values, structural
+**Remaining.** Unify callable/attribute availability through resolved contracts.
+The real/natural/aggregate and inclusive-integer-range followup is accepted as
+recorded above. Support packed/string values, open/enum ranges, structural
 defaults and additional pure-function statements. Supply all statically sized
 attributes, including port/local environments for issue #295; the current IR
 adapter only reads already-bound field/constant-index attribute paths.

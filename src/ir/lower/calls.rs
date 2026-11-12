@@ -64,11 +64,11 @@ impl<'a> Lowering<'a> {
                 _ => None,
             }
         })?;
-        let (f, _) = self
+        let (f, _, _) = self
             .op_impls
             .get("From", target)?
             .iter()
-            .find(|(f, declared)| {
+            .find(|(f, declared, _)| {
                 declared.clone().or_else(|| {
                     f.params
                         .iter()
@@ -134,7 +134,7 @@ impl<'a> Lowering<'a> {
                 _ => "integer".to_string(),
             },
         };
-        let (f, _) = fns.iter().find(|(f, declared)| {
+        let (f, _, _) = fns.iter().find(|(f, declared, _)| {
             declared.clone().or_else(|| {
                 f.params
                     .iter()
@@ -354,10 +354,10 @@ impl<'a> Lowering<'a> {
         let chosen = match &src {
             Some(sty) => fns
                 .iter()
-                .find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
+                .find(|(f, a, _)| declared(f, a).as_deref() == Some(sty)),
             None => (fns.len() == 1).then(|| &fns[0]),
         };
-        let (f, _) = match chosen {
+        let (f, _, _) = match chosen {
             Some(c) => c,
             None => return self.derived_conversion(target, src.as_deref(), arg, env),
         };
@@ -509,7 +509,7 @@ impl<'a> Lowering<'a> {
     ) -> Option<Expr> {
         let family = self.operand_type_name(arg)?;
         let function = self.op_impls.get("From", target).and_then(|impls| {
-            impls.iter().find_map(|(f, source)| {
+            impls.iter().find_map(|(f, source, _)| {
                 (source.clone().or_else(|| {
                     f.params
                         .iter()
@@ -885,7 +885,7 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|(_, owner, _)| *owner == ty)
             .flat_map(|(_, _, fns)| fns.iter())
-            .find(|(f, rhs)| {
+            .find(|(f, rhs, _)| {
                 // An integer literal argument adopts the owner type, as an
                 // operator's right operand does (`x < 0` on `signed`).
                 f.name.text == name
@@ -894,7 +894,7 @@ impl<'a> Lowering<'a> {
                             .is_none_or(|rhs| rhs == input || (input == "integer" && rhs == ty))
                     })
             })
-            .map(|(f, _)| *f)
+            .map(|(f, _, _)| *f)
         {
             return Some(f);
         }
@@ -989,7 +989,7 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|(_, owner, _)| *owner == ty)
             .flat_map(|(_, _, fns)| fns.iter())
-            .any(|(op_fn, _)| std::ptr::eq(*op_fn, f));
+            .any(|(op_fn, _, _)| std::ptr::eq(*op_fn, f));
         let max_depth = if is_op_method { 20 } else { 16 };
         if self.inline_depth.get() > max_depth {
             if self.depth_exceeded.borrow().is_empty() {
@@ -1245,7 +1245,7 @@ impl<'a> Lowering<'a> {
                 let family = self.operand_type_name(operand);
                 let function = family.as_ref().and_then(|family| {
                     let fns = self.op_impls.get("From", family)?;
-                    fns.iter().find_map(|(f, declared)| {
+                    fns.iter().find_map(|(f, declared, _)| {
                         let source = declared.clone().or_else(|| {
                             f.params
                                 .iter()

@@ -334,6 +334,22 @@ pub fn eval_const_fns(
     fns.constant_source().word(value.ok()?)
 }
 
+pub(in crate::ir) fn eval_range_fns(
+    expression: &ast::Expr,
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+) -> Option<(i64, i64)> {
+    if let ast::Expr::Range { lo, hi, .. } = expression {
+        return Some((
+            eval_const_fns(lo, env, fns, 0)?,
+            eval_const_fns(hi, env, fns, 0)?,
+        ));
+    }
+    let value = consteval::evaluate_value(expression, &WordConstants { env, fns }, None, 0).ok()?;
+    let (left, right) = fns.constant_source().range_bounds(&value)?;
+    Some((i64::try_from(left).ok()?, i64::try_from(right).ok()?))
+}
+
 pub(in crate::ir) fn eval_condition_fns(
     expression: &ast::Expr,
     env: &HashMap<String, i64>,

@@ -262,9 +262,11 @@ impl<'a> Lowering<'a> {
                                 }
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
-                                        self.op_impls
-                                            .entry(&operator, ty.clone())
-                                            .push((f, rhs_arg.clone()));
+                                        self.op_impls.entry(&operator, ty.clone()).push((
+                                            f,
+                                            rhs_arg.clone(),
+                                            im,
+                                        ));
                                     }
                                 }
                             }

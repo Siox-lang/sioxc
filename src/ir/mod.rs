@@ -46,6 +46,7 @@ pub(crate) mod query;
 pub(crate) use derive::derive_scheduler_forms;
 pub use design::*;
 pub use expr::*;
+pub(crate) use functions::SelectedOperator;
 pub use functions::{FunctionIndex, Intrinsic};
 pub use layout::*;
 pub(crate) use lower::lower_processes;
@@ -64,13 +65,13 @@ use query::render;
 pub use query::{read_set, IndexSite, Process, ProcessKind};
 
 /// `(operator trait, implementing type)` to the `fn` declarations that
-/// implement it, each paired with the impl's declared right-operand type
-/// (`None` reads as `Self`). Overload selection matches on that type.
+/// implement it, its declared right-operand type (`None` reads as `Self`),
+/// and its borrowed implementation. Shared default bodies keep that identity.
 #[derive(Default)]
 struct OperatorImpls<'a>(HashMap<String, HashMap<String, OperatorCandidates<'a>>>);
 
 /// The implementations of one operator or hook trait for one owner type.
-type OperatorCandidates<'a> = Vec<(&'a ast::FnDecl, Option<String>)>;
+type OperatorCandidates<'a> = Vec<(&'a ast::FnDecl, Option<String>, &'a ast::ImplDecl)>;
 
 impl<'a> OperatorImpls<'a> {
     /// The implementations of `name` for `owner`. Keyed trait/operator name

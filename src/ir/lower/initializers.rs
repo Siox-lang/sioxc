@@ -763,7 +763,7 @@ impl<'a> Lowering<'a> {
             if tr != "Default" {
                 continue;
             }
-            for (f, _) in fns {
+            for (f, _, _) in fns {
                 if f.name.text != "default" {
                     continue;
                 }
