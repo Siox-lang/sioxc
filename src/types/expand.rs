@@ -254,11 +254,88 @@ pub fn expand_constructor_formats(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// Each integer constant a module or impl declares, by bare name, folded
+/// from literals and earlier constants: the bounds of `unsigned[HI..LO]`.
+/// A name two modules give different values is left out.
+fn integer_constants(modules: &[Module]) -> HashMap<String, i64> {
+    let mut constants: Vec<&ConstDecl> = Vec::new();
+    for module in modules {
+        for item in &module.items {
+            match item {
+                Item::Const(constant) => constants.push(constant),
+                Item::Impl(implementation) => {
+                    for member in &implementation.items {
+                        if let ImplItem::Const(constant) = member {
+                            constants.push(constant);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut values: HashMap<String, i64> = HashMap::new();
+    let mut ambiguous: HashSet<String> = HashSet::new();
+    // Each pass can fold a constant defined through an earlier one.
+    for _ in 0..=constants.len().min(16) {
+        let before = values.len();
+        for constant in &constants {
+            let name = &constant.name.text;
+            if ambiguous.contains(name) {
+                continue;
+            }
+            let Some(value) = bound(&constant.value, &values) else {
+                continue;
+            };
+            match values.get(name) {
+                Some(&known) if known != value => {
+                    values.remove(name);
+                    ambiguous.insert(name.clone());
+                }
+                Some(_) => {}
+                None => {
+                    values.insert(name.clone(), value);
+                }
+            }
+        }
+        if values.len() == before {
+            break;
+        }
+    }
+    values
+}
+
+/// A range bound's value: a literal, a negated one, or a named integer
+/// constant, and sums and products of them (#696).
+fn bound(e: &Expr, constants: &HashMap<String, i64>) -> Option<i64> {
+    match e {
+        Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
+        Expr::Unary {
+            op: UnOp::Neg, rhs, ..
+        } => bound(rhs, constants)?.checked_neg(),
+        Expr::Path(path) => match path.segments.as_slice() {
+            [name] => constants.get(&name.text).copied(),
+            _ => None,
+        },
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let (a, b) = (bound(lhs, constants)?, bound(rhs, constants)?);
+            match op {
+                BinOp::Add => a.checked_add(b),
+                BinOp::Sub => a.checked_sub(b),
+                BinOp::Mul => a.checked_mul(b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// `[10, 20, 30]'length` and `arr[0..2]'length`: the length of a value that
 /// is not a name, from its checked type. Lowering read the attribute of a
 /// declaration only, and these did not lower or read the element's width
 /// (#203). A runtime array's length stays a run-time read.
 pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
+    let constants = integer_constants(modules);
     let mut fold = |e: &mut Expr| {
         let Expr::SysAttr { base, attr, span } = e else {
             return true;
@@ -271,10 +348,7 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
         {
             return true;
         }
-        let literal = |e: &Expr| match e {
-            Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
-            _ => None,
-        };
+        let literal = |e: &Expr| bound(e, &constants);
         // The value's labels, left to right: a literal is labelled from 0 and
         // a slice keeps the labels it selects (`arr[2..1]` is 2 down to 1),
         // as VHDL's are. `'high` and the rest did not lower (#224).
@@ -772,6 +846,7 @@ pub fn fold_type_attributes(
     resolved: &crate::resolve::Resolved,
     sink: &mut crate::diag::DiagnosticSink,
 ) {
+    let constants = &integer_constants(modules);
     // Names in a type index are not resolved, so a declaration is found by
     // name among its entity's ports and its impl's `let`s.
     let mut scopes: HashMap<String, HashMap<String, Type>> = HashMap::new();
@@ -853,11 +928,10 @@ pub fn fold_type_attributes(
         else {
             return true;
         };
-        let literal = |e: &Expr| match e {
-            Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
-            _ => None,
-        };
+        let literal = |e: &Expr| bound(e, constants);
         let replacement = match (index.as_ref(), attr.text.as_str()) {
+            // Named or negative bounds fold too, and a written range has
+            // a left and a right (#696).
             (Expr::Range { lo, hi, .. }, attribute) => {
                 let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
                     return true;
@@ -866,6 +940,8 @@ pub fn fold_type_attributes(
                     "length" => int((right - left).abs() + 1),
                     "low" => int(left.min(right)),
                     "high" => int(left.max(right)),
+                    "left" => int(left),
+                    "right" => int(right),
                     _ => return true,
                 }
             }
