@@ -206,24 +206,38 @@ impl Shl<signed, signed> for signed {
     fn shl(rhs: signed) -> signed { return self << rhs; }
 }
 
-// Arithmetic shift-right: replicate the sign into the vacated top bits.
-// `(1 << w) - (1 << (w - n))` is a mask of the top n bits (the shifted-in
-// positions); the shifted value's top bits are zero, so `+` sets them.
+// Arithmetic shift-right: numeric_std's `shift_right(signed, n)`, the
+// leftmost element copied into the `n` vacated places, a metavalue
+// included. Filled arithmetically from the sign's value bit, an `'X'` sign
+// came back a clean `'0'` or `'1'` (#641).
 impl Shr<signed, signed> for signed {
     fn shr(rhs: signed) -> signed {
-        // Narrowed first: a constant receiver (`0 - 2`) is a full kernel word,
-        // and its raw shift read the sign from bit 63.
-        if (resize(self, self'length) >> (self'length - 1)) == 1 {
-            // Shifted out entirely: all sign. The mask below needs
-            // `rhs < self'length`. Compared as kernel words: `signed`'s own
-            // order shifts, so it would call back here.
-            if integer(rhs) >= self'length {
-                return resize(0 - 1, self'length);
-            }
-            return (resize(self, self'length) >> rhs)
-                + ((1 << self'length) - (1 << (self'length - rhs)));
+        // The leftmost element in every place, metavalue and all: copies
+        // OR-ed together stay that element (`'X' or 'X'` is `'X'`). Each
+        // doubling past the width folds away.
+        // ponytail: doubles to 4096 places; a wider `signed` needs more steps.
+        let sign: signed = resize(self, self'length) >> (self'length - 1);
+        sign = sign or (sign << 1);
+        if self'length > 2 { sign = sign or (sign << 2); }
+        if self'length > 4 { sign = sign or (sign << 4); }
+        if self'length > 8 { sign = sign or (sign << 8); }
+        if self'length > 16 { sign = sign or (sign << 16); }
+        if self'length > 32 { sign = sign or (sign << 32); }
+        if self'length > 64 { sign = sign or (sign << 64); }
+        if self'length > 128 { sign = sign or (sign << 128); }
+        if self'length > 256 { sign = sign or (sign << 256); }
+        if self'length > 512 { sign = sign or (sign << 512); }
+        if self'length > 1024 { sign = sign or (sign << 1024); }
+        if self'length > 2048 { sign = sign or (sign << 2048); }
+        // Shifted out entirely: all sign. The shift below needs
+        // `rhs < self'length`. Compared as kernel words: `signed`'s own
+        // order shifts, so it would call back here.
+        if integer(rhs) >= self'length {
+            return resize(sign, self'length);
         }
-        return resize(self, self'length) >> rhs;
+        // Shifted up past the vacated places, the copies fill only those.
+        return (resize(self, self'length) >> rhs)
+            or resize(sign << (self'length - integer(rhs)), self'length);
     }
 }
 
@@ -232,14 +246,32 @@ impl Shr<signed, signed> for signed {
 // hardware fell back to the raw shift and `s >> k` came out logical.
 impl Shr<unsigned, signed> for signed {
     fn shr(rhs: unsigned) -> signed {
-        if (resize(self, self'length) >> (self'length - 1)) == 1 {
-            if integer(rhs) >= self'length {
-                return resize(0 - 1, self'length);
-            }
-            return (resize(self, self'length) >> rhs)
-                + ((1 << self'length) - (1 << (self'length - rhs)));
+        // The leftmost element in every place, metavalue and all: copies
+        // OR-ed together stay that element (`'X' or 'X'` is `'X'`). Each
+        // doubling past the width folds away.
+        // ponytail: doubles to 4096 places; a wider `signed` needs more steps.
+        let sign: signed = resize(self, self'length) >> (self'length - 1);
+        sign = sign or (sign << 1);
+        if self'length > 2 { sign = sign or (sign << 2); }
+        if self'length > 4 { sign = sign or (sign << 4); }
+        if self'length > 8 { sign = sign or (sign << 8); }
+        if self'length > 16 { sign = sign or (sign << 16); }
+        if self'length > 32 { sign = sign or (sign << 32); }
+        if self'length > 64 { sign = sign or (sign << 64); }
+        if self'length > 128 { sign = sign or (sign << 128); }
+        if self'length > 256 { sign = sign or (sign << 256); }
+        if self'length > 512 { sign = sign or (sign << 512); }
+        if self'length > 1024 { sign = sign or (sign << 1024); }
+        if self'length > 2048 { sign = sign or (sign << 2048); }
+        // Shifted out entirely: all sign. The shift below needs
+        // `rhs < self'length`. Compared as kernel words: `signed`'s own
+        // order shifts, so it would call back here.
+        if integer(rhs) >= self'length {
+            return resize(sign, self'length);
         }
-        return resize(self, self'length) >> rhs;
+        // Shifted up past the vacated places, the copies fill only those.
+        return (resize(self, self'length) >> rhs)
+            or resize(sign << (self'length - integer(rhs)), self'length);
     }
 }
 
