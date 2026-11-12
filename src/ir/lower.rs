@@ -369,6 +369,9 @@ struct Lowering<'a> {
     /// used to become a silent `Unknown`, which `check` reported as ok
     /// and a build reported as "driver 0 contains an Unknown".
     unresolved_names: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Constants already reported as not folding (E-P021): a read of one is
+    /// not reported again as an unknown name (#636).
+    unfolded_constants: std::collections::HashSet<String>,
     /// Lexical, storage-free values declared by `let` inside a hardware block.
     /// Each assignment replaces the binding with an expression (a conditional
     /// assignment becomes a `Select`), so event blocks retain next-state

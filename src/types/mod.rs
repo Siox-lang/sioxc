@@ -518,6 +518,9 @@ struct Checker<'a> {
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
+    /// Suffixes whose impl takes an `integer` (`ns`): a fractional literal
+    /// of one has no value (#612).
+    integer_suffixes: HashSet<String>,
     /// Bit-string prefix (`x`, `o`) -> the type names defining it via
     /// `impl Prefix<sym, _> for T` (spec 3.24). std declares which prefixes
     /// exist; the compiler evaluates the known radix ones intrinsically.

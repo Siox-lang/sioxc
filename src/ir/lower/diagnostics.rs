@@ -225,6 +225,7 @@ impl<'a> Lowering<'a> {
         let mut names = std::mem::take(&mut *self.unresolved_names.borrow_mut());
         names.sort_by_key(|(name, span)| (span.start, name.clone()));
         names.dedup();
+        names.retain(|(name, _)| !self.unfolded_constants.contains(name));
         for (name, span) in names {
             self.sink.emit(
                 crate::diag::Diagnostic::error(format!("no value named `{name}` is in scope"))
