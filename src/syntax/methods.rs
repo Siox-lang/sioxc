@@ -128,6 +128,12 @@ pub fn impl_aliases(modules: &mut [Module]) {
                 Item::Struct(declaration) => Some(declaration.name.text.as_str()),
                 Item::Enum(declaration) => Some(declaration.name.text.as_str()),
                 Item::Entity(declaration) => Some(declaration.name.text.as_str()),
+                // `pub type Pt2 = Pt1;` names this module's `Pt1`, so the
+                // chain reads the same from another module (#713).
+                Item::Using(Using {
+                    kind: UsingKind::Alias { name, .. },
+                    ..
+                }) => Some(name.text.as_str()),
                 _ => None,
             })
             .collect();
@@ -187,7 +193,24 @@ pub fn impl_aliases(modules: &mut [Module]) {
             else {
                 continue;
             };
-            for imported in names.iter().filter(|imported| !imported.glob) {
+            for imported in names {
+                // `use types_mod::*;` brings every alias of that module
+                // (#713).
+                if imported.glob {
+                    let module: Vec<Ident> =
+                        base.segments.iter().chain(&imported.via).cloned().collect();
+                    let prefix = format!("{}::", joined(&module));
+                    for (name, target) in &qualified {
+                        if let Some(local) = name.strip_prefix(&prefix) {
+                            if !local.contains("::") {
+                                aliases
+                                    .entry(local.to_string())
+                                    .or_insert_with(|| target.clone());
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let full: Vec<Ident> = base
                     .segments
                     .iter()
@@ -388,24 +411,60 @@ pub fn struct_defaults(modules: &mut [Module]) {
 
 /// `Self::make(42)` in `impl Foo` is `Foo::make(42)`: `Self` resolved as a
 /// local, so a static call through it found no function and did not lower
-/// (#659). Written out once, before resolution, for an impl whose target is
-/// a plain path; a generic impl keeps `Self`.
+/// (#659). Written out once, before resolution. In a generic impl
+/// (`impl<T> Boxed<T>`) the call is qualified by the target as written,
+/// `Boxed<T>::make(v)`, the form that lowers (#686); and a constructor
+/// through `Self` (`Self(v)`, `Self()`) is the target's own (#713).
 pub fn self_paths(modules: &mut [Module]) {
     for module in modules {
         for item in &mut module.items {
             let Item::Impl(implementation) = item else {
                 continue;
             };
-            let Type::Path(target) = &implementation.target else {
-                continue;
+            let (target, generic) = match &implementation.target {
+                Type::Path(path) => (path.segments.clone(), None),
+                Type::Generic { base, args, .. } => match base.as_ref() {
+                    Type::Path(path) => (path.segments.clone(), Some(args.clone())),
+                    _ => continue,
+                },
+                _ => continue,
             };
-            let target = target.segments.clone();
+            let qualifier = generic
+                .as_ref()
+                .map(|_| Box::new(implementation.target.clone()));
+            let starts_with_self = |path: &Path| {
+                path.segments
+                    .first()
+                    .is_some_and(|first| first.text == "Self")
+            };
             let mut rewrite = |e: &mut Expr| {
-                if let Expr::Path(path) = e {
-                    if path.segments.len() >= 2 && path.segments[0].text == "Self" {
+                match e {
+                    Expr::Call {
+                        callee,
+                        type_args,
+                        qualifier: written,
+                        ..
+                    } => {
+                        if let Expr::Path(path) = callee.as_mut() {
+                            if starts_with_self(path) {
+                                let rest = path.segments.split_off(1);
+                                let constructor = rest.is_empty();
+                                path.segments = target.iter().cloned().chain(rest).collect();
+                                if constructor {
+                                    if let (Some(args), true) = (&generic, type_args.is_empty()) {
+                                        *type_args = args.clone();
+                                    }
+                                } else if written.is_none() {
+                                    *written = qualifier.clone();
+                                }
+                            }
+                        }
+                    }
+                    Expr::Path(path) if path.segments.len() >= 2 && starts_with_self(path) => {
                         let rest = path.segments.split_off(1);
                         path.segments = target.iter().cloned().chain(rest).collect();
                     }
+                    _ => {}
                 }
                 true
             };
