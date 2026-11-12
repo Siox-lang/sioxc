@@ -319,7 +319,11 @@ type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<
 /// than its head (`unsigned[3]`, an alias), which the result keeps (#143).
 type OperatorOutput = (String, Option<Type>);
 /// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
-type IndexSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
+/// Each `Index`/`IndexAssign` impl by (trait, owner): its index and value
+/// type keys, and the value type as written, whose width, elements or
+/// tuple shape a key drops (#630, #637, #640).
+type IndexSignatures =
+    HashMap<(String, String), Vec<(Option<String>, Option<String>, Option<Type>)>>;
 /// A generic function's declared parameters and their written types.
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 /// A method's declared non-`self` parameter types, `None` where the

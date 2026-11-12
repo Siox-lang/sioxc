@@ -508,20 +508,27 @@ impl<'a> Checker<'a> {
                         } else {
                             self.type_kind_name(&self.type_of(index, sym))
                         };
-                        let output = self
+                        let found = self
                             .index_sigs
                             .get(&("Index".to_string(), owner.clone()))
                             .and_then(|sigs| {
-                                sigs.iter()
-                                    .find(|(i, _)| {
-                                        Self::index_contract_type_matches(
-                                            i,
-                                            input.as_deref(),
-                                            &owner,
-                                        )
-                                    })
-                                    .and_then(|(_, output)| output.as_deref())
-                            });
+                                sigs.iter().find(|(i, _, _)| {
+                                    Self::index_contract_type_matches(i, input.as_deref(), &owner)
+                                })
+                            })
+                            .cloned();
+                        // A sized, element-array or tuple output is its
+                        // written type, width and all: a family key read any
+                        // width, and an element array none (#630, #640).
+                        if let Some(declared) = found
+                            .as_ref()
+                            .and_then(|(_, _, written)| written.as_ref())
+                            .map(|written| self.ast_ty(written))
+                            .filter(|declared| matches!(declared, Ty::Array { .. } | Ty::Tuple(_)))
+                        {
+                            return declared;
+                        }
+                        let output = found.as_ref().and_then(|(_, output, _)| output.as_deref());
                         match output {
                             Some("Self") => base_ty,
                             Some(name) if input.as_deref() == Some(name) => {

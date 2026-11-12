@@ -267,7 +267,7 @@ impl<'a> Checker<'a> {
             .get(&("Index".to_string(), owner.clone()))
             .is_some_and(|sigs| {
                 sigs.iter()
-                    .any(|(i, _)| Self::index_contract_type_matches(i, input.as_deref(), &owner))
+                    .any(|(i, _, _)| Self::index_contract_type_matches(i, input.as_deref(), &owner))
             });
         if !found {
             self.error(
