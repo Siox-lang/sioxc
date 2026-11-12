@@ -154,6 +154,12 @@ pub struct Typed {
     /// Each partial range index (`v[..4]`), by its span, to the explicit
     /// range it means, in written order. See [`expand_partial_ranges`].
     partial_ranges: HashMap<Span, (i64, i64)>,
+    /// The constant value of each bound and index in a slice chain
+    /// (`arr[LO..HI][OOB]`), by span. See [`flatten_slice_chains`].
+    slice_constants: HashMap<Span, i64>,
+    /// Each sliced range in a chain whose array is a packed vector (`v[5..2]`
+    /// of `unsigned[8]`), by the range's span: its index 0 is its right end.
+    packed_slices: HashSet<Span>,
 }
 
 /// A value converted where it is stored, through `impl Into<T> for S`.
@@ -618,6 +624,9 @@ struct Checker<'a> {
     /// Partial range indices and the explicit range each means; handed on in
     /// [`Typed`].
     partial_ranges: HashMap<Span, (i64, i64)>,
+    /// Slice-chain constants and packed slices; handed on in [`Typed`].
+    slice_constants: HashMap<Span, i64>,
+    packed_slices: HashSet<Span>,
     type_attr_reads: HashMap<Span, Expr>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
