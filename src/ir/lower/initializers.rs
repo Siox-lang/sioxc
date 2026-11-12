@@ -739,6 +739,16 @@ impl<'a> Lowering<'a> {
                 };
                 Some(u64::from(self.base_dir.join(text).exists()))
             }
+            // `let s: Mode = Mode();`: a scalar's default construction is a
+            // constant, as a struct's and an array's already were (#703).
+            ast::Expr::Call { callee, args, .. }
+                if args.is_empty() && !self.resolves_to_declared_fn(e) =>
+            {
+                match self.lower_new(callee, args)? {
+                    Val::Scalar(Expr::Const(value)) => Some(value),
+                    _ => None,
+                }
+            }
             // --- literals: a value read as bits ---
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 text.replace('_', "").parse::<f64>().ok().map(f64::to_bits)

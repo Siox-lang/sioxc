@@ -628,10 +628,10 @@ impl<'a> Lowering<'a> {
     /// default of a named type, the explicit spelling of the value an
     /// uninitialized signal already powers on to (§3.29), and the zero-argument
     /// member of the same `T(...)` family whose one-argument form `T(x)` is the
-    /// conversion of §3.28. An enum yields its first variant (`T'LEFT`); a
-    /// numeric / vector / `Char` / `real` / kernel `integer` yields `0`; a
-    /// struct yields its fields defaulted the same way. The `impl New for T`
-    /// *override* waits on trait resolution; this is the derived default only.
+    /// conversion of §3.28. An enum yields its `impl Default` value or its
+    /// first variant (`T'LEFT`), as a signal of it starts (#703); a numeric /
+    /// vector / `Char` / `real` / kernel `integer` yields `0`; a struct
+    /// yields its fields defaulted the same way.
     /// (An array `T[N]()` of a composite defaults through its per-element signal
     /// inits, not an expression value.)
     pub(super) fn lower_new(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Option<Val> {
@@ -655,7 +655,7 @@ impl<'a> Lowering<'a> {
             },
             _ => return None,
         };
-        if let Some(&d) = self.enum_first_disc.get(&name) {
+        if let Some(&d) = self.new_defaults.get(&name) {
             return Some(Val::Scalar(Expr::Const(d)));
         }
         if let Some(fields) = self.struct_default_leaves(&name, "") {
@@ -685,7 +685,7 @@ impl<'a> Lowering<'a> {
             };
             if let ast::Type::Path(enum_path) = &fty {
                 if let Some(enum_key) = self.free_fns.enum_path_key(enum_path) {
-                    if let Some(&d) = self.enum_first_disc.get(&enum_key) {
+                    if let Some(&d) = self.new_defaults.get(&enum_key) {
                         out.push((path, Expr::Const(d)));
                         continue;
                     }
@@ -696,7 +696,7 @@ impl<'a> Lowering<'a> {
                     out.extend(nested);
                     continue;
                 }
-                if let Some(&d) = self.enum_first_disc.get(&h) {
+                if let Some(&d) = self.new_defaults.get(&h) {
                     out.push((path, Expr::Const(d)));
                     continue;
                 }
