@@ -53,6 +53,7 @@ pub fn attach(modules: &mut [Module], sink: &mut DiagnosticSink) {
         bind_module(module, &declared, sink);
     }
     let entity_attrs = entity_attrs(modules);
+    let defaults = declared_by_module(modules);
     for index in 0..modules.len() {
         let visible = visible_attrs(&modules[index], modules);
         let names: HashSet<&str> = declared
@@ -66,7 +67,9 @@ pub fn attach(modules: &mut [Module], sink: &mut DiagnosticSink) {
         let reads = Reads {
             names: &names,
             declared: &declared,
+            defaults: &defaults,
             entity_attrs: &entity_attrs,
+            within: Within::of(&modules[index]),
         };
         reads.fold_module(&mut modules[index], sink);
     }
@@ -136,17 +139,112 @@ fn visible_attrs(module: &Module, modules: &[Module]) -> HashSet<String> {
     out
 }
 
-/// Every entity's applied attributes after binding, by entity name.
-fn entity_attrs(modules: &[Module]) -> HashMap<String, Vec<Attr>> {
-    let mut out = HashMap::new();
+/// Every entity's applied attributes after binding, by entity name, with
+/// the module declaring each: two modules' `Worker`s are two entities, and
+/// a flat map let one's attributes stand for the other's (#649).
+fn entity_attrs(modules: &[Module]) -> HashMap<String, Vec<(String, Vec<Attr>)>> {
+    let mut out: HashMap<String, Vec<(String, Vec<Attr>)>> = HashMap::new();
     for module in modules {
         for item in &module.items {
             if let Item::Entity(entity) = item {
-                out.insert(entity.name.text.clone(), entity.attrs.clone());
+                out.entry(entity.name.text.clone())
+                    .or_default()
+                    .push((path_text(&module.path), entity.attrs.clone()));
             }
         }
     }
     out
+}
+
+/// Every attribute declaration's default by name, with its module, as
+/// [`entity_attrs`] keeps entities apart.
+fn declared_by_module(modules: &[Module]) -> HashMap<String, Vec<(String, Option<Expr>)>> {
+    let mut out: HashMap<String, Vec<(String, Option<Expr>)>> = HashMap::new();
+    for module in modules {
+        for item in &module.items {
+            if let Item::AttrDecl(declaration) = item {
+                out.entry(declaration.name.text.clone())
+                    .or_default()
+                    .push((path_text(&module.path), declaration.default.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Where a module's bare names lead: itself, then what it imports.
+struct Within {
+    module: String,
+    /// `Local` of `use m1::{Local = Worker}`: the module and declared name.
+    imports: HashMap<String, (String, String)>,
+    /// `m1` of `use m1::*`.
+    globs: Vec<String>,
+}
+
+impl Within {
+    fn of(module: &Module) -> Self {
+        let mut imports = HashMap::new();
+        let mut globs = Vec::new();
+        for item in &module.items {
+            if let Item::Using(Using {
+                kind: UsingKind::Import { base, names },
+                ..
+            }) = item
+            {
+                for name in names {
+                    let mut from = path_text(base);
+                    for via in &name.via {
+                        from = format!("{from}::{}", via.text);
+                    }
+                    if name.glob {
+                        globs.push(from);
+                    } else {
+                        imports.insert(name.binding().text.clone(), (from, name.name.text.clone()));
+                    }
+                }
+            }
+        }
+        Within {
+            module: path_text(&module.path),
+            imports,
+            globs,
+        }
+    }
+
+    /// The one of `candidates` (by declaring module) that `written` names
+    /// from here: this module's own, an imported one, one a qualifier
+    /// (`m1::Worker`) names, or the only one. `written` may be qualified.
+    fn pick<'c, T>(&self, written: &str, candidates: &'c [(String, T)]) -> Option<&'c T> {
+        let find = |module: &str| {
+            candidates
+                .iter()
+                .find(|(from, _)| from == module || from.ends_with(&format!("::{module}")))
+                .map(|(_, value)| value)
+        };
+        if let Some((qualifier, _)) = written.rsplit_once("::") {
+            return find(qualifier);
+        }
+        find(&self.module)
+            .or_else(|| {
+                self.imports
+                    .get(written)
+                    .and_then(|(module, _)| find(module))
+            })
+            .or_else(|| self.globs.iter().find_map(|module| find(module)))
+            .or_else(|| match candidates {
+                [(_, only)] => Some(only),
+                _ => candidates.last().map(|(_, value)| value),
+            })
+    }
+
+    /// The declared name `written` stands for: `Worker` for an imported
+    /// `Local = Worker`, the last segment of `m1::Worker`.
+    fn declared<'w>(&'w self, written: &'w str) -> &'w str {
+        match self.imports.get(written) {
+            Some((_, name)) => name,
+            None => written.rsplit("::").next().unwrap_or(written),
+        }
+    }
 }
 
 /// Resolve and apply one module's bindings.
@@ -357,8 +455,20 @@ struct Reads<'r> {
     /// Declared attribute names this module can read.
     names: &'r HashSet<&'r str>,
     declared: &'r HashMap<String, Declared>,
+    /// Every declaration's default, by module.
+    defaults: &'r HashMap<String, Vec<(String, Option<Expr>)>>,
     /// Every entity's attributes after binding, for instance fallbacks.
-    entity_attrs: &'r HashMap<String, Vec<Attr>>,
+    entity_attrs: &'r HashMap<String, Vec<(String, Vec<Attr>)>>,
+    /// The module being folded, for which entity or declaration a name means.
+    within: Within,
+}
+
+impl Reads<'_> {
+    /// The attributes of the entity `written` names from this module.
+    fn entity(&self, written: &str) -> Option<&Vec<Attr>> {
+        let candidates = self.entity_attrs.get(self.within.declared(written))?;
+        self.within.pick(written, candidates)
+    }
 }
 
 /// The names a read can address inside one implementation: its `let`s (with
@@ -584,10 +694,10 @@ impl Reads<'_> {
             find(attrs, name).or_else(|| {
                 entity
                     .as_ref()
-                    .and_then(|entity| self.entity_attrs.get(entity))
+                    .and_then(|entity| self.entity(entity))
                     .and_then(|attrs| find(attrs, name))
             })
-        } else if let Some(attrs) = self.entity_attrs.get(object) {
+        } else if let Some(attrs) = self.entity(object) {
             find(attrs, name)
         } else {
             sink.emit(
@@ -611,7 +721,10 @@ impl Reads<'_> {
                 span: attr.span,
             })),
             Some(Attr { value, .. }) => value.clone(),
-            None => self.declared.get(name).and_then(|d| d.default.clone()),
+            None => match self.defaults.get(name) {
+                Some(candidates) => self.within.pick(name, candidates).cloned().flatten(),
+                None => self.declared.get(name).and_then(|d| d.default.clone()),
+            },
         };
         if value.is_none() {
             sink.emit(
@@ -642,12 +755,12 @@ fn scope_of(module: &Module, implementation: &ImplDecl) -> Scope {
                 for member in &candidate.items {
                     if let ImplItem::Let(declaration) = member {
                         let entity = match &declaration.value {
-                            Some(Expr::Construct { ty: Some(ty), .. }) => type_name(ty),
-                            _ => declaration.ty.as_ref().and_then(type_name),
+                            Some(Expr::Construct { ty: Some(ty), .. }) => type_path(ty),
+                            _ => declaration.ty.as_ref().and_then(type_path),
                         };
                         scope.members.insert(
                             declaration.name.text.clone(),
-                            (declaration.attrs.clone(), entity.map(str::to_string)),
+                            (declaration.attrs.clone(), entity),
                         );
                     }
                 }
@@ -682,6 +795,15 @@ fn type_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(path) => path.segments.last().map(|s| s.text.as_str()),
         Type::Generic { base, .. } => type_name(base),
+        Type::Indexed { .. } | Type::View { .. } | Type::Tuple { .. } => None,
+    }
+}
+
+/// [`type_name`] with its qualifier: `m1::Worker`, which module's it is.
+fn type_path(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(path) => Some(path_text(path)),
+        Type::Generic { base, .. } => type_path(base),
         Type::Indexed { .. } | Type::View { .. } | Type::Tuple { .. } => None,
     }
 }
