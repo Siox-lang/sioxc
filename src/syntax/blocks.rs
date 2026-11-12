@@ -286,10 +286,20 @@ impl Flat<'_> {
                     }
                 }
                 ImplItem::Process(process) => {
-                    self.process_locals(process, &renames);
+                    self.process_locals(&process.body, &renames);
                     if let (Some(label), false) = (&mut process.label, root) {
                         label.text = format!("{}{}", outer.prefix, label.text);
                     }
+                }
+                // A generate `for` or `if` binds its own names too: its loop
+                // variable hid a block member silently, and every use of
+                // it read the member (#698).
+                ImplItem::Stmt(statement) => {
+                    let block = Block {
+                        stmts: vec![statement.clone()],
+                        span: crate::syntax::ast::stmt_span(statement),
+                    };
+                    self.process_locals(&block, &renames);
                 }
                 ImplItem::AttrBinding(binding) => {
                     if let Some(object) = &mut binding.object {
@@ -333,8 +343,8 @@ impl Flat<'_> {
     }
 
     /// A process-local `let` may not hide a block member.
-    fn process_locals(&mut self, process: &ProcessDecl, renames: &HashMap<String, String>) {
-        let mut stack: Vec<&Block> = vec![&process.body];
+    fn process_locals(&mut self, root: &Block, renames: &HashMap<String, String>) {
+        let mut stack: Vec<&Block> = vec![root];
         while let Some(block) = stack.pop() {
             for statement in &block.stmts {
                 match statement {
@@ -366,6 +376,7 @@ impl Flat<'_> {
                         stack.push(body);
                     }
                     Stmt::While { body, .. } => stack.push(body),
+                    Stmt::Process(process) => stack.push(&process.body),
                     _ => {}
                 }
             }
@@ -510,6 +521,7 @@ impl Rewrite<'_> {
 // is an error anyway.
 fn bound_names(item: &ImplItem) -> HashSet<String> {
     let mut names = HashSet::new();
+    let statement_block;
     let body = match item {
         ImplItem::Fn(function) => {
             names.extend(
@@ -522,6 +534,14 @@ fn bound_names(item: &ImplItem) -> HashSet<String> {
             function.body.as_ref()
         }
         ImplItem::Process(process) => Some(&process.body),
+        // A generate `for i in ..` binds `i` for its body (#698).
+        ImplItem::Stmt(statement) => {
+            statement_block = Block {
+                stmts: vec![statement.clone()],
+                span: crate::syntax::ast::stmt_span(statement),
+            };
+            Some(&statement_block)
+        }
         _ => None,
     };
     let mut stack: Vec<&Block> = body.into_iter().collect();
@@ -536,6 +556,7 @@ fn bound_names(item: &ImplItem) -> HashSet<String> {
                     stack.push(body);
                 }
                 Stmt::While { body, .. } => stack.push(body),
+                Stmt::Process(process) => stack.push(&process.body),
                 Stmt::If(chain) => {
                     let mut link = Some(chain);
                     while let Some(current) = link {
