@@ -189,8 +189,23 @@ impl<'a> Lowering<'a> {
             {
                 let key = self.free_fns.constant_expr_key(base).unwrap();
                 let values = &self.const_arrays[&key];
+                // An index is a label, from the table's `'left` in its
+                // direction: `ROM[1]` of `[1..4]` is the first value (#619).
+                let (left, ascending) = self
+                    .const_array_bounds
+                    .get(&key)
+                    .copied()
+                    .unwrap_or((0, true));
+                let label = |position: i64| {
+                    if ascending {
+                        left + position
+                    } else {
+                        left - position
+                    }
+                };
                 if let Some(i) = self.eval_const(index, &self.consts) {
-                    return usize::try_from(i)
+                    let position = if ascending { i - left } else { left - i };
+                    return usize::try_from(position)
                         .ok()
                         .and_then(|i| values.get(i).cloned())
                         // Out of range reads 0, as a dynamic index does.
@@ -199,7 +214,7 @@ impl<'a> Lowering<'a> {
                 // A runtime index selects between the elements, the same mux
                 // chain `lower_dynamic_read` builds over a signal array.
                 let labels: Vec<i64> = (0..values.len())
-                    .filter_map(|index| i64::try_from(index).ok())
+                    .filter_map(|index| i64::try_from(index).ok().map(label))
                     .collect();
                 let idx = self
                     .checked_runtime_index(index, &labels)
@@ -207,8 +222,8 @@ impl<'a> Lowering<'a> {
                 let mut acc = Expr::Const(0);
                 for (i, value) in values.iter().enumerate().rev() {
                     let span = ast::expr_span(e);
-                    let condition =
-                        self.source_binary(BinOp::Eq, &idx, &Expr::Const(i as u64), span);
+                    let at = Expr::Const(label(i as i64) as u64);
+                    let condition = self.source_binary(BinOp::Eq, &idx, &at, span);
                     acc = self.source_select(&condition, value, &acc, span);
                 }
                 acc

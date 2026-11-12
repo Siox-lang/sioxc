@@ -432,6 +432,10 @@ struct Lowering<'a> {
     /// per name and has no room for a sequence, so an indexed read of a
     /// const array used to find nothing and lower to `Unknown`.
     const_arrays: HashMap<String, Vec<Expr>>,
+    /// A literal constant table's left label and direction (`[1..4]` is
+    /// `(1, true)`, `[3..0]` is `(3, false)`): its values are in written
+    /// order, from `'left` (#619).
+    const_array_bounds: HashMap<String, (i64, bool)>,
     /// Module-level `real` constants (`const PI: real = 3.14159...`).
     consts_real: HashMap<String, f64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written

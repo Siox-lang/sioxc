@@ -86,6 +86,7 @@ impl<'a> Lowering<'a> {
             consts: HashMap::new(),
             const_values: HashMap::new(),
             const_arrays: HashMap::new(),
+            const_array_bounds: HashMap::new(),
             consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
@@ -1118,27 +1119,35 @@ impl<'a> Lowering<'a> {
             if let Some(values) = values {
                 // Each element by its label too, `WIDTHS[0]`, so a width or
                 // bound written as one is a constant (#459).
-                let low = match &constant.ty {
+                // The values run from `'left`: `[3..0]` holds 3 first, and
+                // read as `0..3` its elements were reversed (#619).
+                let (left, ascending) = match &constant.ty {
                     ast::Type::Indexed {
                         index: Some(index), ..
                     } => match index.as_ref() {
                         ast::Expr::Range { lo, hi, .. } => self
                             .eval_const(lo, scope)
                             .zip(self.eval_const(hi, scope))
-                            .map(|(lo, hi)| lo.min(hi))
-                            .unwrap_or(0),
-                        _ => 0,
+                            .map(|(lo, hi)| (lo, lo <= hi))
+                            .unwrap_or((0, true)),
+                        _ => (0, true),
                     },
-                    _ => 0,
+                    _ => (0, true),
                 };
                 for (offset, value) in values.iter().enumerate() {
                     if let (Expr::Const(word), Ok(offset)) = (value, i64::try_from(offset)) {
                         if let Ok(narrow) = i64::try_from(*word) {
-                            self.consts
-                                .insert(format!("{name}[{}]", low + offset), narrow);
+                            let label = if ascending {
+                                left + offset
+                            } else {
+                                left - offset
+                            };
+                            self.consts.insert(format!("{name}[{label}]"), narrow);
                         }
                     }
                 }
+                self.const_array_bounds
+                    .insert(name.to_string(), (left, ascending));
                 self.const_arrays.insert(name.to_string(), values);
                 return true;
             }
