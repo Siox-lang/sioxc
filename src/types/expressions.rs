@@ -201,6 +201,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Index { base, index, .. } => {
                 self.record_partial_range(base, index, sym);
+                self.record_slice_chain(base, index, sym);
                 self.check_expr(base, sym);
                 match index.as_ref() {
                     Expr::PartialRange { lo, hi, .. } => {
@@ -1222,6 +1223,42 @@ impl Checker<'_> {
     /// that is written high to low, as significance runs: `v[..4]` is bits
     /// 4 down to 0. Read in written order it came out bit-reversed (#496).
     /// An unpacked array keeps its declared element order.
+    /// A slice chain's constants (`arr[LO..HI][OOB]`, named or folded) and
+    /// whether its sliced array is a packed vector, for
+    /// [`super::flatten_slice_chains`] (#695, #714).
+    fn record_slice_chain(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
+        let Expr::Index {
+            base: array,
+            index: range,
+            ..
+        } = base
+        else {
+            return;
+        };
+        let Expr::Range { lo, hi, span } = range.as_ref() else {
+            return;
+        };
+        if matches!(
+            self.type_of(array, sym),
+            Ty::Array {
+                family: Some(_),
+                ..
+            }
+        ) {
+            self.packed_slices.insert(*span);
+        }
+        let mut parts = vec![lo.as_ref(), hi.as_ref()];
+        match index {
+            Expr::Range { lo, hi, .. } => parts.extend([lo.as_ref(), hi.as_ref()]),
+            single => parts.push(single),
+        }
+        for part in parts {
+            if let Some(value) = self.constant_value(part) {
+                self.slice_constants.insert(expr_span(part), value);
+            }
+        }
+    }
+
     fn record_partial_range(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
         let Expr::PartialRange { lo, hi, span } = index else {
             return;

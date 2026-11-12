@@ -193,6 +193,8 @@ impl<'a> Checker<'a> {
             type_attr_reads: HashMap::new(),
             constructor_formats: HashMap::new(),
             partial_ranges: HashMap::new(),
+            slice_constants: HashMap::new(),
+            packed_slices: HashSet::new(),
             conflicting_attr_reads: HashSet::new(),
             conflicting_expr_types: HashSet::new(),
             promotions: HashMap::new(),
@@ -211,6 +213,8 @@ impl<'a> Checker<'a> {
             covered_tuple_matches: self.covered_tuple_matches,
             constructor_formats: self.constructor_formats,
             partial_ranges: self.partial_ranges,
+            slice_constants: self.slice_constants,
+            packed_slices: self.packed_slices,
         }
     }
 

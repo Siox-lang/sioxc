@@ -348,12 +348,16 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
 /// index into a slice counts positions from the slice's left end, as the
 /// slice's checked type does. Chained, neither had a hardware form, and a
 /// write through one did not lower (#262). Constant bounds only.
-pub fn flatten_slice_chains(modules: &mut [Module], sink: &mut crate::diag::DiagnosticSink) {
+pub fn flatten_slice_chains(
+    modules: &mut [Module],
+    typed: &Typed,
+    sink: &mut crate::diag::DiagnosticSink,
+) {
     let mut outside: Vec<(Span, String)> = Vec::new();
     // Until nothing changes: `arr[0..5][1..3][0]` becomes `arr[0..5][1]`,
     // itself a chain, which one pass left (#655).
     let mut flatten = |e: &mut Expr| {
-        while flatten_once(e, &mut outside) {}
+        while flatten_once(e, typed, &mut outside) {}
         true
     };
     for module in modules {
@@ -371,20 +375,34 @@ pub fn flatten_slice_chains(modules: &mut [Module], sink: &mut crate::diag::Diag
 }
 
 /// One step of [`flatten_slice_chains`]: true when `e` was rewritten.
-fn flatten_once(e: &mut Expr, outside: &mut Vec<(Span, String)>) -> bool {
-    fn literal(e: &Expr) -> Option<i64> {
+fn flatten_once(e: &mut Expr, typed: &Typed, outside: &mut Vec<(Span, String)>) -> bool {
+    fn written(e: &Expr) -> Option<i64> {
         match e {
             Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
             // `arr[1..3][-1]` is a constant too, before the slice.
             Expr::Unary {
                 op: UnOp::Neg, rhs, ..
-            } => literal(rhs)?.checked_neg(),
+            } => written(rhs)?.checked_neg(),
             _ => None,
         }
     }
+    // A named or folded constant (`arr[LO..HI][OOB]`) is one too, as the
+    // checker found it: unfolded, the chain had no hardware form and an
+    // index past the slice was read as a run-time one, unchecked (#695).
+    let literal = |e: &Expr| {
+        written(e).or_else(|| {
+            typed
+                .slice_constants
+                .get(&crate::syntax::ast::expr_span(e))
+                .copied()
+        })
+    };
     let Expr::Index { base, index, span } = e else {
         return false;
     };
+    // The inner slices first: `arr[1..3][0..99][0]` checks `0..99`
+    // against `arr[1..3]` before the outer index replaces it (#695).
+    while flatten_once(base, typed, outside) {}
     let Expr::Index {
         base: inner,
         index: range,
@@ -393,20 +411,44 @@ fn flatten_once(e: &mut Expr, outside: &mut Vec<(Span, String)>) -> bool {
     else {
         return false;
     };
-    let Expr::Range { lo, hi, .. } = range.as_ref() else {
+    let Expr::Range {
+        lo,
+        hi,
+        span: range_span,
+    } = range.as_ref()
+    else {
         return false;
     };
     let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
         return false;
     };
-    let step = if left <= right { 1 } else { -1 };
     let len = left.abs_diff(right) + 1;
+    // An array's slice counts from its left end; a packed vector's from
+    // its right, its least significant element, as `let sub = v[5..2];
+    // sub[0]` reads `v[2]` (#714).
+    let (origin, step) = if typed.packed_slices.contains(range_span) {
+        (right, if left >= right { 1 } else { -1 })
+    } else {
+        (left, if left <= right { 1 } else { -1 })
+    };
     // A position past the slice read past it into the array, or out of
     // it altogether (#626).
     let inside = |position: i64| u64::try_from(position).is_ok_and(|p| p < len);
-    let at = |position: i64| Expr::Int {
-        text: (left + step * position).to_string(),
-        span: *span,
+    let at = |position: i64| {
+        let value = origin + step * position;
+        let magnitude = Expr::Int {
+            text: value.unsigned_abs().to_string(),
+            span: *span,
+        };
+        if value < 0 {
+            Expr::Unary {
+                op: UnOp::Neg,
+                rhs: Box::new(magnitude),
+                span: *span,
+            }
+        } else {
+            magnitude
+        }
     };
     let mapped = match index.as_ref() {
         Expr::Range {
