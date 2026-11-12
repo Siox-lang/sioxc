@@ -348,67 +348,12 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
 /// index into a slice counts positions from the slice's left end, as the
 /// slice's checked type does. Chained, neither had a hardware form, and a
 /// write through one did not lower (#262). Constant bounds only.
-pub fn flatten_slice_chains(modules: &mut [Module]) {
-    fn literal(e: &Expr) -> Option<i64> {
-        match e {
-            Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
-            _ => None,
-        }
-    }
+pub fn flatten_slice_chains(modules: &mut [Module], sink: &mut crate::diag::DiagnosticSink) {
+    let mut outside: Vec<(Span, String)> = Vec::new();
+    // Until nothing changes: `arr[0..5][1..3][0]` becomes `arr[0..5][1]`,
+    // itself a chain, which one pass left (#655).
     let mut flatten = |e: &mut Expr| {
-        let Expr::Index { base, index, span } = e else {
-            return true;
-        };
-        let Expr::Index {
-            base: inner,
-            index: range,
-            ..
-        } = base.as_ref()
-        else {
-            return true;
-        };
-        let Expr::Range { lo, hi, .. } = range.as_ref() else {
-            return true;
-        };
-        let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
-            return true;
-        };
-        let step = if left <= right { 1 } else { -1 };
-        let at = |position: i64| Expr::Int {
-            text: (left + step * position).to_string(),
-            span: *span,
-        };
-        let mapped = match index.as_ref() {
-            Expr::Range {
-                lo,
-                hi,
-                span: range_span,
-            } => match (literal(lo), literal(hi)) {
-                (Some(a), Some(b)) => Expr::Range {
-                    lo: Box::new(at(a)),
-                    hi: Box::new(at(b)),
-                    span: *range_span,
-                },
-                _ => return true,
-            },
-            // A runtime index counts the same way: `arr[1..3][i]` is
-            // `arr[1 + i]` (#315). ponytail: checked against the array's
-            // bounds, not the slice's.
-            single => match literal(single) {
-                Some(position) => at(position),
-                None => Expr::Binary {
-                    op: if step > 0 { BinOp::Add } else { BinOp::Sub },
-                    lhs: Box::new(at(0)),
-                    rhs: Box::new(single.clone()),
-                    span: *span,
-                },
-            },
-        };
-        *e = Expr::Index {
-            base: inner.clone(),
-            index: Box::new(mapped),
-            span: *span,
-        };
+        while flatten_once(e, &mut outside) {}
         true
     };
     for module in modules {
@@ -416,6 +361,109 @@ pub fn flatten_slice_chains(modules: &mut [Module]) {
             walk_item(item, &mut flatten);
         }
     }
+    for (span, message) in outside {
+        sink.emit(
+            crate::diag::Diagnostic::error(message)
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(span),
+        );
+    }
+}
+
+/// One step of [`flatten_slice_chains`]: true when `e` was rewritten.
+fn flatten_once(e: &mut Expr, outside: &mut Vec<(Span, String)>) -> bool {
+    fn literal(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
+            // `arr[1..3][-1]` is a constant too, before the slice.
+            Expr::Unary {
+                op: UnOp::Neg, rhs, ..
+            } => literal(rhs)?.checked_neg(),
+            _ => None,
+        }
+    }
+    let Expr::Index { base, index, span } = e else {
+        return false;
+    };
+    let Expr::Index {
+        base: inner,
+        index: range,
+        ..
+    } = base.as_ref()
+    else {
+        return false;
+    };
+    let Expr::Range { lo, hi, .. } = range.as_ref() else {
+        return false;
+    };
+    let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
+        return false;
+    };
+    let step = if left <= right { 1 } else { -1 };
+    let len = left.abs_diff(right) + 1;
+    // A position past the slice read past it into the array, or out of
+    // it altogether (#626).
+    let inside = |position: i64| u64::try_from(position).is_ok_and(|p| p < len);
+    let at = |position: i64| Expr::Int {
+        text: (left + step * position).to_string(),
+        span: *span,
+    };
+    let mapped = match index.as_ref() {
+        Expr::Range {
+            lo,
+            hi,
+            span: range_span,
+        } => match (literal(lo), literal(hi)) {
+            (Some(a), Some(b)) => {
+                if !(inside(a) && inside(b)) {
+                    outside.push((
+                        *range_span,
+                        format!(
+                            "`{a}..{b}` is outside this {len}-element slice (`0..{}`)",
+                            len - 1
+                        ),
+                    ));
+                    return false;
+                }
+                Expr::Range {
+                    lo: Box::new(at(a)),
+                    hi: Box::new(at(b)),
+                    span: *range_span,
+                }
+            }
+            _ => return false,
+        },
+        // A runtime index counts the same way: `arr[1..3][i]` is
+        // `arr[1 + i]` (#315). ponytail: checked against the array's
+        // bounds, not the slice's.
+        single => match literal(single) {
+            Some(position) => {
+                if !inside(position) {
+                    outside.push((
+                        crate::syntax::ast::expr_span(single),
+                        format!(
+                            "index {position} is outside this {len}-element slice (`0..{}`)",
+                            len - 1
+                        ),
+                    ));
+                    return false;
+                }
+                at(position)
+            }
+            None => Expr::Binary {
+                op: if step > 0 { BinOp::Add } else { BinOp::Sub },
+                lhs: Box::new(at(0)),
+                rhs: Box::new(single.clone()),
+                span: *span,
+            },
+        },
+    };
+    *e = Expr::Index {
+        base: inner.clone(),
+        index: Box::new(mapped),
+        span: *span,
+    };
+    true
 }
 
 /// Expand `e` when it is a recorded read; true when the walk should still
