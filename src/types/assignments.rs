@@ -1003,3 +1003,38 @@ fn index_free_path(e: &Expr) -> Option<String> {
         _ => None,
     }
 }
+
+impl Checker<'_> {
+    /// `u.q = ..` with `q` an `out` port of `u`'s entity: the instance
+    /// drives its outputs, and a second driver from outside overwrote them
+    /// in a testbench or met them in hardware (#610).
+    // ponytail: a view field's direction through an instance (`u.bus.data`)
+    // is not checked here.
+    pub(super) fn check_instance_output_write(&mut self, target: &Expr, sym: &HashMap<String, Ty>) {
+        let Expr::Field { base, field, .. } = target else {
+            return;
+        };
+        let base_ty = self.type_of(base, sym);
+        let Some(head) = self.ty_head(&base_ty) else {
+            return;
+        };
+        let output = self
+            .entities
+            .get(&head)
+            .and_then(|ports| ports.iter().find(|port| port.name == field.text))
+            .is_some_and(|port| port.dir == Some(Direction::Out));
+        if output {
+            self.error_with_help(
+                codes::INVALID_ASSIGN_TARGET,
+                expr_span(target),
+                format!(
+                    "cannot assign to `{}`: `{}` is an output of `{}`, driven by the instance",
+                    crate::syntax::pretty::expr_string(target),
+                    field.text,
+                    self.key_leaf(&head)
+                ),
+                "read it, or connect it to a signal and drive that".to_string(),
+            );
+        }
+    }
+}
