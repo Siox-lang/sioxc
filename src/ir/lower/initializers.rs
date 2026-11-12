@@ -185,6 +185,49 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        // A table of rows or of structs (`MATRIX: unsigned[8][2][2]`,
+        // `TABLE: Entry[2]`) is folded leaf by leaf (`MATRIX[0][1]`,
+        // `TABLE[0].a`), not as one row, and seeded nothing (#618): each
+        // leaf seeds the signal's leaf of the same path.
+        if let Some(key) = self.free_fns.constant_expr_key(value) {
+            let mut leaves: Vec<(String, u64)> = self
+                .const_values
+                .iter()
+                .filter_map(|(name, value)| {
+                    let rest = name
+                        .strip_prefix(&key)
+                        .filter(|rest| rest.starts_with('['))?;
+                    let word = match value {
+                        Expr::Const(word) => *word,
+                        other => self.constant_expr(other)? as u64,
+                    };
+                    Some((rest.to_string(), word))
+                })
+                .collect();
+            leaves.extend(self.consts.iter().filter_map(|(name, value)| {
+                let rest = name
+                    .strip_prefix(&key)
+                    .filter(|rest| rest.starts_with('['))?;
+                Some((rest.to_string(), *value as u64))
+            }));
+            let mut seeded = false;
+            for (rest, word) in leaves {
+                let Some(&id) = self.locals.get(&format!("{prefix}{rest}")) else {
+                    continue;
+                };
+                let width = self.out.signals[id.0 as usize].width;
+                let masked = if width > 0 && width < 64 {
+                    word & ((1u64 << width) - 1)
+                } else {
+                    word
+                };
+                self.out.signals[id.0 as usize].init = vec![masked];
+                seeded = true;
+            }
+            if seeded {
+                return;
+            }
+        }
         if !Self::is_default_construction(value) {
             self.report_non_constant_init(prefix, span);
         }
@@ -404,16 +447,21 @@ impl<'a> Lowering<'a> {
         else {
             return false;
         };
-        // A power-on value is words; a constant computed by a call is folded
-        // only as a value (ponytail: no Expr evaluator yet).
-        if !fields
-            .iter()
-            .all(|(_, value)| matches!(value, Expr::Const(_)))
-        {
+        // A power-on value is words. A leaf read through another constant
+        // (`.inner = K_INNER`) is a source value, folded to its word here
+        // (#627); a constant computed by a call is folded only as a value
+        // (ponytail: no Expr evaluator yet).
+        let words: Option<Vec<(String, u64)>> = fields
+            .into_iter()
+            .map(|(field, value)| match value {
+                Expr::Const(word) => Some((field, word)),
+                other => self.constant_expr(&other).map(|word| (field, word as u64)),
+            })
+            .collect();
+        let Some(words) = words else {
             return false;
-        }
-        for (field, folded) in fields {
-            let Expr::Const(word) = folded else { continue };
+        };
+        for (field, word) in words {
             let Some(&id) = self.locals.get(&format!("{prefix}.{field}")) else {
                 continue;
             };
