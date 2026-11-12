@@ -417,41 +417,44 @@ pub fn eval_const_stmts(
     fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
-    for st in stmts {
-        match st {
-            ast::Stmt::Return { value, .. } => {
-                return eval_const_fns(value.as_ref()?, env, fns, depth);
-            }
-            ast::Stmt::If(iff) => {
-                if eval_const_fns(&iff.cond, env, fns, depth)? != 0 {
-                    if let Some(v) = eval_const_stmts(&iff.then.stmts, env, fns, depth) {
-                        return Some(v);
-                    }
+    run_block(stmts, &|e| eval_const_fns(e, env, fns, depth))?
+}
+
+/// Run a body of `return`s and `if`/`else` chains, each expression through
+/// `eval`. `None` when a statement or an expression does not fold;
+/// `Some(None)` when the block falls through; `Some(Some(v))` when it
+/// returns `v`. One `None` for both let a taken branch that did not fold
+/// read as a fall-through, and a later `return` gave the call its value:
+/// `if x > 0 { let y = x + 10; return y; } return 999;` folded to 999 (#704).
+fn run_block<T: Copy + PartialEq + Default>(
+    statements: &[ast::Stmt],
+    eval: &impl Fn(&ast::Expr) -> Option<T>,
+) -> Option<Option<T>> {
+    for statement in statements {
+        match statement {
+            ast::Stmt::Return {
+                value: Some(value), ..
+            } => return Some(Some(eval(value)?)),
+            ast::Stmt::If(branch) => {
+                let taken = if eval(&branch.cond)? != T::default() {
+                    run_block(&branch.then.stmts, eval)?
                 } else {
-                    match iff.else_.as_deref() {
-                        Some(ast::ElseBranch::Block(b)) => {
-                            if let Some(v) = eval_const_stmts(&b.stmts, env, fns, depth) {
-                                return Some(v);
-                            }
+                    match branch.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(block)) => run_block(&block.stmts, eval)?,
+                        Some(ast::ElseBranch::If(nested)) => {
+                            run_block(std::slice::from_ref(&ast::Stmt::If(nested.clone())), eval)?
                         }
-                        Some(ast::ElseBranch::If(inner)) => {
-                            if let Some(v) = eval_const_stmts(
-                                std::slice::from_ref(&ast::Stmt::If(inner.clone())),
-                                env,
-                                fns,
-                                depth,
-                            ) {
-                                return Some(v);
-                            }
-                        }
-                        None => {}
+                        None => None,
                     }
+                };
+                if taken.is_some() {
+                    return Some(taken);
                 }
             }
             _ => return None,
         }
     }
-    None
+    Some(None)
 }
 
 /// Evaluate the deliberately small pure subset used by `LogicEncoding` and
@@ -473,38 +476,7 @@ pub(in crate::ir) fn eval_logic_stmts(
     env: &HashMap<String, u64>,
     variants: &HashMap<String, u64>,
 ) -> Option<u64> {
-    for statement in statements {
-        match statement {
-            ast::Stmt::Return {
-                value: Some(value), ..
-            } => {
-                return eval_logic_expr(value, env, variants);
-            }
-            ast::Stmt::If(branch) => {
-                if eval_logic_expr(&branch.cond, env, variants)? != 0 {
-                    if let Some(value) = eval_logic_stmts(&branch.then.stmts, env, variants) {
-                        return Some(value);
-                    }
-                } else if let Some(otherwise) = branch.else_.as_deref() {
-                    let value = match otherwise {
-                        ast::ElseBranch::Block(block) => {
-                            eval_logic_stmts(&block.stmts, env, variants)
-                        }
-                        ast::ElseBranch::If(nested) => eval_logic_stmts(
-                            std::slice::from_ref(&ast::Stmt::If(nested.clone())),
-                            env,
-                            variants,
-                        ),
-                    };
-                    if value.is_some() {
-                        return value;
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
-    None
+    run_block(statements, &|e| eval_logic_expr(e, env, variants))?
 }
 
 /// Evaluate one std expression over logic values.

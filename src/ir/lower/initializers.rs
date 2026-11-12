@@ -142,9 +142,12 @@ impl<'a> Lowering<'a> {
             for (folded, index) in values.into_iter().zip(indices) {
                 // ponytail: scalar elements only; a constant of nested
                 // arrays or structs still seeds nothing below the top.
-                let (Expr::Const(word), Some(&id)) =
-                    (folded, self.locals.get(&format!("{prefix}[{index}]")))
-                else {
+                // A canonical element (`ARR_FN = make_arr()`) is a constant
+                // too, and was skipped, powering on at 0 (#701).
+                let (Some(word), Some(&id)) = (
+                    self.constant_expr(&folded).map(|value| value as u64),
+                    self.locals.get(&format!("{prefix}[{index}]")),
+                ) else {
                     continue;
                 };
                 let width = self.out.signals[id.0 as usize].width;
@@ -247,7 +250,10 @@ impl<'a> Lowering<'a> {
         // explicit fields below overwrite what they name. Without this the
         // fields the literal did not mention powered on at 0 rather than at
         // the base's value, while the ones it did name seeded correctly.
-        if let Some(base) = spread.and_then(expr_path) {
+        // A struct constant base (`{ ..BASE, .a = 99 }`) seeds from its
+        // folded fields, as `let p: Pair = BASE;` does (#699).
+        let from_constant = spread.is_some_and(|base| self.seed_from_struct_const(prefix, base));
+        if let Some(base) = spread.and_then(expr_path).filter(|_| !from_constant) {
             let from = format!("{base}.");
             let leaves: Vec<(String, SignalId)> = self
                 .locals
