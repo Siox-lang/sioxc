@@ -165,6 +165,7 @@ impl<'a> Checker<'a> {
             const_types: HashMap::new(),
             const_values: HashMap::new(),
             suffix_types: HashMap::new(),
+            integer_suffixes: HashSet::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
             expanding: std::cell::RefCell::new(HashSet::new()),
@@ -641,6 +642,21 @@ impl<'a> Checker<'a> {
                                     &mut self.prefix_types
                                 };
                                 table.entry(text.clone()).or_default().push(ty.clone());
+                                // `impl Suffix<"ns", integer>` takes whole
+                                // numbers only (#612).
+                                let integer = |name: &str| name == "integer";
+                                let whole = match im.trait_args.get(1) {
+                                    Some(GenericArg::Positional(Expr::Path(path))) => {
+                                        path.segments.last().is_some_and(|s| integer(&s.text))
+                                    }
+                                    Some(GenericArg::PositionalType(Type::Path(path))) => {
+                                        path.segments.last().is_some_and(|s| integer(&s.text))
+                                    }
+                                    _ => false,
+                                };
+                                if t == "Suffix" && whole {
+                                    self.integer_suffixes.insert(text.clone());
+                                }
                             }
                         }
                         // Operator overload signature: `input`/`output` are the

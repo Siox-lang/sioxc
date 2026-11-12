@@ -527,6 +527,22 @@ impl<'a> Lowering<'a> {
         };
         let (_, f) = self.suffix_impls.get(&suffix.text)?;
         f.body.as_ref()?;
+        // `1.5ns` of an integer suffix is its whole count in the base unit
+        // (1500000 fs), as a constant initializer reads it; parsed as an
+        // integer it was 0 (#612).
+        let integer_parameter = f
+            .params
+            .iter()
+            .find(|p| !p.is_self)
+            .and_then(|p| p.ty.as_ref())
+            .and_then(type_head_name)
+            != Some("real");
+        if integer_parameter && text.contains('.') {
+            let scale = crate::syntax::ast::suffix_scale(&suffix.text)?;
+            let value = text.replace('_', "").parse::<f64>().ok()? * scale as f64;
+            return (value.fract() == 0.0 && value >= 0.0)
+                .then_some(Val::Scalar(Expr::Const(value as u64)));
+        }
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {

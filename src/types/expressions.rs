@@ -1054,7 +1054,28 @@ impl<'a> Checker<'a> {
                     self.check_expr(e, sym);
                 }
             }
-            Expr::SuffixLit { suffix, span, .. } => {
+            Expr::SuffixLit {
+                text, suffix, span, ..
+            } => {
+                // A fraction of an integer suffix is a value only when its
+                // scale makes it whole (`1.5ns` is 1500000 fs); `1.5fs` has
+                // none, and read as 0 in hardware (#612).
+                let whole = suffix_scale(&suffix.text).is_some_and(|scale| {
+                    text.replace('_', "")
+                        .parse::<f64>()
+                        .is_ok_and(|value| (value * scale as f64).fract() == 0.0)
+                });
+                if text.contains('.') && self.integer_suffixes.contains(&suffix.text) && !whole {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "`{text}{}` is not a whole number of the unit `{}` counts in",
+                            suffix.text, suffix.text
+                        ),
+                        "write it in a smaller unit (`1500fs` for `1.5ps`)".to_string(),
+                    );
+                }
                 match self.suffix_types.get(&suffix.text).map(|v| v.as_slice()) {
                     Some([_]) => {} // one `impl Suffix` fn defines it
                     Some(tys) => {
