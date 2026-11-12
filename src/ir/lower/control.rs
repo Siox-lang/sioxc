@@ -481,7 +481,12 @@ impl<'a> Lowering<'a> {
                         // block took the new value whether or not the edge
                         // came (#605, #680), as the `else` form below does not.
                         None => {
-                            let outer = self.edge_guard.replace(Some(event.clone()));
+                            // The edge holds only where the enclosing
+                            // branch does (`if en == '1' { if clk.rising()
+                            // { x = 42; } }`, #690).
+                            let guard = self.source_and(cond.clone(), event.clone(), span);
+                            let depth = self.block_scopes.borrow().len();
+                            let outer = self.edge_guard.replace(Some((guard, depth)));
                             self.lower_event_block(&iff.then, None, &mut updates);
                             self.edge_guard.replace(outer);
                             self.source_and(cond.clone(), event.clone(), span)
@@ -493,9 +498,18 @@ impl<'a> Lowering<'a> {
                         // block wakes on any signal the statement reads, and
                         // each branch is guarded by the edge or its absence.
                         Some(otherwise) => {
+                            // Each branch's outer locals also need the
+                            // enclosing condition (`if en == '1' { if
+                            // clk.rising() { .. } else { y = 99; } }`, #690).
+                            let depth = self.block_scopes.borrow().len();
+                            let guard = self.source_and(cond.clone(), event.clone(), span);
+                            let outer = self.edge_guard.replace(Some((guard, depth)));
                             self.lower_event_block(&iff.then, Some(event.clone()), &mut updates);
-                            let absent = Some(self.source_not(&event, span));
-                            self.lower_event_else(otherwise, absent, &mut updates);
+                            let absent = self.source_not(&event, span);
+                            let guard = self.source_and(cond.clone(), absent.clone(), span);
+                            self.edge_guard.replace(Some((guard, depth)));
+                            self.lower_event_else(otherwise, Some(absent), &mut updates);
+                            self.edge_guard.replace(outer);
                             let mut reads = Vec::new();
                             crate::ir::read_set(&event, &mut reads);
                             for update in &updates {
@@ -1152,14 +1166,7 @@ impl<'a> Lowering<'a> {
                         out.extend(updates);
                         continue;
                     }
-                    // A local's value holds only with the edge (#605, #680);
-                    // the signal updates are guarded by the event block.
-                    let edge = self.edge_guard.borrow().clone();
-                    let local_cond = match edge {
-                        Some(edge) => Some(self.source_and(cond.clone(), edge, ast::stmt_span(s))),
-                        None => cond.clone(),
-                    };
-                    if self.assign_block_local(target, value, &local_cond) {
+                    if self.assign_block_local(target, value, &cond) {
                         continue;
                     }
                     if let Some(leaves) = self.struct_assign_leaves(target, value) {
