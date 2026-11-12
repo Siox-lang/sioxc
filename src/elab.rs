@@ -1572,20 +1572,47 @@ impl<'a> Elaborator<'a> {
         site: Span,
     ) {
         for c in conns {
-            let Some(sig) = parent_signals.get(&c.signal) else {
-                continue;
+            // `wires[0]` or `bus[0..3]`: the declared signal's element or
+            // slice, which a lookup by the rendered text never found, so the
+            // connection went unchecked (#654).
+            let projected;
+            let sig = match parent_signals.get(&c.signal) {
+                Some(sig) => sig,
+                None => {
+                    let Some(found) = project_signal(&c.signal, parent_signals) else {
+                        continue;
+                    };
+                    projected = found;
+                    &projected
+                }
             };
             // A struct port connects field by field, by name: another struct,
             // or a vector, of the same width matched no field and the
             // connection was dropped in silence (#186).
             let record =
                 |ty: &EType| matches!(ty, EType::Named(name) if self.record_structs.contains(name));
+            // A kernel scalar port is as definite as a struct one: `integer`
+            // wired to a `Bool` or a `real` passed (#651). A port named by a
+            // generic parameter (`input: T`) still takes any type (#226).
+            let kernel = |ty: &EType| {
+                matches!(ty, EType::Named(name) if matches!(
+                    name.as_str(),
+                    "integer" | "natural" | "real" | "Bit" | "Logic" | "ULogic" | "Bool" | "Char"
+                ))
+            };
+            let definite = |ty: &EType| record(ty) || kernel(ty);
+            // `Bit`, `Logic` and `ULogic` connect to one another, as a
+            // `Logic` clock drives a `Bit` port.
+            let logic = |name: &str| matches!(name, "Bit" | "Logic" | "ULogic");
             let mismatched = match (&c.ty, sig) {
-                // A port named by a generic parameter (`input: T`) takes any
-                // type; only a struct port must match by name (#226).
-                (EType::Named(port), EType::Named(signal)) => port != signal && record(&c.ty),
+                (EType::Named(port), EType::Named(signal)) => {
+                    port != signal
+                        && !(logic(port) && logic(signal))
+                        && definite(&c.ty)
+                        && definite(sig)
+                }
                 (EType::Named(_), EType::Array { .. }) | (EType::Array { .. }, EType::Named(_)) => {
-                    record(&c.ty) || record(sig)
+                    definite(&c.ty) || definite(sig)
                 }
                 _ => false,
             };
@@ -1902,6 +1929,55 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
+/// The type of a connected element or slice (`wires[0]`, `bus[0..3]`) of a
+/// declared signal. A field (`pkt.data`) or an index read through a family
+/// vector (`v[3]` of an `unsigned[8]`, whose element names the family) is
+/// not projected.
+fn project_signal(signal: &str, signals: &HashMap<String, EType>) -> Option<EType> {
+    let (base, rest) = signal.split_once('[')?;
+    let inner = rest.strip_suffix(']')?;
+    if inner.contains('[') || inner.contains(']') || base.contains('.') {
+        return None;
+    }
+    let EType::Array { elem, .. } = signals.get(base)? else {
+        return None;
+    };
+    match inner.split_once("..") {
+        Some((lo, hi)) => {
+            let (lo, hi) = (
+                lo.trim().parse::<i64>().ok()?,
+                hi.trim().parse::<i64>().ok()?,
+            );
+            Some(EType::Array {
+                elem: elem.clone(),
+                len: u32::try_from(lo.abs_diff(hi) + 1).ok(),
+            })
+        }
+        None => {
+            inner.trim().parse::<i64>().ok()?;
+            match elem.as_ref() {
+                EType::Array { .. } => Some(elem.as_ref().clone()),
+                EType::Named(name)
+                    if matches!(
+                        name.as_str(),
+                        "integer"
+                            | "natural"
+                            | "real"
+                            | "Bit"
+                            | "Logic"
+                            | "ULogic"
+                            | "Bool"
+                            | "Char"
+                    ) =>
+                {
+                    Some(elem.as_ref().clone())
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
 fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
