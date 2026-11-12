@@ -644,7 +644,7 @@ impl<'a> Checker<'a> {
                 Expr::Field { base, field, .. } => {
                     let recv = self.type_of(base, sym);
                     match self
-                        .ty_head(&recv)
+                        .method_head(&recv)
                         .and_then(|h| self.methods.get(&(h, field.text.clone())))
                     {
                         Some(Some(ret)) => self.ast_ty_for_owner(ret, &recv),

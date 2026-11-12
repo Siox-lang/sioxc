@@ -207,6 +207,24 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The head a receiver's methods are keyed by: a view's are stored under
+    /// `View@Target` (its impl's target, `impl Bus Master`), while a value
+    /// declared `m: Bus Master` has the view's own head. Looked up by that
+    /// alone, no view method was found and every check of the call was
+    /// skipped (#607).
+    pub(super) fn method_head(&self, t: &Ty) -> Option<String> {
+        let head = self.ty_head(t)?;
+        // Views are keyed `View@Target` already; one view of this name.
+        let prefix = format!("{head}@");
+        let mut qualified = self.views.keys().filter(|key| key.starts_with(&prefix));
+        if let (Some(view), None) = (qualified.next(), qualified.next()) {
+            if self.methods.keys().any(|(owner, _)| owner == view) {
+                return Some(view.clone());
+            }
+        }
+        Some(head)
+    }
+
     /// The head name of a checked type, for diagnostics and impl lookup.
     pub(super) fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {

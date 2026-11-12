@@ -666,7 +666,7 @@ impl<'a> Checker<'a> {
                 if let Expr::Field { base, field, .. } = callee.as_ref() {
                     let receiver = self.type_of(base, sym);
                     let ids = self
-                        .ty_head(&receiver)
+                        .method_head(&receiver)
                         .and_then(|head| self.method_ids.get(&(head, field.text.clone())))
                         .cloned()
                         .unwrap_or_default();
