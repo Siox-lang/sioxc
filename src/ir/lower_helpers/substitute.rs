@@ -531,8 +531,15 @@ pub(in crate::ir) fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr
             span,
         } => Expr::Call {
             callee: sub(callee),
-            type_args: type_args.clone(),
-            qualifier: qualifier.clone(),
+            // `Packet<M>::width()` in `fn helper<M: integer>`: the qualifier
+            // forwards `M`, and kept it unbound (#687).
+            type_args: type_args
+                .iter()
+                .map(|arg| subst_generic_arg(arg, var, val))
+                .collect(),
+            qualifier: qualifier
+                .as_ref()
+                .map(|ty| Box::new(subst_type(ty, var, val))),
             args: args.iter().map(|a| subst_expr(a, var, val)).collect(),
             bang: *bang,
             span: *span,
@@ -614,6 +621,24 @@ pub(in crate::ir) fn fold_const(e: ast::Expr, span: crate::diag::Span) -> ast::E
 }
 
 /// Substitute the loop index into a type's index/generic-argument expressions.
+/// One generic argument with `var` bound to `val`.
+fn subst_generic_arg(arg: &ast::GenericArg, var: &str, val: i64) -> ast::GenericArg {
+    match arg {
+        ast::GenericArg::Positional(e) => ast::GenericArg::Positional(subst_expr(e, var, val)),
+        ast::GenericArg::PositionalType(ty) => {
+            ast::GenericArg::PositionalType(subst_type(ty, var, val))
+        }
+        ast::GenericArg::Named { name, value } => ast::GenericArg::Named {
+            name: name.clone(),
+            value: subst_expr(value, var, val),
+        },
+        ast::GenericArg::NamedType { name, ty } => ast::GenericArg::NamedType {
+            name: name.clone(),
+            ty: subst_type(ty, var, val),
+        },
+    }
+}
+
 pub(in crate::ir) fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
     match t {
         ast::Type::Indexed { base, index, span } => ast::Type::Indexed {
@@ -625,22 +650,7 @@ pub(in crate::ir) fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type
             base: Box::new(subst_type(base, var, val)),
             args: args
                 .iter()
-                .map(|a| match a {
-                    ast::GenericArg::Positional(e) => {
-                        ast::GenericArg::Positional(subst_expr(e, var, val))
-                    }
-                    ast::GenericArg::PositionalType(ty) => {
-                        ast::GenericArg::PositionalType(subst_type(ty, var, val))
-                    }
-                    ast::GenericArg::Named { name, value } => ast::GenericArg::Named {
-                        name: name.clone(),
-                        value: subst_expr(value, var, val),
-                    },
-                    ast::GenericArg::NamedType { name, ty } => ast::GenericArg::NamedType {
-                        name: name.clone(),
-                        ty: subst_type(ty, var, val),
-                    },
-                })
+                .map(|arg| subst_generic_arg(arg, var, val))
                 .collect(),
             span: *span,
         },
