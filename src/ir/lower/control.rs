@@ -476,8 +476,12 @@ impl<'a> Lowering<'a> {
                     let event = self.lower_expr(&iff.cond);
                     let mut updates = Vec::new();
                     let condition = match iff.else_.as_deref() {
+                        // The edge guards the body's values too: a process
+                        // local written here (`x = 42`) and read after the
+                        // block took the new value whether or not the edge
+                        // came (#605, #680), as the `else` form below does not.
                         None => {
-                            self.lower_event_block(&iff.then, None, &mut updates);
+                            self.lower_event_block(&iff.then, Some(event.clone()), &mut updates);
                             self.source_and(cond.clone(), event.clone(), span)
                         }
                         // `if clk.rising() { .. } else { .. }` runs its `else`
