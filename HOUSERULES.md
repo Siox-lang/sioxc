@@ -88,6 +88,18 @@ restarting it after an observation interruption. Set `SIOX_JOB_MEMORY` /
 Verify the launcher with `bash scripts/test-guarded-run.sh` on this Linux host;
 it deliberately triggers an OOM inside a separate 64 MiB service.
 
+For this compiler's large Rust test binaries, lighter **host** test debug
+metadata avoids measured soft-limit thrashing without changing generated Siox
+`--debug` output or its GDB/DWARF checks. Pass the setting inside the guarded
+command rather than assuming arbitrary shell variables are forwarded:
+
+```bash
+bash scripts/guarded-run.sh env CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=1 cargo +1.90.0 test --locked
+```
+
+Keep all native/debugger tests enabled and the memory limits unchanged; this
+changes Rust host test metadata, not the language's debug/simulation mode.
+
 Before you commit, all three must be green:
 
 ```bash

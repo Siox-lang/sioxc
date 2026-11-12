@@ -433,16 +433,21 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_imports(item, true);
         }
     }
-    // Enum inheritance must be available before bodies containing inherited
-    // variant paths are resolved. Resolve just each base head after imports,
-    // then build the inherited variant registry by stable declaration id.
+    // Concrete aliases can name an enum's base. Resolve their heads before
+    // inherited variant paths in bodies, without emitting duplicate diagnostics.
     for m in modules {
         r.set_current_module(m);
         for item in &m.items {
-            if let Item::Enum(enumeration) = item {
-                if let Some(path) = enumeration.repr.as_ref().and_then(type_head_path) {
-                    r.pre_resolve_type_path(path);
-                }
+            let head = match item {
+                Item::Enum(enumeration) => enumeration.repr.as_ref(),
+                Item::Using(Using {
+                    kind: UsingKind::Alias { params, ty, .. },
+                    ..
+                }) if params.params.is_empty() => Some(ty),
+                _ => None,
+            };
+            if let Some(path) = head.and_then(type_head_path) {
+                r.pre_resolve_type_path(path);
             }
         }
     }
@@ -848,6 +853,7 @@ impl<'a> Resolver<'a> {
     /// (`Child::InheritedVariant`) resolve to the base's variants. Merge
     /// base-chain variant entries into each derived enum's table.
     fn inherit_enum_variants(&mut self, modules: &[Module]) {
+        let declarations = declarations::DeclarationIndex::collect(&self.out, modules);
         let derives: HashMap<DefId, DefId> = modules
             .iter()
             .flat_map(|module| module.items.iter())
@@ -856,12 +862,7 @@ impl<'a> Resolver<'a> {
                     return None;
                 };
                 let owner = self.out.declared(enumeration.name.span)?;
-                let base = enumeration
-                    .repr
-                    .as_ref()
-                    .and_then(type_head_path)
-                    .and_then(|path| self.out.resolved(path.span))?;
-                (self.out.kind_of(base) == Some(DefKind::Enum)).then_some((owner, base))
+                Some((owner, declarations.enum_base(owner)?))
             })
             .collect();
         let ids: Vec<DefId> = self.enum_variants.keys().copied().collect();
@@ -4662,6 +4663,61 @@ mod tests {
             "module m;\nenum State { Idle, Run }\nentity M {}\nimpl M {\n  next = State::Bogus;\n}\n",
         );
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn inherited_enum_variants_follow_concrete_aliases_by_declaration() {
+        let mut sources = [
+            "module left;
+             pub enum Level { Low = 3, High = 9 }
+             pub enum Derived(aliases::LevelAlias);
+             pub type DerivedAlias = Derived;
+             pub enum Nested(DerivedAlias);",
+            "module right; pub enum Level { Low = 41, High = 91 }",
+            "module aliases; pub type LevelAlias = left::Level;",
+            "module client;
+             fn inherited() -> left::Nested { return left::Nested::High; }
+             fn unrelated() -> right::Level { return right::Level::High; }",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::default();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let enumeration = |module: &str, name: &str| {
+                modules
+                    .iter()
+                    .filter(|item| path_text(&item.path) == module)
+                    .flat_map(|module| &module.items)
+                    .find_map(|item| match item {
+                        Item::Enum(declaration) if declaration.name.text == name => {
+                            resolved.declared(declaration.name.span)
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let base = resolved
+                .enum_variant(enumeration("left", "Level"), "High")
+                .unwrap();
+            for name in ["Derived", "Nested"] {
+                assert_eq!(
+                    resolved.enum_variant(enumeration("left", name), "High"),
+                    Some(base)
+                );
+            }
+            assert_ne!(
+                resolved.enum_variant(enumeration("right", "Level"), "High"),
+                Some(base)
+            );
+            sources.reverse();
+        }
     }
 
     #[test]

@@ -67,14 +67,13 @@ impl<'a> Checker<'a> {
             Item::Trait(t) => {
                 for f in &t.items {
                     if let Some(b) = &f.body {
-                        let saved =
-                            self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
+                        let saved = self.push_generic_scope(&f.generics);
                         // The std operator/literal hook traits use an empty
                         // body as an intrinsic placeholder. A real default
                         // body, however, is ordinary inlined code and must
                         // return on every path like any other function.
                         self.check_function_block(f, b, None, !b.stmts.is_empty());
-                        *self.type_params.borrow_mut() = saved;
+                        self.in_generic_scope.set(saved);
                     }
                 }
             }
@@ -240,6 +239,8 @@ impl<'a> Checker<'a> {
         if depth > 16 {
             return Some("it nests too deeply".to_string());
         }
+        let ty = self.declarations.normalize_type(ty)?;
+        let ty = ty.as_ref();
         match self.ast_ty(ty) {
             Ty::Integer | Ty::Natural | Ty::Real | Ty::Error => None,
             // A packed value: one word, or little-endian words by pointer.
@@ -256,24 +257,18 @@ impl<'a> Checker<'a> {
             },
             Ty::Named(id) => {
                 let key = self.definition_key(id)?;
-                if self
-                    .structs
-                    .get(&key)
-                    .is_some_and(|(base, _)| base.is_some())
-                {
-                    return Some(format!("`{key}` derives from another type"));
-                }
-                let Some(fields) = self.struct_field_types.get(&key) else {
+                let Some(declaration) = self.declarations.structure(id) else {
                     return Some(format!("`{key}` is not a struct of C scalars"));
                 };
-                if fields.is_empty() {
+                if declaration.base.is_some() {
+                    return Some(format!("`{key}` derives from another type"));
+                }
+                if declaration.fields.is_empty() {
                     return Some(format!("`{key}` has no fields"));
                 }
-                let types = self.field_decl_types.get(&key)?;
-                fields.iter().find_map(|(name, _, _)| {
-                    let field = types.get(name)?;
-                    self.c_aggregate_problem(field, depth + 1)
-                        .map(|problem| format!("field `{name}`: {problem}"))
+                declaration.fields.iter().find_map(|field| {
+                    self.c_aggregate_problem(&field.ty, depth + 1)
+                        .map(|problem| format!("field `{}`: {problem}", field.name.text))
                 })
             }
             Ty::Char => Some("Char has no declared C character ABI".to_string()),
@@ -354,72 +349,6 @@ impl<'a> Checker<'a> {
             "use `real`, `integer`, or a packed numeric type of at most 64 bits; wrap other C signatures in a scalar C adapter"
                 .to_string(),
         );
-    }
-
-    /// Validate constant layout bounds before elaboration/lowering tries to
-    /// flatten them. Symbolic widths are checked after substitution; here we
-    /// catch source constants that cannot fit the compiler's `u32` layout
-    /// representation and would otherwise truncate or attempt an impossible
-    /// allocation during error recovery.
-    /// A struct that contains itself, directly or through other structs, has
-    /// no finite layout. Elaboration flattens a struct into leaf signals, so
-    /// one of these recursed until the process aborted with no diagnostic —
-    /// `struct A { f: B } struct B { f: A }` was enough.
-    pub(super) fn check_struct_field_cycles(&mut self) {
-        let mut names: Vec<String> = self.struct_field_types.keys().cloned().collect();
-        names.sort();
-        let mut found = Vec::new();
-        for name in &names {
-            if let Some((field, span, through)) = self.self_containing(name) {
-                found.push((name.clone(), field, span, through));
-            }
-        }
-        for (name, field, span, through) in found {
-            let path = if through == name {
-                format!("`{name}` contains itself")
-            } else {
-                format!("`{name}` contains itself through `{through}`")
-            };
-            self.error_with_help(
-                codes::TYPE_MISMATCH,
-                span,
-                format!("{path}, so it has no finite layout"),
-                format!(
-                    "field `{field}` would have to hold another `{name}`, without end; \
-                     hardware has no indirection to break the cycle"
-                ),
-            );
-        }
-    }
-
-    /// The field that closes a containment cycle back to `start`, with the
-    /// struct it goes through. Breadth-first so the shortest cycle is found.
-    pub(super) fn self_containing(&self, start: &str) -> Option<(String, Span, String)> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut queue: Vec<(String, String, Span, String)> = self
-            .struct_field_types
-            .get(start)?
-            .iter()
-            .map(|(f, head, span)| (head.clone(), f.clone(), *span, head.clone()))
-            .collect();
-        while !queue.is_empty() {
-            let mut next = Vec::new();
-            for (current, field, span, through) in queue {
-                if current == start {
-                    return Some((field, span, through));
-                }
-                if !seen.insert(current.clone()) {
-                    continue;
-                }
-                if let Some(fields) = self.struct_field_types.get(&current) {
-                    for (_, head, _) in fields {
-                        next.push((head.clone(), field.clone(), span, through.clone()));
-                    }
-                }
-            }
-            queue = next;
-        }
-        None
     }
 
     /// Reject a type whose layout cannot be computed, such as an unconstrained
@@ -869,5 +798,80 @@ impl<'a> Checker<'a> {
             message,
             &format!("it is reserved for {purpose}; nothing reads it today"),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diag::FileId;
+
+    #[test]
+    fn c_aggregate_contracts_borrow_declarations_without_legacy_struct_maps() {
+        let mut sources = [
+            "module allowed;
+             pub struct Cell { pub word: integer }
+             pub type CellAlias = Cell;
+             pub type Samples = real[2];
+             pub type SamplesAlias = Samples;
+             pub struct Packet { pub first: CellAlias, pub samples: SamplesAlias }",
+            "module rejected;
+             pub struct Packet { pub byte: Char }
+             pub struct Empty {}
+             pub struct Derived(integer);
+             pub enum Tag { A, B }",
+            "module client;
+             type Good = allowed::Packet;
+             type Bad = rejected::Packet;
+             extern \"C\" {
+                 fn good(value: Good);
+                 fn samples(value: allowed::SamplesAlias);
+                 fn bad(value: Bad);
+                 fn empty(value: rejected::Empty);
+                 fn derived(value: rejected::Derived);
+                 fn tag(value: rejected::Tag);
+             }",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::default();
+            let modules = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let mut checker = Checker::new(&mut sink, &resolved, &modules);
+            checker.collect(&modules);
+            checker.structs.clear();
+            checker.field_decl_types.clear();
+            let mut checked = 0;
+            for function in modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .filter_map(|item| match item {
+                    Item::ExternBlock { fns, .. } => Some(fns),
+                    _ => None,
+                })
+                .flatten()
+            {
+                let problem =
+                    checker.c_aggregate_problem(function.params[0].ty.as_ref().unwrap(), 0);
+                let expected = match function.name.text.as_str() {
+                    "good" | "samples" => None,
+                    "bad" => Some("field `byte`: Char has no declared C character ABI"),
+                    "empty" => Some("`rejected::Empty` has no fields"),
+                    "derived" => Some("`rejected::Derived` derives from another type"),
+                    "tag" => Some("`rejected::Tag` is not a struct of C scalars"),
+                    name => panic!("unexpected extern {name}"),
+                };
+                assert_eq!(problem.as_deref(), expected, "{}", function.name.text);
+                checked += 1;
+            }
+            assert_eq!(checked, 6);
+            sources.reverse();
+        }
     }
 }

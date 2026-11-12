@@ -107,13 +107,11 @@ pub(in crate::ir) fn expr_path(e: &ast::Expr) -> Option<String> {
 /// Split a flattened aggregate access into its root name and ordered field /
 /// index suffixes. Unlike `expr_path`, indices remain as expressions so a
 /// runtime access can be expanded over the concrete leaf paths.
-pub(in crate::ir) fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessStep<'_>>)> {
+pub(in crate::ir) fn access_path(e: &ast::Expr) -> Option<(&ast::Path, Vec<AccessStep<'_>>)> {
     /// Walk a nested access into its ordered steps, returning the base path.
-    fn walk<'e>(e: &'e ast::Expr, steps: &mut Vec<AccessStep<'e>>) -> Option<String> {
+    fn walk<'e>(e: &'e ast::Expr, steps: &mut Vec<AccessStep<'e>>) -> Option<&'e ast::Path> {
         match e {
-            ast::Expr::Path(path) if path.segments.len() == 1 => {
-                Some(path.segments[0].text.clone())
-            }
+            ast::Expr::Path(path) if !path.segments.is_empty() => Some(path),
             ast::Expr::Field { base, field, .. } => {
                 let root = walk(base, steps)?;
                 steps.push(AccessStep::Field(&field.text));
@@ -130,6 +128,17 @@ pub(in crate::ir) fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessSt
 
     let mut steps = Vec::new();
     let root = walk(e, &mut steps)?;
+    Some((root, steps))
+}
+
+pub(in crate::ir) fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessStep<'_>>)> {
+    let (path, steps) = access_path(e)?;
+    let root = path
+        .segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join("::");
     Some((root, steps))
 }
 

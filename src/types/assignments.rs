@@ -571,17 +571,27 @@ impl<'a> Checker<'a> {
         let Some(function) = self.function_id(p) else {
             return;
         };
-        let Some((generics, params)) = self.generic_fns.get(&function).cloned() else {
+        let Some(declaration) = self
+            .declarations
+            .module_function(function)
+            .filter(|declaration| !declaration.generics.params.is_empty())
+        else {
             return;
         };
-        for gp in &generics {
-            let occurrences: Vec<&Expr> = params
+        for gp in &declaration.generics.params {
+            let Some(parameter) = self.resolved.declared(gp.name.span) else {
+                continue;
+            };
+            let occurrences: Vec<&Expr> = declaration
+                .params
                 .iter()
+                .filter(|parameter| !parameter.is_self)
                 .zip(args)
                 .filter_map(|(declared, argument)| {
                     declared
+                        .ty
                         .as_ref()
-                        .filter(|ty| Self::is_direct_type_param(ty, &gp.name.text))
+                        .filter(|ty| self.is_direct_type_param(ty, parameter))
                         .map(|_| argument)
                 })
                 .collect();
@@ -625,11 +635,14 @@ impl<'a> Checker<'a> {
             }
 
             let Some(bound) = &gp.bound else { continue };
-            let Some(trait_name) = self.trait_type_key(bound) else {
+            let Some(trait_id) = self.trait_type_id(bound) else {
                 continue;
             };
             let Some(ty) = inferred else { continue };
-            if !self.satisfies(&ty, &trait_name) {
+            if !self.satisfies(&ty, trait_id) {
+                let Some(trait_name) = self.trait_definition_key(trait_id) else {
+                    continue;
+                };
                 let name = self.ty_display(&ty);
                 let shown_trait = self.key_leaf(&trait_name);
                 self.error(
@@ -642,7 +655,7 @@ impl<'a> Checker<'a> {
                 );
             }
         }
-        self.check_instantiation(function, &generics, &params, args, sym);
+        self.check_instantiation(function, args, sym);
     }
 
     /// Check a generic function's body for this call's type arguments: the
@@ -650,17 +663,10 @@ impl<'a> Checker<'a> {
     /// generic body failed only in lowering (#241). Each distinct set of
     /// arguments is checked once; the tables lowering reads are left as the
     /// abstract body had them.
-    fn check_instantiation(
-        &mut self,
-        function: DefId,
-        generics: &[Param],
-        params: &[Option<Type>],
-        args: &[Expr],
-        sym: &HashMap<String, Ty>,
-    ) {
+    fn check_instantiation(&mut self, function: DefId, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Some(declaration) = self
             .declarations
-            .function(function)
+            .module_function(function)
             .filter(|declaration| !declaration.generics.params.is_empty())
         else {
             return;
@@ -671,7 +677,9 @@ impl<'a> Checker<'a> {
         if self.instantiating.borrow().contains(&function) {
             return;
         }
+        let generics = &declaration.generics.params;
         let mut bindings = HashMap::new();
+        let mut key = Some(Vec::new());
         for gp in generics {
             let value_parameter = gp
                 .bound
@@ -681,28 +689,35 @@ impl<'a> Checker<'a> {
             if value_parameter {
                 continue;
             }
-            let bound = params.iter().zip(args).find_map(|(declared, argument)| {
-                Self::bind_type_param(
-                    declared.as_ref()?,
-                    &self.type_of(argument, sym),
-                    &gp.name.text,
-                )
-            });
+            let Some(parameter) = self.resolved.declared(gp.name.span) else {
+                key = None;
+                continue;
+            };
+            let bound = declaration
+                .params
+                .iter()
+                .filter(|parameter| !parameter.is_self)
+                .zip(args)
+                .find_map(|(declared, argument)| {
+                    self.bind_type_param(
+                        declared.ty.as_ref()?,
+                        &self.type_of(argument, sym),
+                        parameter,
+                    )
+                });
             match bound {
                 Some(ty) if !matches!(ty, Ty::Error) => {
-                    bindings.insert(gp.name.text.clone(), ty);
+                    if let Some(arguments) = &mut key {
+                        arguments.push((parameter, ty.clone()));
+                    }
+                    bindings.insert(parameter, ty);
                 }
                 _ => return,
             }
         }
-        if bindings.is_empty() {
+        if bindings.is_empty() && key.is_some() {
             return;
         }
-        let key: Option<Vec<_>> = generics
-            .iter()
-            .filter_map(|parameter| bindings.get(&parameter.name.text).map(|ty| (parameter, ty)))
-            .map(|(parameter, ty)| Some((self.resolved.declared(parameter.name.span)?, ty.clone())))
-            .collect();
         if key
             .is_some_and(|arguments| !self.instantiated.borrow_mut().insert((function, arguments)))
         {
@@ -723,10 +738,10 @@ impl<'a> Checker<'a> {
         self.covered_tuple_matches = covered;
     }
 
-    /// Whether a type is exactly the bare parameter `name`, rather than
+    /// Whether a type is exactly the resolved parameter, rather than
     /// something merely mentioning it.
-    pub(super) fn is_direct_type_param(ty: &Type, name: &str) -> bool {
-        matches!(ty, Type::Path(path) if path.segments.len() == 1 && path.segments[0].text == name)
+    pub(super) fn is_direct_type_param(&self, ty: &Type, parameter: DefId) -> bool {
+        matches!(ty, Type::Path(path) if self.resolved.resolved(path.span) == Some(parameter))
     }
 
     /// Whether an expression is a contextual literal, which takes its type from
@@ -798,18 +813,22 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Whether `ty` satisfies trait bound `trait_name`. A named struct/enum
+    /// Whether `ty` satisfies a resolved trait bound. A named struct/enum
     /// must have an explicit `impl Tr for it`; kernel scalars and vectors are
     /// assumed to carry the built-in capabilities (arithmetic, comparison), so
     /// they are accepted leniently — this catches a custom type missing the
     /// impl without false-flagging unsigned/signed/etc.
-    pub(super) fn satisfies(&self, ty: &Ty, trait_name: &str) -> bool {
+    pub(super) fn satisfies(&self, ty: &Ty, trait_id: DefId) -> bool {
+        let Some(trait_name) = self.trait_definition_key(trait_id) else {
+            return false;
+        };
+        let builtin = is_compiler_trait(self.resolved, trait_id);
         match self.type_kind_name(ty) {
             Some(kind) => {
-                if self.has_impl(trait_name, &kind)
+                if self.has_impl(&trait_name, &kind)
                     || self
                         .trait_impls
-                        .get(trait_name)
+                        .get(&trait_name)
                         .is_some_and(|implementors| {
                             implementors.contains(&kind)
                             // Applied views are stored by their full nominal
@@ -825,21 +844,12 @@ impl<'a> Checker<'a> {
                     return true;
                 }
                 // A named (struct/enum) type without the impl fails; a kernel
-                // scalar / vector has the built-in capabilities of core and
-                // std traits, but not a user trait's (#231).
-                !matches!(ty, Ty::Named(_)) && Self::builtin_trait(trait_name)
+                // scalar / vector has registered compiler capabilities, not
+                // arbitrary traits declared under core/std namespaces (#231).
+                !matches!(ty, Ty::Named(_)) && builtin
             }
-            None => Self::builtin_trait(trait_name),
+            None => builtin,
         }
-    }
-
-    /// A compiler, core or std trait, whose capabilities kernel types have
-    /// without a source impl. `run_double(10)` with `T: Doubler` passed and
-    /// called a method `integer` does not have (#231).
-    fn builtin_trait(trait_name: &str) -> bool {
-        !trait_name.contains("::")
-            || trait_name.starts_with("core::")
-            || trait_name.starts_with("std::")
     }
 }
 

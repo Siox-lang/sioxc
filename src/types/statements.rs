@@ -668,7 +668,7 @@ impl<'a> Checker<'a> {
     /// register before resolution (`syntax::macros::hardware_statics`).
     pub(super) fn check_static_let(&mut self, l: &LetDecl) {
         if self.in_fn_body.get() {
-            if !self.type_params.borrow().is_empty() {
+            if self.in_generic_scope.get() {
                 self.reject_generic_static(l);
             }
             // Until hardware lowering builds its register, a hardware call

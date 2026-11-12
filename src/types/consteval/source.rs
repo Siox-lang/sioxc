@@ -1,6 +1,9 @@
 //! Borrowed scalar semantics shared by constant-evaluation consumers.
 
-use super::{Binding, Environment, LocalKey, SelectedFunction, Value};
+use std::borrow::Cow;
+use std::collections::HashSet;
+
+use super::{Binding, Environment, LocalKey, Reason, SelectedFunction, Value};
 use crate::resolve::declarations::{AppliedArguments, DeclarationIndex};
 use crate::resolve::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
@@ -144,18 +147,29 @@ impl<'i, 'a> Source<'i, 'a> {
     }
 
     pub(super) fn supported(&self, ty: &Type, receiver: Option<DefId>) -> bool {
+        self.supported_type(ty, receiver, &mut HashSet::new())
+    }
+
+    fn supported_type(
+        &self,
+        ty: &Type,
+        receiver: Option<DefId>,
+        active: &mut HashSet<DefId>,
+    ) -> bool {
         let Some(normalized) = self.declarations.normalize_type(ty) else {
             return false;
         };
         match normalized.as_ref() {
-            Type::Indexed { base, .. } => return self.supported(base, receiver),
+            Type::Indexed { base, .. } => return self.supported_type(base, receiver, active),
             Type::Tuple { elems, .. } => {
-                return elems.iter().all(|ty| self.supported(ty, receiver))
+                return elems
+                    .iter()
+                    .all(|ty| self.supported_type(ty, receiver, active))
             }
             _ => {}
         }
         self.type_id(ty, receiver).is_some_and(|id| {
-            self.supported_scalar(id)
+            self.supported_scalar_at(id, active)
                 || self
                     .structure(id)
                     .is_some_and(|s| s.base.is_none() && s.params.params.is_empty())
@@ -163,10 +177,143 @@ impl<'i, 'a> Source<'i, 'a> {
     }
 
     fn supported_scalar(&self, id: DefId) -> bool {
-        self.resolved().kind_of(id) == Some(DefKind::Enum)
+        self.supported_scalar_at(id, &mut HashSet::new())
+    }
+
+    fn supported_scalar_at(&self, id: DefId, active: &mut HashSet<DefId>) -> bool {
+        self.is_enum(id)
             || ["integer", "natural", "real", "Char"]
                 .iter()
                 .any(|name| Some(id) == self.resolved().builtin(name))
+            || self.derived_base(id).is_some_and(|base| {
+                if !active.insert(id) {
+                    return false;
+                }
+                let supported = self.supported_type(base, None, active);
+                active.remove(&id);
+                supported
+            })
+    }
+
+    fn is_enum(&self, owner: DefId) -> bool {
+        self.resolved().kind_of(owner) == Some(DefKind::Enum)
+    }
+
+    pub(super) fn derived_base(&self, owner: DefId) -> Option<&'a Type> {
+        let structure = self.structure(owner)?;
+        if !structure.params.params.is_empty() || !structure.fields.is_empty() {
+            return None;
+        }
+        let base = structure.base.as_ref()?;
+        self.declarations.scalar_type_id(base)?;
+        Some(base)
+    }
+
+    pub(super) fn nominal_constructor(
+        &self,
+        callee: &Expr,
+        receiver: Option<DefId>,
+    ) -> Option<DefId> {
+        let Expr::Path(path) = callee else {
+            return None;
+        };
+        let owner = self.type_id(&Type::Path(path.clone()), receiver)?;
+        if let Some(structure) = self.structure(owner) {
+            structure.params.params.is_empty().then_some(owner)
+        } else {
+            (self.resolved().kind_of(owner) == Some(DefKind::Enum)).then_some(owner)
+        }
+    }
+
+    pub(super) fn derives_from(&self, mut descendant: DefId, ancestor: DefId) -> bool {
+        let mut seen = HashSet::new();
+        while seen.insert(descendant) {
+            if descendant == ancestor {
+                return true;
+            }
+            let Some(parent) = self
+                .derived_base(descendant)
+                .and_then(|base| self.type_id(base, None))
+                .or_else(|| self.declarations.enum_base(descendant))
+                .or_else(|| self.functions.and_then(|index| index.enum_base(descendant)))
+            else {
+                return false;
+            };
+            descendant = parent;
+        }
+        false
+    }
+
+    fn enum_conversion(&self, target: DefId, value: &Value) -> Option<Value> {
+        let owner = value.enum_owner()?;
+        if !self.is_enum(target)
+            || !(self.derives_from(target, owner) || self.derives_from(owner, target))
+        {
+            return None;
+        }
+        let variant = match value {
+            Value::Variant { variant, .. } => *variant,
+            Value::Enum { discriminant, .. } => {
+                let enums = self.enums?;
+                let mut matching = enums.members(owner)?.iter().filter_map(|(variant, _)| {
+                    (enums.value(owner, *variant) == Some(*discriminant)).then_some(*variant)
+                });
+                let variant = matching.next()?;
+                if matching.next().is_some() {
+                    return None;
+                }
+                variant
+            }
+            _ => return None,
+        };
+        let name = &self.resolved().def(variant)?.name;
+        if self.resolved().enum_variant(owner, name) != Some(variant) {
+            return None;
+        }
+        let variant = self.resolved().enum_variant(target, name)?;
+        match value {
+            Value::Variant { .. } => Some(Value::Variant {
+                owner: target,
+                variant,
+            }),
+            Value::Enum { .. } => Some(Value::Enum {
+                owner: target,
+                discriminant: self.enums?.value(target, variant)?,
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn project_derived<'v>(
+        &self,
+        mut value: &'v Value,
+        target: DefId,
+    ) -> Option<Cow<'v, Value>> {
+        let original = self.value_type(value)?;
+        if original != target
+            && !(self.derives_from(original, target) || self.derives_from(target, original))
+        {
+            return None;
+        }
+        loop {
+            if self.value_type(value) == Some(target) {
+                return Some(Cow::Borrowed(value));
+            }
+            if self.is_enum(target) && value.enum_owner().is_some() {
+                return self.enum_conversion(target, value).map(Cow::Owned);
+            }
+            let Value::Record { owner, fields } = value else {
+                return None;
+            };
+            let declared = self.type_id(self.derived_base(*owner)?, None)?;
+            let [base] = fields.as_ref() else {
+                return None;
+            };
+            if self.value_type(base) != Some(declared) {
+                return None;
+            }
+            value = base;
+        }
     }
 
     pub(super) fn bind_value(
@@ -402,6 +549,12 @@ impl<'i, 'a> Source<'i, 'a> {
     }
 
     pub(super) fn convert_value(&self, callee: &Expr, value: Value) -> Option<Value> {
+        let value = if matches!(value, Value::Record { .. }) {
+            let target = self.resolved().builtin(self.constructor(callee)?)?;
+            self.project_derived(&value, target)?.into_owned()
+        } else {
+            value
+        };
         match (self.constructor(callee)?, value) {
             ("integer", Value::Integer(value)) => i64::try_from(value)
                 .ok()
@@ -477,6 +630,102 @@ impl<'i, 'a> Source<'i, 'a> {
                     parameter.is_self
                         || parameter.ty.as_ref().and_then(type_id) == self.value_type(value)
                 })
+    }
+
+    pub(super) fn conversion_function(
+        &self,
+        target: DefId,
+        value: &Value,
+    ) -> Result<Option<SelectedFunction<'a>>, Reason> {
+        let Some(trait_id) = self.resolved().lang("from") else {
+            return Ok(None);
+        };
+        let input = self.value_type(value).ok_or(Reason::Unsupported)?;
+        let mut selected: Option<SelectedFunction<'a>> = None;
+        for implementation in self.declarations.implementations_for(target).chain(
+            self.functions
+                .into_iter()
+                .flat_map(|index| index.implementations_for(target)),
+        ) {
+            if implementation
+                .trait_
+                .as_ref()
+                .and_then(|path| self.resolved().resolved(path.span))
+                .and_then(|id| self.resolved().lang_of(id))
+                != Some("from")
+            {
+                continue;
+            }
+            let argument = implementation
+                .trait_args
+                .first()
+                .and_then(|arg| arg.as_type())
+                .ok_or(Reason::Unsupported)?;
+            let source = self
+                .type_id(&argument, Some(target))
+                .ok_or(Reason::Unsupported)?;
+            if !matches!(
+                self.resolved().kind_of(source),
+                Some(DefKind::Builtin | DefKind::Enum | DefKind::Struct)
+            ) {
+                return Err(Reason::Unsupported);
+            }
+            if source != input {
+                continue;
+            }
+            if !implementation.params.params.is_empty() {
+                return Err(Reason::Unsupported);
+            }
+            let declaration = self
+                .declarations
+                .trait_decl(trait_id)
+                .or_else(|| self.functions.and_then(|index| index.trait_decl(trait_id)))
+                .ok_or(Reason::Unsupported)?;
+            let arguments = self
+                .declarations
+                .arguments(&declaration.params, &implementation.trait_args)
+                .map_err(|_| Reason::Unsupported)?;
+            let function = implementation
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ImplItem::Fn(function) if function.name.text == "from" => Some(function),
+                    _ => None,
+                })
+                .or_else(|| {
+                    declaration
+                        .items
+                        .iter()
+                        .find(|function| function.name.text == "from")
+                })
+                .ok_or(Reason::Unsupported)?;
+            let type_id = |ty: &Type| {
+                let ty = self.instantiated_type(&arguments, ty)?;
+                self.type_id(&ty, Some(target))
+            };
+            if !function.generics.params.is_empty()
+                || function.params.len() != 1
+                || function.params[0].is_self
+                || function.params[0].ty.as_ref().and_then(type_id) != Some(input)
+                || function.ret.as_ref().and_then(type_id) != Some(target)
+            {
+                return Err(Reason::Unsupported);
+            }
+            if selected.as_ref().is_some_and(|previous| {
+                !std::ptr::eq(previous.function, function)
+                    || previous
+                        .implementation
+                        .is_none_or(|previous| !std::ptr::eq(previous, implementation))
+            }) {
+                return Err(Reason::Unsupported);
+            }
+            selected = Some(SelectedFunction {
+                function,
+                implementation: Some(implementation),
+                applied: Some(arguments),
+            });
+        }
+        Ok(selected)
     }
 
     fn hook(
@@ -650,10 +899,32 @@ impl<'i, 'a> Source<'i, 'a> {
     pub(super) fn binary_values(
         &self,
         op: &BinOp,
-        left: &Value,
-        right: &Value,
+        mut left: &Value,
+        mut right: &Value,
         intrinsic: bool,
     ) -> Option<Value> {
+        if intrinsic {
+            while let (
+                Value::Record {
+                    owner: a,
+                    fields: af,
+                },
+                Value::Record {
+                    owner: b,
+                    fields: bf,
+                },
+            ) = (left, right)
+            {
+                if a != b || self.derived_base(*a).is_none() {
+                    return None;
+                }
+                let ([a], [b]) = (af.as_ref(), bf.as_ref()) else {
+                    return None;
+                };
+                left = a;
+                right = b;
+            }
+        }
         let order = match (left, right) {
             (Value::Integer(left), Value::Integer(right)) => match op {
                 BinOp::And => return Some(Value::Integer(left & right)),

@@ -986,6 +986,23 @@ impl Lowering<'_> {
         self.source_access_value(expression, env, value, self.source_bound_layout(&root))
     }
 
+    /// Constants have the same field/index domains as other shaped values.
+    pub(super) fn source_constant_access(
+        &self,
+        expression: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let (path, steps) = access_path(expression)?;
+        if steps.is_empty() {
+            return None;
+        }
+        let declaration = self.free_fns.declarations().constant_path(path)?;
+        let key = self.free_fns.constant_decl_key(declaration);
+        let value = Val::Fields(self.const_struct_value(&key)?);
+        let layout = self.source_layout(&declaration.ty, &self.cur_env);
+        self.source_access_value(expression, env, value, Some(layout))
+    }
+
     /// Runtime-selected signal aggregates have no scalar root. Project their
     /// existing leaf values exactly like argument aggregates, without copying
     /// a selected source expression once per destination leaf.
@@ -1074,7 +1091,7 @@ impl Lowering<'_> {
                 ),
             }
         }
-        let (_, steps) = access_steps(expression)?;
+        let (_, steps) = access_path(expression)?;
         for step in steps {
             match step {
                 AccessStep::Field(name) => {

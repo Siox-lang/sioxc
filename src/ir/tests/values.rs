@@ -933,17 +933,24 @@ fn module_constant_expressions_share_their_canonical_root_and_source_span() {
         .filter(|(_, value)| {
             matches!(
                 value.kind,
-                ProcessValueKind::Binary {
-                    operation: ProcessBinaryOp::Add,
-                    ..
-                }
+                ProcessValueKind::Number(ProcessNumber::Integer(ref words)) if words == &[5]
             )
         })
         .collect();
     assert_eq!(
         constants.len(),
         1,
-        "one constant operation, shared across consumers"
+        "one folded constant value, shared across consumers"
+    );
+    assert!(
+        !design.process_ir.values.iter().any(|value| matches!(
+            value.kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                ..
+            }
+        )),
+        "the interpreter already computed the constant addition"
     );
     let (_, value) = constants[0];
     let start = source.find("2 + 3").unwrap() as u32;

@@ -242,6 +242,9 @@ impl<'a> Lowering<'a> {
             // resolves to its flattened signal; a *dynamic* array index
             // (`mem[addr]`) becomes a mux tree over the element signals.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                if let Some(Val::Scalar(value)) = self.source_constant_access(e, &HashMap::new()) {
+                    return value;
+                }
                 if let Some(Val::Scalar(value)) = self.block_local_value(e) {
                     return value;
                 }

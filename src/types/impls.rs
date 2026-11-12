@@ -13,7 +13,7 @@ impl<'a> Checker<'a> {
                 .entity_type_id(&im.target)
                 .is_some_and(|id| self.test_entities.contains(&id)),
         );
-        let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
+        let saved_params = self.push_generic_scope(&im.params);
         let concrete_self = self.ast_ty(self_ty(im));
         let saved_self = self.current_self_ty.replace(Some(concrete_self));
         let saved_impl_owner = self.current_impl_owner.replace(self.type_key(&im.target));
@@ -69,7 +69,7 @@ impl<'a> Checker<'a> {
         self.check_impl_inner(im);
         self.current_impl_owner.replace(saved_impl_owner);
         self.current_self_ty.replace(saved_self);
-        *self.type_params.borrow_mut() = saved_params;
+        self.in_generic_scope.set(saved_params);
         self.in_testbench.set(saved_tb);
     }
 
@@ -172,8 +172,7 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Fn(f) => {
                     if let Some(b) = &f.body {
-                        let saved =
-                            self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
+                        let saved = self.push_generic_scope(&f.generics);
                         // A method inlines into the body it is called from,
                         // so everything that body may not drive, it may not
                         // drive either: the entity's `in` ports and its
@@ -239,7 +238,7 @@ impl<'a> Checker<'a> {
                             expected.as_ref(),
                         );
                         self.current_fn.set(saved_fn);
-                        *self.type_params.borrow_mut() = saved;
+                        self.in_generic_scope.set(saved);
                     }
                 }
                 ImplItem::ModeField { .. } | ImplItem::AttrBinding(_) | ImplItem::Attr(_) => {}

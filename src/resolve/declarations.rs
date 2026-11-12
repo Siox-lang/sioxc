@@ -24,6 +24,7 @@ enum Declaration<'a> {
     Enum(&'a EnumDecl),
     Trait(&'a TraitDecl),
     Function(&'a FnDecl),
+    ModuleFunction(&'a FnDecl),
     Constant(&'a ConstDecl),
     Alias(&'a Params, &'a Type),
 }
@@ -143,7 +144,16 @@ impl<'a> DeclarationIndex<'a> {
                         .insert(id, Declaration::Trait(declaration));
                 }
             }
-            Item::Fn(declaration) => self.insert_function(declaration),
+            Item::Fn(declaration) => {
+                if let Some(id) = self
+                    .resolved
+                    .declared(declaration.name.span)
+                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
+                {
+                    self.declarations
+                        .insert(id, Declaration::ModuleFunction(declaration));
+                }
+            }
             Item::ExternBlock { fns, .. } => {
                 for declaration in fns {
                     self.insert_function(declaration);
@@ -161,14 +171,22 @@ impl<'a> DeclarationIndex<'a> {
         }
     }
 
+    /// A bare function carries no source-container fact; retain one already indexed.
     pub(crate) fn insert_function(&mut self, declaration: &'a FnDecl) {
         if let Some(id) = self
             .resolved
             .declared(declaration.name.span)
             .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
         {
-            self.declarations
-                .insert(id, Declaration::Function(declaration));
+            let declaration = if matches!(
+                self.declarations.get(&id),
+                Some(Declaration::ModuleFunction(_))
+            ) {
+                Declaration::ModuleFunction(declaration)
+            } else {
+                Declaration::Function(declaration)
+            };
+            self.declarations.insert(id, declaration);
         }
     }
 
@@ -202,6 +220,15 @@ impl<'a> DeclarationIndex<'a> {
             Declaration::Struct(declaration) => Some(declaration),
             _ => None,
         }
+    }
+
+    pub(crate) fn structures(&self) -> impl Iterator<Item = (DefId, &'a StructDecl)> + '_ {
+        self.declarations
+            .iter()
+            .filter_map(|(&id, declaration)| match declaration {
+                Declaration::Struct(declaration) => Some((id, *declaration)),
+                _ => None,
+            })
     }
 
     pub(crate) fn enumerations(&self) -> impl Iterator<Item = (DefId, &'a EnumDecl)> + '_ {
@@ -610,7 +637,17 @@ impl<'a> DeclarationIndex<'a> {
 
     pub(crate) fn function(&self, id: DefId) -> Option<&'a FnDecl> {
         match self.declarations.get(&id)? {
-            Declaration::Function(declaration) => Some(declaration),
+            Declaration::Function(declaration) | Declaration::ModuleFunction(declaration) => {
+                Some(declaration)
+            }
+            _ => None,
+        }
+    }
+
+    /// Module contracts, including forward declarations, but not foreign ABIs.
+    pub(crate) fn module_function(&self, id: DefId) -> Option<&'a FnDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::ModuleFunction(declaration) => Some(declaration),
             _ => None,
         }
     }

@@ -6021,3 +6021,295 @@ is still uncompiled and excluded. After this checkpoint, own its code/test-only
 transfer, merge current scalar/range/identity fixes without replacing whole
 files, append a fresh IR handoff and run a NEW guarded preview/full matrix.
 No push, PR mutation or wiki publication is authorized by this acceptance.
+
+### 2026-11-12 — Codex — integrate the isolated nominal-value draft
+
+Verified local checkpoints are compiler d91db7d and ACTUAL corpus 38f4e01.
+Own the shared consteval interpreter/source/aggregate adapters, numeric test
+helpers, the existing source Process suffix regression and the new derived
+frontend/native tests. Transfer ONLY the detached draft's UNSTAGED code/test
+deltas and its two new test files. Its staged f4859bd6 baseline is stale and
+must not replace whole files or restore copied history. The code/test patch
+passes a read-only application check against this accepted checkpoint.
+
+Preserve primary RawResize/#247, registered range values and direction, current
+constant identity keys, actual corpus UI ordering and all accepted work. Reuse
+Record/Cow/Arc and borrowed declaration contracts for nominal derivation;
+From bodies/defaults keep target owner and explicit-only selection. Plain
+record arguments validate shape/domains through existing field conformance.
+Unregistered same-named traits do not acquire operator roles. The draft is
+still UNCOMPILED: run the guarded derived/suffix/frontend/native preview, repair
+real failures without weakening assertions, then a NEW complete matrix before
+another local commit. No push or wiki publication. All five sections stay open.
+
+### 2026-11-12 — Codex — first derived preview compiles, repair fixture setup
+
+The queued preview 1794468515705890685-1673952 is terminal failed/101, peak
+986,722,304 bytes: Rust compiles and four of six new groups pass, including
+explicit/default From precedence and malformed plain/wrapped record boundaries.
+Two fixture errors remain. The conversion group declares a function named
+natural, shadowing the builtin it tries to call; rename that probe while keeping
+the u64::MAX result assertion. The cycle group uses a helper requiring clean
+resolution although the resolver correctly emits two E-P002 derivation-cycle
+errors. Parse/resolve that fixture directly, assert those errors explicitly,
+then retain the shared interpreter's recovery/rejection checks. Do not weaken
+the resolver or change production conversion behavior to satisfy bad fixtures.
+Rerun the same guarded preview; no native/full acceptance or new commit yet.
+
+Retry 1794468742393339171-1699953 exited 75 with an empty log before any check.
+The previous lightweight waiter is terminal exited/success/0 after launching
+the now-failed first preview. Restart ONLY that terminal 64 MiB waiter for the
+fixture-corrected source; do not launch a second heavy job or alter a peer.
+
+### 2026-11-12 — Codex — aliased enum ancestry in derived preview
+
+Corrected preview 1794469962724135346-1756036 is terminal failed/101, peak
+967,614,464 bytes. Five of six derived groups pass, including the corrected
+natural projection and defensive cycle fixture. The next assertion exposes a
+real resolver gap: enum inheritance only accepts a direct enum head, so an enum
+derived through a concrete type alias has no inherited variant table. The
+shared declaration index already normalizes that ancestry after resolution;
+prepare concrete alias heads before inheritance and reuse its enum-base query
+there, rather than inventing interpreter-only fallback variant identity.
+
+Own resolve.rs and focused resolver/derived regressions for this fix. Retain
+all sibling, foreign-owner, missing/ambiguous From and cycle rejections. Add
+direct inherited-variant path checks across module orders, not just numeric
+conversion assertions. The separate borrowed-C-layout worktree stays isolated
+and uncompiled. Run the same normal guarded preview, then the complete frozen
+matrix before committing; no push or peer-job changes.
+
+### 2026-11-12 — Codex — retain registered builtin hook identities
+
+Preview 1794472043927530646-1792921 is terminal failed/101, peak
+966,434,816 bytes. The new resolver regression, all six derived groups, the
+suffix probe and all 47 consteval groups pass. The full frontend run has
+759 passes and two enum-value dispatch failures: its impls select the seeded
+compiler traits while a library declaration owns the same registered role.
+Strict equality with only Resolved::lang(role) incorrectly discarded those
+valid identities, contrary to Resolved::seed_lang/is_compiler_trait semantics.
+
+Match resolved identities through Resolved::lang_of, not trait leaf spelling,
+for both operator hooks and From selection. Seeded identities retain their role
+after library registration; unregistered core::ops::Eq still has no role and
+must not impersonate a renamed registered Equal. Add explicit/default From
+fallback coverage and retain every impostor/sibling/effect/ambiguity assertion.
+Run the same guarded preview and then the frozen full matrix. Do not change
+the isolated uncompiled registry source or claim native acceptance from this
+frontend-only progress. No commit or push before the complete gate is green.
+
+### 2026-11-12 — Codex — combine foundations drafts before the next gate
+
+Deliberately combine the reviewed registry draft from the separate d91db7d
+worktree with primary's derived/alias/registered-hook repairs. This is the
+same all-five-sections goal, not a new proposal. Avoid running two complete
+acceptance matrices for overlapping foundations source. The previous snapshot
+is NOT accepted and no commit is allowed from its partial frontend results.
+
+Before editing, verify our 64 MiB waiter is blocked in flock (PID 1820175),
+then stop ONLY siox-foundations-derived-wait-20261112.service. It is now
+inactive/dead, MainPID 0; its append log confirms no new child was launched.
+No running compiler or peer job is stopped, and this is an intentional input
+change rather than an observation-timeout restart. All earlier failed heavy
+units remain terminal and retained as evidence.
+
+Own the reviewed code/test-only transfer: borrowed C aggregate/array-alias
+contracts, declaration-ID finite-layout analysis, deletion of struct_field_types
+and generic_fns, and borrowed module-function signatures with source provenance.
+The source branch has no staged baseline patch; both worktrees start at the
+same accepted d91db7d and these eight tracked code files are clean in primary.
+Apply their scoped diff plus the two new test files, not whole trees or old
+docs/chat. Merge documentation manually, retain every current scalar/range/
+constant-ID/nominal/enum-alias/hook fix, and leave the actual corpus untouched.
+
+Prepare a fresh combined frontend/native preview and full 90-minute normal-
+guard matrix, including all new focused groups and ordinary/debug finite-layout
+and foreign ABI programs in both packing modes. Freeze source and fingerprint
+compiler/actual corpus again. The full gate, not a preview, permits a local
+commit. No push/PR/wiki publication; all five sections remain required.
+
+### 2026-11-12 — Codex — combined frontend passes; native constant ingress gaps
+
+Combined preview 1794473533901519087-1902726 is terminal failed/101, peak
+1,610,874,880 bytes inside the normal 2 GiB cap. The combined code compiles.
+All 768 frontend tests, all focused layout/C ABI/generic provenance/return/
+enum-alias/derived/suffix/enum-value groups, all 47 consteval tests and strict
+frontend Clippy pass. This verifies the registered builtin-role repair too.
+Source before f73b5f1880461c1eb78f2f41f4ebe1e84c29019866877582a6eb17d78057a3d3
+and ACTUAL corpus before 04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+are retained in the log; the failed job has no successful after/acceptance hash.
+
+The first native derived test exposes IR errors, NOT checker failures:
+Count(TWO) has no lowered source kind, Envelope(Config { ... }) takes a legacy
+conversion route, and the real-backed GAIN constant never enters an IR value
+table. The legacy constant collector consults the shared interpreter only for
+enum/Char values, then re-lowers AST constructors; it does not materialize the
+new typed Record/Natural/Real values. Keep the native assertions and fixture.
+No finite-layout/foreign/native bitpack acceptance is claimed after this stop.
+
+Own ir/lower/{collect,constant_values}, lower_helpers/builders and the shared
+consteval declaration entry point/tests for the next repair. Reuse declared
+expression evaluation plus the existing WordConstants environment, keeping
+source bindings and per-instance parameter scopes. Materialize supported typed
+values against existing source layouts into the existing constant/field/table
+storage; retain enum owners, array labels/direction, natural words and real
+formats until that physical boundary. Do not invent another expression walker
+or weaken conversion diagnostics/RawResize/aggregate validation. Preserve
+unsupported legacy forms until their planned comparison/migration. Review
+table indexing for nonzero/descending arrays and add focused IR coverage,
+then rerun the combined preview and the complete gate before committing.
+
+The first materialization retry 1794474972628388039-1949891 exited 75 with
+an empty log before testing. Its 64 MiB waiter was queued in flock, not running
+a compiler. Review then found that insert_const_leaves sorted descending
+zero-based labels into a positional cache consumed in written layout order.
+Stop only that queued launcher for this intentional correction, keep ordered
+labelled leaves authoritative, and cache only already ascending zero-based
+runs. Add dynamic descending/nonzero table reads to the native fixture and IR
+coverage; do not silently reverse values or weaken source bounds checks.
+
+### 2026-11-12 — Codex — complete layout/projection metadata for typed constants
+
+Materialization preview 1794475906956675453-1994485 is terminal failed/101,
+peak 1,020,657,664 bytes. The new API and materializer compile, and all four
+finite-layout groups pass. The focused IR test fails before native execution.
+GAIN's missing-name error is gone: real materialization works. Remaining
+failures expose missing IR metadata, not missing borrowed declarations:
+derived naturals are classified as Bits, tuples have no SourceLayout, and
+labelled constant aggregates cannot enter the shape-aware access projector.
+
+Extend IR ownership to lower/{layout,source_bindings,values} and the existing
+lower_helpers/source access-path utility. Derive natural scalar domains like
+the other kernel domains; give tuples the same ordered field layouts used by
+other products. Preserve the borrowed root Path in the shared access utility
+so constant projection selects the actual ConstDecl by DefId, including module
+aliases, then reuses source_access_value for labels, bounds and nested fields.
+Do not replace failed conversions with untyped raw words or disable bounds
+checks. Keep every focused/native assertion and rerun the combined preview.
+
+Preview 1794488860237468308-2650570 is terminal failed/101, peak
+1,025,835,008 bytes. The natural/record/tuple/labelled static cases now pass
+inside the focused IR fixture; only DESCENDING[index] still reports E-P017.
+The scalar hardware lower_expr entry point bypasses lower_val_env's constant
+projector. Own expressions.rs too: route its field/index arm through the same
+source_constant_access helper. Keep a single projector and every bounds check;
+do not special-case the fixture or fabricate a scalar form for aggregates.
+
+### 2026-11-12 — Codex — retain canonical constant origin after typed folding
+
+Preview 1794488976954531345-2654700 is terminal failed/101, peak
+762,617,856 bytes. All new focused tests pass, including dynamic descending
+IR projection, all seven derived groups and all 48 consteval tests. The full
+frontend suite has 769 passes and one structural sharing regression: folding
+2 + 3 now removes the Add node that the older test counted. Preserve the
+actual contract, not an unnecessary operation. Bind each materialized typed
+value once to its declared layout at the initializer's span before publishing
+it, so all consumers reuse a canonical root with the original source extent.
+Retain the raw legacy numeric/real environment projections separately.
+
+Own ir/tests/values.rs alongside constant_values.rs. Update the structural
+regression to require one shared Number(5), no leftover constant Add and the
+same exact definition span, retaining full Process IR validation. This is
+not permission to discard sharing/source-origin checks or merely expect zero
+nodes. Native and complete acceptance still have not passed.
+
+### 2026-11-12 — Codex — combined preview green; integrate generic identities
+
+Preview 1794491375884726627-2795718 is terminal exited/success/0, peak
+1,610,874,880 bytes within the normal 2 GiB guard. All 770 frontend tests,
+strict frontend Clippy, all focused groups and selected native groups pass
+in default and bitpack, including canonical constant sharing/source spans,
+derived/From constants, finite generic layouts, extern C and issues 243–249.
+Primary source 287fa72ae800a54c150789775b5df9c6931d0e79135c9201ba1287d1a255d333
+and ACTUAL corpus 04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after. This is preview evidence, not complete acceptance.
+
+Thaw primary only now. Integrate the reviewed code/test-only delta from
+/home/max/siox-foundations-binders-next: parameter-DefId bindings/inference,
+ordered instantiation keys that disable caching rather than body checks when
+an identity is missing, Boolean generic-scope state instead of cloned names,
+and resolved-role generic-bound capability selection without namespace
+fallbacks. Preserve primary's borrowed module/foreign function provenance,
+signature contracts and all materialization/range/layout fixes. Own
+types/{mod,ast_types,assignments,calls,collect,impls,items,keys,statements}.rs
+and tests/{calls,lang_items}.rs. Transfer six new regression groups; do not
+restore generic_fns or replace whole files. Merge the proposal notes manually.
+
+Run a NEW merged preview, then the complete combined matrix before any commit.
+This deliberately avoids an intermediate full matrix/commit on the smaller
+snapshot. No old source hash validates the new merge. The isolated branch and
+prepared diagnostic script stay local; no second parallel heavy job, push,
+PR mutation or wiki publication. All five foundation sections remain open.
+
+### 2026-11-12 — Codex — bounded full gate host-build pressure retry
+
+Merged preview 1794491703005802634-2808943 remains terminal green with all
+776 frontend tests, strict Clippy and focused native/static checks in both
+modes, source dcf077c9ec1bcd3607e8107c8225044cfedcf9fe20b748b794692da4e887c194
+and ACTUAL corpus 04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf.
+Full 1794491925841226957-2819417 failed/127 after the frontend/import/Clippy
+checks because graphify was not on the headless PATH. Only the cached full
+driver now calls its installed absolute path. The next full child
+1794492079558464284-2825894 passed that step, all 776 frontend/14 imports,
+36 waveform checks, selected native groups in both modes, four aggregate
+native/VCD/parity runs, all 68 extra direct native/debug/VCD runs, 70 runner
+tests, 12 artifacts and CI frontend/build checks.
+
+It then spent over seven minutes compiling the LLVM-enabled Rust unit-test
+binary with host debuginfo=2, about 1.6 GiB anonymous memory above the normal
+1.5 GiB soft threshold. Cgroup observations show 196935 high events and about
+50 percent memory-pressure stalls, with max/oom/oom_kill counters all zero;
+observed peak was 1,676,087,296 bytes. This is measured host-build pressure,
+not a compiler test failure or an observation timeout. Intentionally stopped
+ONLY that owned full service after confirming its unit/MainPID/rustc command;
+it is now inactive/dead/MainPID=0 and is NOT an accepted successful run.
+
+Retry the entire frozen matrix with CARGO_PROFILE_TEST_DEBUG=1 in the cached
+driver. Keep Rust 1.90, one Cargo job, normal 2 GiB hard/1.5 GiB soft limits,
+all tests/features/modes/corpora and generated Siox --debug/GDB/DWARF checks.
+Only Rust host test debug metadata changes; inspect the actual rustc command
+and measure memory rather than claiming improvement from configuration alone.
+No versioned compiler, Cargo manifest or corpus changes are needed. This log
+entry changes the source fingerprint, so the next full run records fresh
+before/after hashes. No skip, memory increase, peer interruption, unguarded
+build, commit, push or full-acceptance claim.
+
+### 2026-11-12 — Codex — combined foundations full acceptance
+
+Full unit 1794493076641606005-2865384 is terminal exited/success/0,
+15:17:56–16:21:31 CET, peak 1,612,836,864 bytes under normal 2 GiB/1.5 GiB
+limits. Rust 1.90, one Cargo job and host CARGO_PROFILE_TEST_DEBUG=1 pass
+776 frontend/14 imports, both complete Rust suites (833 default / 812 bitpack
+library cases, every integration group and all 23 generated-DWARF/debugger
+cases per mode), strict all-target/all-feature Clippy, 70 runner tests,
+36 dedicated waveform checks, 12 artifacts, both ACTUAL 274-program corpora,
+both 71-case UI/JSON matrices, all 56 codes and two apply/recompile migrations
+per mode. All 68 direct native/debug/profile-VCD checks and four aggregate
+native/timeline/declaration/normalized-parity runs pass. No test/assertion was
+skipped and no memory budget was raised. The prior intentionally stopped
+debug=2 host build remains an interruption, not acceptance evidence.
+
+Source 3d7efdb7009c9a241c3d70103299c0aaa4ddffc8da4d3b004712a8da6cfc6327
+and ACTUAL corpus 04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent current-state hashing before these notes.
+Evidence is retained in the full unit log and
+/home/max/.cache/siox-jobs/foundations-combined-full-20261112/.
+All 20 pre-existing peer corpus files are still untracked/untouched; no new
+corpus commit is needed. The paired accepted corpus remains 38f4e01.
+
+Only acceptance Markdown, this coordination entry and the durable optional
+bounded-host test recipe change afterward. Record a code-only fingerprint
+before/after documentation edits, review/stage only this owned delta and make
+the local checkpoint commit. Include the scoped engineering estimate, about
+86% of compiler foundations rather than the entire codebase, and co-author/
+actual session identification. No public session URL is available; do not
+invent one. No push, PR mutation or wiki publication is authorized here.
+
+All five sections remain required: applied generic/associated contexts,
+packed/string/open/enum-range values, structural defaults, suffix-folder
+migration with its compatibility proof, the remaining declaration-ID
+registries/boundary guard and residual hook consumers. Next review the copied
+struct/base/field maps and their actual generic/alias/view/privacy callers.
+Also reproduce the read-only hypothesis that unknown generic argument types
+can cascade a misleading bound diagnostic; do not call it fixed or a verified
+regression without a focused reproduction. The goal stays active.

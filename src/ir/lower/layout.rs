@@ -231,6 +231,25 @@ impl<'a> Lowering<'a> {
         let span = source_type_span(&ty);
         let rendered = crate::syntax::pretty::type_str(&ty);
 
+        if let ast::Type::Tuple { elems, .. } = &ty {
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Struct {
+                    name: rendered,
+                    view: None,
+                    fields: elems
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| LayoutField {
+                            name: index.to_string(),
+                            direction: None,
+                            layout: self.source_layout_at(ty, env, expanding),
+                        })
+                        .collect(),
+                },
+            };
+        }
+
         if let Some(fields) = self.struct_fields(&ty).filter(|fields| !fields.is_empty()) {
             let recursion_key = rendered.clone();
             if !expanding.insert(recursion_key.clone()) {
@@ -399,6 +418,9 @@ impl<'a> Lowering<'a> {
             }
             Some(name) if struct_derives_kernel(name, "integer", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Integer)
+            }
+            Some(name) if struct_derives_kernel(name, "natural", &self.structs, &self.free_fns) => {
+                Some(ScalarDomain::Natural)
             }
             Some(name) if struct_derives_kernel(name, "Char", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Character)

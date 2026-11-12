@@ -3,6 +3,281 @@
 use super::*;
 
 #[test]
+fn generic_type_bindings_select_parameter_identity_not_its_spelling() {
+    for reversed in [false, true] {
+        let mut sink = DiagnosticSink::default();
+        let mut modules: Vec<_> = [
+            "module left;
+             pub fn select<T>(value: T) -> T { return value; }
+             pub fn element<T>(value: (T, T[2])) -> T { return value.0; }",
+            "module right;
+             pub fn select<T>(value: T) -> T { return value; }
+             pub struct Holder<T> { pub value: T }",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, source)| crate::syntax::parse_module(FileId(index as u32), source, &mut sink))
+        .collect();
+        if reversed {
+            modules.reverse();
+        }
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let functions: Vec<_> = modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .filter_map(|item| match item {
+                Item::Fn(function) if function.name.text == "select" => Some(function),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(functions.len(), 2);
+        let parameter = |function: &crate::syntax::ast::FnDecl| {
+            resolved
+                .declared(function.generics.params[0].name.span)
+                .unwrap()
+        };
+        let first = parameter(functions[0]);
+        let second = parameter(functions[1]);
+        assert_ne!(first, second);
+        let first_type = functions[0].params[0].ty.as_ref().unwrap();
+        let second_type = functions[1].params[0].ty.as_ref().unwrap();
+        let checker = Checker::new(&mut sink, &resolved, &modules);
+        let plain_root = checker.push_generic_scope(&Params::default());
+        assert!(!plain_root);
+        assert!(!checker.in_generic_scope.get());
+        checker.in_generic_scope.set(plain_root);
+        let outer_scope = checker.push_generic_scope(&functions[0].generics);
+        assert!(!outer_scope);
+        assert!(checker.in_generic_scope.get());
+        let plain_scope = checker.push_generic_scope(&Params::default());
+        assert!(plain_scope);
+        assert!(checker.in_generic_scope.get());
+        checker.in_generic_scope.set(plain_scope);
+        let shadow_scope = checker.push_generic_scope(&functions[1].generics);
+        assert!(shadow_scope);
+        checker.in_generic_scope.set(shadow_scope);
+        checker.in_generic_scope.set(outer_scope);
+        assert!(!checker.in_generic_scope.get());
+        checker
+            .type_bindings
+            .borrow_mut()
+            .insert(first, Ty::Integer);
+        assert_eq!(checker.ast_ty(first_type), Ty::Integer);
+        assert_eq!(checker.ast_ty(second_type), Ty::Error);
+        assert_eq!(
+            checker.bind_type_param(first_type, &Ty::Natural, first),
+            Some(Ty::Natural)
+        );
+        assert_eq!(
+            checker.bind_type_param(first_type, &Ty::Natural, second),
+            None
+        );
+        let mut unresolved = first_type.clone();
+        let Type::Path(path) = &mut unresolved else {
+            panic!("fixture parameter must be a path");
+        };
+        path.span = Span::new(FileId(99), 0..1);
+        assert_eq!(
+            checker.bind_type_param(&unresolved, &Ty::Natural, first),
+            None
+        );
+        assert_eq!(checker.ast_ty(&unresolved), Ty::Error);
+        checker.type_bindings.borrow_mut().insert(second, Ty::Real);
+        assert_eq!(checker.ast_ty(first_type), Ty::Integer);
+        assert_eq!(checker.ast_ty(second_type), Ty::Real);
+
+        for item in modules.iter().flat_map(|module| &module.items) {
+            match item {
+                Item::Fn(function) if function.name.text == "element" => {
+                    let ty = function.params[0].ty.as_ref().unwrap();
+                    let argument = Ty::Tuple(vec![
+                        Ty::Natural,
+                        Ty::Array {
+                            elem: Box::new(Ty::Natural),
+                            family: None,
+                            len: 2,
+                            low: 0,
+                        },
+                    ]);
+                    assert_eq!(
+                        checker.bind_type_param(ty, &argument, parameter(function)),
+                        Some(Ty::Natural)
+                    );
+                    assert_eq!(checker.bind_type_param(ty, &argument, first), None);
+                    let Type::Tuple { elems, .. } = ty else {
+                        panic!("fixture parameter must be a tuple");
+                    };
+                    let Ty::Tuple(arguments) = argument else {
+                        unreachable!();
+                    };
+                    assert_eq!(
+                        checker.bind_type_param(&elems[1], &arguments[1], parameter(function)),
+                        Some(Ty::Natural)
+                    );
+                    assert_eq!(
+                        checker.bind_type_param(&elems[1], &arguments[1], second),
+                        None
+                    );
+                }
+                Item::Struct(structure) => {
+                    assert_eq!(checker.ast_ty(&structure.fields[0].ty), Ty::Error);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn generic_static_rejection_does_not_leak_into_plain_implementations() {
+    let generic = "struct Generic<T> { value: T }
+        impl<T> Generic<T> {
+            fn state() { static let generic_state: integer = 0; }
+        }";
+    let concrete = "struct Concrete { value: integer }
+        impl Concrete {
+            fn state() { static let concrete_state: integer = 0; }
+        }";
+    for declarations in [[generic, concrete], [concrete, generic]] {
+        let source = format!("module scope; {} {}", declarations[0], declarations[1]);
+        let sink = check_modules(&[(&source, FileId(0))]);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::UNSUPPORTED_EXPR));
+        assert_eq!(
+            errors[0].message,
+            "`static let` in a generic function is not supported yet"
+        );
+        let span = errors[0].primary.unwrap();
+        assert!(source[span.start as usize..span.end as usize].contains("generic_state"));
+    }
+}
+
+#[test]
+fn missing_generic_binder_identity_disables_caching_not_other_body_checks() {
+    let mut sink = DiagnosticSink::default();
+    let mut modules = vec![crate::syntax::parse_module(
+        FileId(0),
+        "module caller;
+         fn inspect<T, U>(left: T, right: U) -> integer { return right.no_such_method(); }
+         fn check(a: integer, b: real) { inspect(a, b); inspect(a, b); }",
+        &mut sink,
+    )];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let Item::Fn(function) = &mut modules[0].items[0] else {
+        panic!("fixture must begin with the generic function");
+    };
+    function.generics.params[0].name.span = Span::new(FileId(99), 0..1);
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    checker.check_item(&modules[0].items[1]);
+    assert!(checker.instantiated.borrow().is_empty());
+    assert!(checker.type_bindings.borrow().is_empty());
+    drop(checker);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+    assert!(errors.iter().all(|diagnostic| diagnostic
+        .message
+        .contains("has no method `no_such_method`")));
+}
+
+#[test]
+fn nested_generic_calls_keep_caller_types_and_recursive_binders_isolated() {
+    let mut sources = [
+        (
+            "module left; pub fn select<T>(value: T) -> T { return value; }",
+            FileId(0),
+        ),
+        (
+            "module right; pub fn select<T>(value: T) -> T { return value; }",
+            FileId(1),
+        ),
+        (
+            "module caller;
+          fn nested<T>(value: T) -> T { return left::select(right::select(value)); }
+          fn recursive<T>(value: T) { recursive((value, value)); }
+          fn check(a: integer, b: real) {
+              let integer_value: integer = nested(a);
+              let real_value: real = nested(b);
+              recursive(a);
+              recursive(b);
+              let wrong: integer = nested(b);
+          }",
+            FileId(2),
+        ),
+    ];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+        assert!(
+            errors[0].message.contains("integer") && errors[0].message.contains("real"),
+            "{:?}",
+            errors[0]
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
+fn borrowed_generic_signatures_keep_inferred_returns_scoped_to_the_selected_function() {
+    let mut sources = [
+        (
+            "module left;
+          pub fn select<T>(value: T) -> T { return value; }
+          pub fn pair<T>(value: T) -> (T, T) { return (value, value); }",
+            FileId(0),
+        ),
+        (
+            "module right;
+          pub fn select<T>(value: T) -> T[2] { return [value, value]; }",
+            FileId(1),
+        ),
+        (
+            "module caller;
+          fn check(a: integer, b: real) {
+              let scalar: integer = left::select(a);
+              let pair: (integer, integer) = left::pair(a);
+              let array: real[2] = right::select(b);
+              let wrong: integer = right::select(b)[0];
+          }",
+            FileId(2),
+        ),
+    ];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+        assert!(
+            errors[0].message.contains("integer") && errors[0].message.contains("real"),
+            "{:?}",
+            errors[0]
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
 fn generic_instantiation_cache_keeps_nominal_arguments_distinct() {
     for arrays in [false, true] {
         let declarations = if arrays {

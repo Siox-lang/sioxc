@@ -278,7 +278,7 @@ fn numeric_aggregates_keep_domains_labels_and_unchanged_storage() {
     }
 }
 
-fn with_numeric_source(
+pub(super) fn with_numeric_source(
     sources: &[&str],
     check: impl FnOnce(Source<'_, '_>, &[crate::syntax::Module]),
 ) {
@@ -296,7 +296,7 @@ fn with_numeric_source(
     check(Source::new(&declarations).with_enums(&enums), &modules);
 }
 
-fn numeric_function<'a>(modules: &'a [crate::syntax::Module], name: &str) -> &'a FnDecl {
+pub(super) fn numeric_function<'a>(modules: &'a [crate::syntax::Module], name: &str) -> &'a FnDecl {
     modules
         .iter()
         .flat_map(|module| &module.items)
@@ -307,7 +307,7 @@ fn numeric_function<'a>(modules: &'a [crate::syntax::Module], name: &str) -> &'a
         .unwrap()
 }
 
-struct NativeNumericSource<'i, 'a>(Source<'i, 'a>);
+pub(super) struct NativeNumericSource<'i, 'a>(pub(super) Source<'i, 'a>);
 
 impl Environment for NativeNumericSource<'_, '_> {
     fn source(&self) -> Option<Source<'_, '_>> {

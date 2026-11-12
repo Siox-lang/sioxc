@@ -144,9 +144,14 @@ impl<'a> Checker<'a> {
 
     /// The key for a trait named by a type expression.
     pub(super) fn trait_type_key(&self, ty: &Type) -> Option<String> {
+        self.trait_definition_key(self.trait_type_id(ty)?)
+    }
+
+    /// The trait head selected by resolution, independent of its spelling.
+    pub(super) fn trait_type_id(&self, ty: &Type) -> Option<DefId> {
         match ty {
-            Type::Path(path) => self.trait_key(path),
-            Type::Generic { base, .. } => self.trait_type_key(base),
+            Type::Path(path) => self.resolved.resolved(path.span),
+            Type::Generic { base, .. } => self.trait_type_id(base),
             Type::Indexed { .. } | Type::View { .. } | Type::Tuple { .. } => None,
         }
     }

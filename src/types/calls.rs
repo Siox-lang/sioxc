@@ -545,23 +545,27 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Path(path) if path.segments.len() == 1 => {
-                let parameter_name = &path.segments[0].text;
-                match self.generic_fns.get(&function) {
-                    Some((generics, params))
-                        if generics
-                            .iter()
-                            .any(|parameter| parameter.name.text == *parameter_name) =>
+                let Some(parameter_id) = self.resolved.resolved(path.span) else {
+                    return self.ast_ty(declared);
+                };
+                match self.declarations.module_function(function) {
+                    Some(declaration)
+                        if declaration.generics.params.iter().any(|parameter| {
+                            self.resolved.declared(parameter.name.span) == Some(parameter_id)
+                        }) =>
                     {
                         // Bound where it appears in a parameter, directly
                         // (`x: T`) or as an element (`arr: T[4]`, `p: (T, U)`).
-                        params
+                        declaration
+                            .params
                             .iter()
+                            .filter(|parameter| !parameter.is_self)
                             .zip(args)
                             .find_map(|(parameter, argument)| {
-                                Self::bind_type_param(
-                                    parameter.as_ref()?,
+                                self.bind_type_param(
+                                    parameter.ty.as_ref()?,
                                     &self.type_of(argument, sym),
-                                    parameter_name,
+                                    parameter_id,
                                 )
                             })
                             .unwrap_or(Ty::Error)
@@ -573,31 +577,35 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// What `name` stands for when a parameter written `ty` takes an argument
+    /// What a resolved parameter stands for when `ty` takes an argument
     /// of type `argument`.
-    pub(super) fn bind_type_param(ty: &Type, argument: &Ty, name: &str) -> Option<Ty> {
+    pub(super) fn bind_type_param(&self, ty: &Type, argument: &Ty, parameter: DefId) -> Option<Ty> {
         match (ty, argument) {
-            _ if Self::is_direct_type_param(ty, name) => {
+            _ if self.is_direct_type_param(ty, parameter) => {
                 (!matches!(argument, Ty::Error)).then(|| argument.clone())
             }
             (Type::Indexed { base, .. }, Ty::Array { elem, .. }) => {
-                Self::bind_type_param(base, elem, name)
+                self.bind_type_param(base, elem, parameter)
             }
             (Type::Tuple { elems, .. }, Ty::Tuple(arguments)) => elems
                 .iter()
                 .zip(arguments)
-                .find_map(|(elem, argument)| Self::bind_type_param(elem, argument, name)),
+                .find_map(|(elem, argument)| self.bind_type_param(elem, argument, parameter)),
             _ => None,
         }
     }
 
     /// Whether `ty` names one of `function`'s type parameters.
     fn mentions_type_param(&self, ty: &Type, function: DefId) -> bool {
-        let Some((generics, _)) = self.generic_fns.get(&function) else {
+        let Some(declaration) = self.declarations.module_function(function) else {
             return false;
         };
-        generics.iter().any(|parameter| {
-            Self::bind_type_param(ty, &Ty::Integer, &parameter.name.text).is_some()
+        declaration.generics.params.iter().any(|parameter| {
+            self.resolved
+                .declared(parameter.name.span)
+                .is_some_and(|parameter| {
+                    self.bind_type_param(ty, &Ty::Integer, parameter).is_some()
+                })
         })
     }
 
@@ -700,7 +708,10 @@ impl<'a> Checker<'a> {
         // A generic callee binds its own parameters: inside an instantiation
         // (`f((x, x))` in `f<T>` with `T = integer`) the outer binding does
         // not apply to its `x: T`.
-        let generic = self.generic_fns.contains_key(&function);
+        let generic = self
+            .declarations
+            .module_function(function)
+            .is_some_and(|declaration| !declaration.generics.params.is_empty());
         for (arg, parameter) in args.iter().zip(
             declaration
                 .params
@@ -1179,16 +1190,10 @@ impl<'a> Checker<'a> {
         dirs
     }
 
-    /// Bring `names` into scope as generic parameters, returning the previous
-    /// set for the caller to restore.
-    pub(super) fn push_type_params<'n>(
-        &self,
-        names: impl Iterator<Item = &'n String>,
-    ) -> HashSet<String> {
-        let mut scope = self.type_params.borrow_mut();
-        let saved = scope.clone();
-        scope.extend(names.cloned());
-        saved
+    /// Retain an enclosing generic scope; the caller restores the old flag.
+    pub(super) fn push_generic_scope(&self, params: &Params) -> bool {
+        self.in_generic_scope
+            .replace(self.in_generic_scope.get() || !params.params.is_empty())
     }
 
     /// An entity may be instantiated only at the root layer of another

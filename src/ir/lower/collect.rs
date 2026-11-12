@@ -864,7 +864,11 @@ impl<'a> Lowering<'a> {
         constant: &ast::ConstDecl,
         scope: &HashMap<String, i64>,
     ) -> bool {
-        self.fold_const_literal(name, constant, scope)
+        if self.has_const_leaves(name) {
+            return false;
+        }
+        self.fold_typed_constant(name, constant, scope)
+            || self.fold_const_literal(name, constant, scope)
             || (!self.has_const_leaves(name) && self.fold_aggregate_const(name, constant, scope))
     }
 
@@ -929,6 +933,10 @@ impl<'a> Lowering<'a> {
                 return false;
             }
         };
+        self.insert_const_leaves(name, leaves)
+    }
+
+    pub(super) fn insert_const_leaves(&mut self, name: &str, leaves: Vec<(String, Expr)>) -> bool {
         let mut tables: HashMap<String, Vec<(i64, Expr)>> = HashMap::new();
         for (leaf, value) in leaves {
             let separator = if leaf.starts_with('[') { "" } else { "." };
@@ -950,10 +958,9 @@ impl<'a> Lowering<'a> {
             }
             self.const_values.insert(key, value);
         }
-        for (table, mut elements) in tables {
-            elements.sort_by_key(|(label, _)| *label);
-            // ponytail: zero-based tables only, as the table reads index by
-            // position; a table over another range keeps its leaves alone.
+        for (table, elements) in tables {
+            // This cache is positional; other labels/directions retain their
+            // canonical leaves instead of losing written order in a sort.
             if elements
                 .iter()
                 .enumerate()

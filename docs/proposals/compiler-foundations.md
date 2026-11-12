@@ -9,7 +9,42 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (reviewed 2026-11-12, typed values/constant identity/ranges):
+Latest local acceptance (2026-11-12): full guarded unit
+`1794493076641606005-2865384` completed `exited/success/0`, 15:17:56–16:21:31
+CET, peak 1,612,836,864 bytes under the normal 2 GiB cap. It passes all 776
+frontend and 14 import API tests, both complete Rust suites (833 default /
+812 bitpack library tests, every integration group and all 23 DWARF/debugger
+cases per mode), strict all-target/all-feature Clippy, 70 runner tests including
+36 waveform-checker cases and all 12 specified example artifacts. Both ACTUAL
+274-program corpora pass. Each mode passes 71 UI and 71 JSON cases, covering
+56/56 active codes and both apply/recompile migrations. All 68 additional
+direct native/debug binaries and four aggregate VCD/timeline/parity runs pass.
+
+Source `3d7efdb7009c9a241c3d70103299c0aaa4ddffc8da4d3b004712a8da6cfc6327`
+and ACTUAL corpus
+`04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after the full run and independent acceptance review. Rust 1.90,
+one Cargo job and the normal memory limits are retained. The host test profile
+uses `CARGO_PROFILE_TEST_DEBUG=1` to avoid observed debug=2 memory-pressure
+thrashing; generated Siox `--debug` flags and every GDB/DWARF assertion remain
+unchanged. The complete test-target builds finish in 1m34s/default and
+1m31s/bitpack. Only acceptance documentation and coordination notes change
+after the frozen gate; no compiler, manifest, dependency or syntax changes.
+
+This accepts the nominal/explicit-From/record-boundary interpreter followup,
+typed constant materialization and canonical origin sharing, tuple/natural/
+labelled-array layouts and runtime constant projection, borrowed C aggregate
+and generic-function contracts, finite generic layouts, parameter-ID inference,
+Boolean generic-scope state and resolved-role generic bounds described below.
+It does NOT complete all five sections. The engineering estimate is about
+**86% of compiler foundations**, not the whole compiler. Generic/associated
+applied contexts, packed/string/open/enum-range values, structural defaults,
+suffix-folder migration, remaining declaration registries and residual hooks
+are still open. No push, PR or wiki publication is implied. Older pending
+statuses below are the historical sequence, superseded only for this accepted
+scope; their remaining-work requirements are not removed.
+
+Previous local acceptance (reviewed 2026-11-12, typed values/identity/ranges):
 guarded unit `1794150078265241988-398244` completed exited/success/0 on
 November 8, peak 1,612,656,640 bytes under the normal 2 GiB cap. The complete
 matrix passes 754 frontend and 14 import API tests, both Rust suites (811
@@ -41,6 +76,89 @@ required: generic/associated applied contexts, packed/string/open/enum-range
 values, structural defaults, suffix-folder migration, remaining declaration
 registries and residual name-hook consumers are still unfinished. No push or
 wiki publication is implied.
+
+Working followup (2026-11-12, integrated draft; NOT accepted): the isolated
+nominal-value changes are now on top of verified checkpoint `d91db7d`, without
+copying its stale staged baseline or undoing scalar/range/constant-ID fixes.
+Nongeneric derived structs reuse one-base Record storage; Cow projections walk
+checked original-owner ancestry, preserve enum variant identities and reject
+sibling conversions. Inherited fields validate each declared base. Ordinary
+record boundaries also check field counts/domains recursively, retaining Arc
+storage for unchanged NaN/signed-zero data.
+
+Explicit constructors select the registered From trait's explicit/default body
+before automatic derivation. Static Self retains the implementation owner;
+same-instance default constructor recursion can reach the raw representation.
+Missing/effectful/ambiguous or unresolved generic bodies stay nonconstant rather
+than silently deriving. From does not supply implicit Into conversions. Operator
+selection checks resolved identities against registered language roles,
+including seeded builtin trait identities that retain their roles after a
+library declaration is registered. Unregistered same-named Eq/From traits
+cannot impersonate the differently named registered Equal/Make.
+
+Six frontend groups, the enum-alias resolver regression, all 47 consteval groups
+and legacy/shared suffix probes pass in preview 1794472043927530646-1792921.
+Its full frontend run has 759 passes and two failures from strict hook-ID
+selection dropping seeded builtin identities. The local repair uses the
+resolver's registered-role table and adds explicit/default From fallback and
+unregistered-impostor coverage; this newer snapshot is awaiting guarded testing.
+The native ordinary/debug x module-order integration test has not run yet.
+The suffix probes are NOT the required full-corpus compatibility oracle:
+the production integer/real suffix folders and fractional scale shortcut remain.
+Generic/array-based derivation, generic callable contexts and the remaining
+five-section work are still open. Another full frozen gate is required before
+this followup can be committed; it is excluded from the acceptance above.
+
+Combined registry draft (2026-11-12, UNACCEPTED): the reviewed registry changes
+are now integrated with the nominal-value/alias/registered-hook fixes above,
+before a fresh combined validation matrix. Only our blocked 64 MiB launcher
+was stopped for this intentional input change; no build or peer job was stopped.
+The earlier partial results do not accept this larger source snapshot.
+
+C aggregate checking borrows base/field contracts by its checked Named DefId;
+shared normalization makes transparent fixed-array alias chains behave like
+their representation. The persistent string-keyed struct_field_types graph is
+deleted. Finite-layout analysis borrows structs from the declaration index,
+computes which generic parameters are actually stored, then builds a local
+DefId containment graph. Unused parameters do not create false cycles; stored
+nested arguments, aliases, tuples, arrays and bases do participate. Breadth-first
+reporting keeps the shortest cycle's first field/base source span. Base-only
+cycles already diagnosed by resolution do not cascade.
+
+The duplicate generic_fns signature registry is also deleted. Bounds checking,
+body instantiation and return inference borrow FnDecl contracts rather than
+cloning parameter lists/types at collection and every call. Positive module
+provenance comes from Item::Fn; foreign/bare prototypes stay available through
+the general accessor without acquiring a module-body role. Re-insertion keeps
+known module provenance. New regressions cover borrowed identity, forward and
+foreign contracts, same-leaf/inferred returns, reordered named generic arguments,
+finite nested/unused arguments, transitive forwarding, aliases and source spans.
+A native ordinary/debug fixture exercises finite generic records through real
+hardware ports and changed simulation values, with waveform parity.
+
+All this registry work is still UNCOMPILED. A new combined frontend/native
+preview and full ordinary/bitpack Rust/DWARF/corpus/UI/JSON gate are required.
+Other copied struct/full-field/visibility tables, generic constant contexts,
+additional value representations, suffix migration and hook cleanup remain.
+This does not complete registry migration or any remaining section by itself.
+
+IR materialization followup (2026-11-12, UNCOMPILED): the combined preview
+passes all 768 frontend tests and strict frontend Clippy but stops in the first
+native derived fixture. IR's legacy collector re-lowers constructors instead
+of consuming typed nominal/natural/real results. A new declared-constant entry
+point reuses the same interpreter and WordConstants parameter/attribute context.
+IR projects its supported checked values against the existing SourceLayout into
+the existing scalar/real/field/table storage, without another expression walker.
+Nominal bases unwrap only at this physical boundary; record fields, tuple slots,
+enum encodings and array labels/direction are retained. Registered range values
+also populate the existing range adapter. Unsupported packed/open/generic
+representations keep their legacy consumers pending their separate migration.
+
+The positional array cache now accepts only already ascending zero-based runs;
+other arrays retain ordered labelled leaves instead of being silently sorted.
+New IR/declaration-entry checks and native dynamic descending/nonzero-index
+assertions accompany this change. These repairs are NOT yet compiled or
+accepted; another combined preview and the complete frozen gate remain required.
 
 Local acceptance (2026-11-06, combined main integration and identity fixes):
 the integration combines accepted foundations with main `801ec40`, including
@@ -662,6 +780,21 @@ point resolves a name again. Typeck writes its results to side tables keyed by
 - An `xtask`-style check, or a clippy lint, flags `HashMap<String, …>`
   registries outside `resolve` so the rule stays enforced.
 
+**Generic binder followup (accepted locally 2026-11-12).**
+Generic-body type bindings now use resolver parameter `DefId`s instead of
+names. Direct parameter matching and return/array/tuple inference use those
+same identities. Ordered instantiation keys are built during binding; a
+missing identity disables caching without skipping other known arguments or
+concrete body checks. No same-name fallback is introduced. The generic-scope
+walk state retains only the Boolean its static checks consume, removing
+cloned parameter-name sets while preserving every nested save/restore boundary.
+Four regression groups cover distinct same-name function/struct parameters,
+unresolved paths, array/tuple inference, nested/recursive calls, module order,
+incomplete binder identities and generic-static checks without scope leakage.
+This builds on the pending borrowed-signature migration, not a restored
+`generic_fns` registry. The latest full acceptance above validates this migration,
+not the other declaration registries or all applied generic contexts.
+
 **Implemented first registry.** `resolve::declarations::DeclarationIndex` borrows
 module constants, free/foreign functions and transparent alias contracts,
 keyed by `DefId`. The checker reads contracts/initializers directly instead of
@@ -972,7 +1105,7 @@ earlier defaults/constants/field/symbol checks. Focused checks and the complete
 Rust/native/corpus/UI/JSON matrix pass without any production change, with all
 three frozen fingerprints matching before and after validation.
 
-**Acceptance.** No stage after `resolve` looks a declaration up by its leaf
+**Completion criterion (still open).** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per
 registry.
 
@@ -994,6 +1127,18 @@ spelling checks with resolved identities, lang roles or source-owned layout/
 encoding metadata as appropriate. Keep the grammar's kernel types distinct
 from ordinary library declarations. Remove fixture fallbacks only when their
 callers load core or explicitly supply equivalent identities.
+
+**Generic-bound consumer followup (accepted locally 2026-11-12).**
+Bounds select their trait head by resolver `DefId` and reuse
+`is_compiler_trait` for existing implicit kernel capabilities. The old
+`builtin_trait` spelling/namespace test is deleted: an ordinary trait under
+`core::` or `std::` no longer acquires a kernel impl merely from its path.
+Explicit implementations, applied-view/array forwarding and registered hook
+roles remain authoritative. Two regression groups cover library lookalikes,
+renamed registered operator hooks, import aliases, seeded fallback roles,
+explicit impls and reversed module order. This migrates one consumer, not all
+trait registries or the whole hook proposal. The latest full combined gate above
+includes these regressions; the earlier preview alone did not validate them.
 
 **Implemented Boolean result types (2026-10-24).** Comparisons, `'event`, `'ascending` and
 the runtime `exists` contract now request the registered `bool` declaration,

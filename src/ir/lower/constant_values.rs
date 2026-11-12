@@ -4,6 +4,214 @@ use super::*;
 use crate::resolve::DefKind;
 use crate::types::consteval::{self, Environment, Value};
 
+impl Lowering<'_> {
+    /// Consume the interpreter's checked value, rather than re-lowering its AST.
+    pub(super) fn fold_typed_constant(
+        &mut self,
+        name: &str,
+        declaration: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        let Some(value) = eval_declared_const(declaration, scope, &self.free_fns) else {
+            return false;
+        };
+        let range = self
+            .free_fns
+            .constant_source()
+            .range_bounds(&value)
+            .and_then(|(left, right)| {
+                Some((i64::try_from(left).ok()?, i64::try_from(right).ok()?))
+            });
+        let layout = self.source_layout(&declaration.ty, scope);
+        let Some(value) = self.materialize_constant(&value, &layout) else {
+            if let Some(range) = range {
+                self.const_ranges.insert(name.to_string(), range);
+                return true;
+            }
+            return false;
+        };
+        if let Some(range) = range {
+            self.const_ranges.insert(name.to_string(), range);
+        }
+        match &value {
+            Val::Scalar(value) => match value {
+                Expr::Const(word) => {
+                    let signed = matches!(
+                        layout.kind,
+                        LayoutKind::Scalar {
+                            domain: ScalarDomain::Integer,
+                            ..
+                        }
+                    );
+                    if signed {
+                        self.consts.insert(name.to_string(), *word as i64);
+                    } else if let Ok(word) = i64::try_from(*word) {
+                        self.consts.insert(name.to_string(), word);
+                    }
+                }
+                Expr::Real(value) => {
+                    self.consts_real.insert(name.to_string(), *value);
+                }
+                _ => return false,
+            },
+            Val::Fields(fields) => {
+                for (field, value) in fields {
+                    if let Expr::Const(word) = value {
+                        if let Ok(word) = i64::try_from(*word) {
+                            let separator = if field.starts_with('[') { "" } else { "." };
+                            self.consts
+                                .insert(format!("{name}{separator}{field}"), word);
+                        }
+                    }
+                }
+            }
+        }
+        let value = self.bind_value_layout(value, layout, ast::expr_span(&declaration.value));
+        match value {
+            Val::Scalar(value) => {
+                self.const_values.insert(name.to_string(), value);
+                true
+            }
+            Val::Fields(fields) => self.insert_const_leaves(name, fields),
+        }
+    }
+
+    fn materialize_constant(&self, mut value: &Value, layout: &SourceLayout) -> Option<Val> {
+        // Newtype identity was checked by the interpreter. Its one base value
+        // occupies the same physical layout, including record-backed newtypes.
+        while let Value::Record { owner, fields } = value {
+            let declaration = self.free_fns.declarations().structure(*owner)?;
+            if declaration.base.is_none() {
+                break;
+            }
+            if !declaration.fields.is_empty() {
+                return None;
+            }
+            let [base] = fields.as_ref() else { return None };
+            value = base;
+        }
+        match (value, &layout.kind) {
+            (
+                Value::Integer(value),
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Integer,
+                    ..
+                },
+            ) => Some(Val::Scalar(Expr::Const(i64::try_from(*value).ok()? as u64))),
+            (
+                Value::Natural(value),
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Natural,
+                    ..
+                },
+            ) => Some(Val::Scalar(Expr::Const(*value))),
+            (
+                Value::Real(value),
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Real,
+                    ..
+                },
+            ) => Some(Val::Scalar(Expr::Real(*value))),
+            (
+                Value::Character(value),
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Character,
+                    ..
+                },
+            ) => Some(Val::Scalar(Expr::Const(u64::from(u32::from(*value))))),
+            (
+                Value::Enum { .. } | Value::Variant { .. },
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Enum(_),
+                    ..
+                },
+            ) => Some(Val::Scalar(Expr::Const(
+                self.free_fns.constant_source().word(value.clone())? as u64,
+            ))),
+            (
+                Value::Record {
+                    owner,
+                    fields: values,
+                },
+                LayoutKind::Struct { fields, .. },
+            ) => {
+                let declaration = self.free_fns.declarations().structure(*owner)?;
+                if declaration.fields.len() != values.len() || fields.len() != values.len() {
+                    return None;
+                }
+                let mut leaves = Vec::new();
+                for ((declaration, value), field) in
+                    declaration.fields.iter().zip(values.iter()).zip(fields)
+                {
+                    if declaration.name.text != field.name {
+                        return None;
+                    }
+                    Self::prefix_block_value(
+                        &field.name,
+                        self.materialize_constant(value, &field.layout)?,
+                        &mut leaves,
+                    );
+                }
+                Some(Val::Fields(leaves))
+            }
+            (Value::Tuple(values), LayoutKind::Struct { fields, .. }) => {
+                if values.len() != fields.len() {
+                    return None;
+                }
+                let mut leaves = Vec::new();
+                for (index, (value, field)) in values.iter().zip(fields).enumerate() {
+                    if field.name != index.to_string() {
+                        return None;
+                    }
+                    Self::prefix_block_value(
+                        &field.name,
+                        self.materialize_constant(value, &field.layout)?,
+                        &mut leaves,
+                    );
+                }
+                Some(Val::Fields(leaves))
+            }
+            (
+                Value::Array {
+                    values,
+                    left,
+                    descending,
+                    ..
+                },
+                LayoutKind::Array {
+                    range: Some(range),
+                    element,
+                },
+            ) => {
+                if range.left != *left
+                    || range.ascending() == *descending
+                    || range.len()? != u64::try_from(values.len()).ok()?
+                {
+                    return None;
+                }
+                let mut leaves = Vec::new();
+                for (offset, value) in values.iter().enumerate() {
+                    let offset = i64::try_from(offset).ok()?;
+                    let label = if *descending {
+                        left.checked_sub(offset)?
+                    } else {
+                        left.checked_add(offset)?
+                    };
+                    Self::prefix_block_value(
+                        &format!("[{label}]"),
+                        self.materialize_constant(value, element)?,
+                        &mut leaves,
+                    );
+                }
+                Some(Val::Fields(leaves))
+            }
+            // Packed/open/generic representations still use their existing
+            // consumers until their typed-value migrations are complete.
+            _ => None,
+        }
+    }
+}
+
 pub(super) struct EnumConstants<'l, 'a> {
     lowering: &'l Lowering<'a>,
     tables: HashMap<DefId, String>,

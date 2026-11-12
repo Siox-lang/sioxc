@@ -36,6 +36,7 @@ mod indexing;
 mod inference;
 mod items;
 mod keys;
+mod layout_cycles;
 mod layouts;
 mod literals;
 mod members;
@@ -296,8 +297,6 @@ type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<
 type OperatorOutput = (String, Option<Type>);
 /// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
 type IndexSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
-/// A generic function's declared parameters and their written types.
-type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 /// Function and ordered binder identities, with complete checked argument types.
 type GenericInstantiation = (DefId, Vec<(DefId, Ty)>);
 /// A method's declared non-`self` parameter types, `None` where the
@@ -336,7 +335,7 @@ struct Checker<'a> {
     declarations: DeclarationIndex<'a>,
     enum_values: enum_values::EnumValues,
     /// Type parameters bound while a generic body is checked for one call.
-    type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
+    type_bindings: std::cell::RefCell<HashMap<DefId, Ty>>,
     /// Instantiations already checked, by function and type arguments.
     instantiated: std::cell::RefCell<HashSet<GenericInstantiation>>,
     /// Generic functions whose body is being checked, against recursion.
@@ -360,10 +359,8 @@ struct Checker<'a> {
     /// Whether the walk is inside a `process`, which is sequential code and,
     /// like a `match` arm, never had its instances gathered.
     in_process: std::cell::Cell<bool>,
-    /// Generic parameter names in scope (an impl's binder, a fn's own). A
-    /// parameter is never an entity instantiation even when an entity happens
-    /// to share its name — elaboration excludes them the same way.
-    type_params: std::cell::RefCell<HashSet<String>>,
+    /// Whether this impl/method scope is generic, for static-state checks.
+    in_generic_scope: std::cell::Cell<bool>,
     /// Where type diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
     /// Name resolution results, for definition lookup.
@@ -397,16 +394,8 @@ struct Checker<'a> {
     /// Raw representation fields are private unless exported. Views are
     /// checked separately because applying one is an explicit interface.
     field_visibility: HashMap<(String, String), MemberVisibility>,
-    /// Struct name -> each field's `(name, declared type head, span)`. A
-    /// struct that transitively contains itself has no finite layout, and
-    /// flattening one in elaboration recursed until the stack gave out with
-    /// typecheck reporting nothing at all.
-    struct_field_types: HashMap<String, Vec<(String, String, Span)>>,
     /// Struct name -> field name -> the field's *full* declared type. The map
-    /// above keeps only the head name (`unsigned[16]` -> `unsigned`), which is
-    /// enough to name a type and not enough to compare a width — so a field
-    /// target typed as `Ty::Error` and the strict assignment-width rule had
-    /// nothing to check.
+    /// retains widths for field access and contextual literal checking.
     field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
@@ -418,9 +407,6 @@ struct Checker<'a> {
     /// target (`impl<T: Tr> Tr for T[]`). A nominal array family may forward
     /// one of these only when its element type implements the same key.
     blanket_array_impls: HashMap<String, String>,
-    /// Generic module fns: definition -> (type params with bounds, value params).
-    /// Bounds are checked at each call (spec: generic bounds).
-    generic_fns: HashMap<DefId, GenericFnSignature>,
     /// `extern "C"` functions declared without a result: C `void`.
     void_extern_fns: HashSet<DefId>,
     /// `extern "C"` functions taking a struct or array by pointer, which only

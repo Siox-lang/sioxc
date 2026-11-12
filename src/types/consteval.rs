@@ -5,8 +5,8 @@
 
 use crate::diag::Span;
 use crate::syntax::ast::{
-    expr_span, pattern_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, FnParam, Ident, IfStmt,
-    ImplDecl, MatchArm, Path, Pattern, Stmt, Type, UnOp,
+    expr_span, pattern_span, stmt_span, BinOp, ConstDecl, ElseBranch, Expr, FnDecl, FnParam, Ident,
+    IfStmt, ImplDecl, MatchArm, Path, Pattern, Stmt, Type, UnOp,
 };
 
 use super::helpers::{unsigned_lit_magnitude, unsigned_lit_text};
@@ -350,6 +350,20 @@ pub(crate) fn evaluate_value(
         operators: Vec::new(),
     }
     .expression(expression, expected_enum, depth)
+}
+
+/// Evaluate a constant at its declared type boundary, before physical projection.
+pub(crate) fn evaluate_constant(
+    declaration: &ConstDecl,
+    environment: &dyn Environment,
+    depth: u32,
+) -> Result<Value, NotConstant> {
+    Interpreter {
+        environment,
+        locals: Vec::new(),
+        operators: Vec::new(),
+    }
+    .declared_expression(&declaration.value, &declaration.ty, None, depth)
 }
 
 /// Evaluate control flow without projecting a source Boolean into an integer.
@@ -890,6 +904,25 @@ impl<'a> Interpreter<'a> {
             return Err(fail(Reason::RecursionLimit));
         }
         let environment = self.environment;
+        if let Some(source) = environment.source() {
+            let receiver = self.locals.last().and_then(|frame| frame.receiver);
+            if let Some(target) = source.nominal_constructor(callee, receiver) {
+                let [argument] = args else {
+                    return Err(fail(Reason::ArityMismatch));
+                };
+                let value = self.expression(argument, None, depth + 1)?;
+                if let Some(selected) = source.conversion_function(target, &value).map_err(fail)? {
+                    if !self.active_operator(&selected) {
+                        self.operators
+                            .push((selected.function, selected.implementation));
+                        let result = self.invoke_selected(selected, vec![value], depth + 1, span);
+                        self.operators.pop();
+                        return result;
+                    }
+                }
+                return self.derived_conversion(target, value, depth + 1, span);
+            }
+        }
         if environment.transparent_conversion(callee) {
             if args.len() != 1 {
                 return Err(fail(Reason::ArityMismatch));
@@ -1123,6 +1156,11 @@ impl<'a> Interpreter<'a> {
                     .is_self
                     .then(|| self.environment.source()?.value_type(value))
                     .flatten()
+            })
+            .or_else(|| {
+                self.environment
+                    .source()?
+                    .type_id(&selected.implementation?.target, None)
             });
         let expected = function
             .ret

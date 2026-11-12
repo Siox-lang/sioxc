@@ -131,9 +131,10 @@ impl<'a> Checker<'a> {
             // A type parameter is its call's argument type while a generic
             // body is checked for that call, and unknown otherwise.
             Some(id) if self.resolved.def(id).map(|d| d.kind) == Some(DefKind::Param) => self
-                .resolved
-                .def(id)
-                .and_then(|d| self.type_bindings.borrow().get(&d.name).cloned())
+                .type_bindings
+                .borrow()
+                .get(&id)
+                .cloned()
                 .unwrap_or(Ty::Error),
             Some(id) => Ty::Named(id),
             None => Ty::Error,

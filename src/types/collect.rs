@@ -74,7 +74,7 @@ impl<'a> Checker<'a> {
             in_fn_body: std::cell::Cell::new(false),
             in_match_arm: std::cell::Cell::new(false),
             in_process: std::cell::Cell::new(false),
-            type_params: std::cell::RefCell::new(HashSet::new()),
+            in_generic_scope: std::cell::Cell::new(false),
             sink,
             resolved,
             entities: HashMap::new(),
@@ -88,14 +88,12 @@ impl<'a> Checker<'a> {
             conversion_sigs: HashSet::new(),
             structs: HashMap::new(),
             field_visibility: HashMap::new(),
-            struct_field_types: HashMap::new(),
             field_decl_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             array_families: HashSet::new(),
             array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
-            generic_fns: HashMap::new(),
             void_extern_fns: HashSet::new(),
             aggregate_extern_fns: HashSet::new(),
             current_fn: std::cell::Cell::new(None),
@@ -637,19 +635,6 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::Fn(f) if !f.generics.params.is_empty() => {
-                let Some(id) = self.resolved.declared(f.name.span) else {
-                    return;
-                };
-                let params = f
-                    .params
-                    .iter()
-                    .filter(|parameter| !parameter.is_self)
-                    .map(|parameter| parameter.ty.clone())
-                    .collect();
-                self.generic_fns
-                    .insert(id, (f.generics.params.clone(), params));
-            }
             Item::Struct(st) => {
                 let Some(struct_key) = self.declaration_key(st.name.span) else {
                     return;
@@ -677,49 +662,6 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
-                // A tuple field holds each of its elements: one has no type key
-                // of its own, and `next: (Node, integer)` escaped the cycle
-                // check (#179).
-                // ponytail: a generic field holds its type arguments too
-                // (`a: A<B>` holds a `B`, #214); an argument the generic does
-                // not store counts as held, a rare false cycle.
-                fn held(ty: &Type, out: &mut Vec<Type>) {
-                    match ty {
-                        Type::Tuple { elems, .. } => elems.iter().for_each(|elem| held(elem, out)),
-                        Type::Generic { base, args, .. } => {
-                            out.push(ty.clone());
-                            held(base, out);
-                            for arg in args {
-                                match arg {
-                                    GenericArg::PositionalType(ty)
-                                    | GenericArg::NamedType { ty, .. } => held(ty, out),
-                                    GenericArg::Positional(Expr::Path(path))
-                                    | GenericArg::Named {
-                                        value: Expr::Path(path),
-                                        ..
-                                    } => out.push(Type::Path(path.clone())),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        other => out.push(other.clone()),
-                    }
-                }
-                let fields = st
-                    .fields
-                    .iter()
-                    .flat_map(|f| {
-                        let mut types = Vec::new();
-                        held(&f.ty, &mut types);
-                        types
-                            .into_iter()
-                            .filter_map(|ty| {
-                                Some((f.name.text.clone(), self.type_key(&ty)?, f.name.span))
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                self.struct_field_types.insert(struct_key, fields);
             }
             Item::View(v) => {
                 let Some(key) = self

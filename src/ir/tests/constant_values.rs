@@ -2,6 +2,37 @@
 
 use super::*;
 
+#[test]
+fn typed_constants_materialize_nominal_fields_and_declared_labels() {
+    let (_, sink) = lower_with_nonzero_false(
+        "module model;
+         struct Count(natural);
+         struct Rate(real);
+         struct Config { pub count: Count, pub gain: Rate }
+         struct Envelope(Config);
+         const TWO: natural = 2;
+         const THREE: natural = 3;
+         const FOUR: natural = 4;
+         const COUNT: Count = Count(TWO);
+         const GAIN: Rate = Rate(-0.0);
+         const CONFIG: Envelope = Envelope(Config { .count = COUNT, .gain = GAIN });
+         const WORDS: Count[6..4] = [COUNT, Count(THREE), Count(FOUR)];
+         const PAIR: (integer, real) = (-7, 2.5);
+         const DESCENDING: integer[2..0] = [7, 9, 11];
+         entity Top { count: natural out, gain: real out, field: natural out,
+                      selected: natural out, pair: real out, index: integer in, dynamic: integer out }
+         impl Top {
+             count = natural(COUNT);
+             gain = real(GAIN);
+             field = natural(CONFIG.count);
+             selected = natural(WORDS[4]);
+             pair = PAIR.1;
+             dynamic = DESCENDING[index];
+         }",
+    );
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+}
+
 fn lower_with_nonzero_false(source: &str) -> (Design, DiagnosticSink) {
     let mut sink = DiagnosticSink::default();
     let sources = [

@@ -3,6 +3,7 @@ use crate::diag::{DiagnosticSink, FileId};
 use crate::syntax::{ast::Item, parse_module};
 
 mod aggregate;
+mod derived;
 mod numeric;
 
 fn expression(text: &str) -> Expr {

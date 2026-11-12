@@ -3,6 +3,89 @@
 use super::*;
 
 #[test]
+fn unregistered_library_namespace_traits_do_not_grant_kernel_capabilities() {
+    let mut sources = [
+        ("module core::contracts; pub trait Capability {}", FileId(0)),
+        ("module std::contracts; pub trait Capability {}", FileId(1)),
+        (
+            "module caller;
+          fn core_bound<T: core::contracts::Capability>(value: T) -> T { return value; }
+          fn std_bound<T: std::contracts::Capability>(value: T) -> T { return value; }
+          fn check(i: integer, r: real, values: integer[2]) {
+              core_bound(i);
+              std_bound(r);
+              core_bound(values);
+          }",
+            FileId(2),
+        ),
+    ];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 3, "{:?}", sink.diagnostics());
+        assert!(errors
+            .iter()
+            .all(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+                && diagnostic.message.contains("Capability")));
+        sources.reverse();
+    }
+}
+
+#[test]
+fn generic_bound_capabilities_follow_registered_identity_and_explicit_impls() {
+    let mut sources = [
+        (
+            "module core::registered;
+          pub trait Capability<Rhs, Out> { fn add(rhs: Rhs) -> Out; }
+          attr lang for Capability = \"add\";",
+            FileId(0),
+        ),
+        (
+            "module std::contracts;
+          pub trait Capability {}
+          impl Capability for integer {}",
+            FileId(1),
+        ),
+        (
+            "module caller;
+          use Hook = core::registered::Capability;
+          use Explicit = std::contracts::Capability;
+          fn registered<T: Hook<T, T>>(value: T) -> T { return value; }
+          fn seeded<T: Add<T, T>>(value: T) -> T { return value; }
+          fn explicit<T: Explicit>(value: T) -> T { return value; }
+          fn check(i: integer, r: real) {
+              let a: integer = registered(i);
+              let b: real = registered(r);
+              let c: integer = seeded(i);
+              let d: integer = explicit(i);
+              let missing: real = explicit(r);
+          }",
+            FileId(2),
+        ),
+    ];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+        assert!(
+            errors[0].message.contains("real") && errors[0].message.contains("Capability"),
+            "{:?}",
+            errors[0]
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
 fn ambiguous_suffix_does_not_acquire_the_intrinsic_fallback_type() {
     let source = "module suffixes;
         struct Left {} struct Right {}

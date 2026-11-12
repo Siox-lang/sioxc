@@ -334,6 +334,14 @@ pub fn eval_const_fns(
     fns.constant_source().word(value.ok()?)
 }
 
+pub(in crate::ir) fn eval_declared_const(
+    declaration: &ast::ConstDecl,
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+) -> Option<consteval::Value> {
+    consteval::evaluate_constant(declaration, &WordConstants { env, fns }, 0).ok()
+}
+
 pub(in crate::ir) fn eval_range_fns(
     expression: &ast::Expr,
     env: &HashMap<String, i64>,

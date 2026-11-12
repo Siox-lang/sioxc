@@ -375,9 +375,94 @@ impl<'a> Interpreter<'a> {
                 .conform_values(values, elems.iter(), receiver, depth + 1, span)
                 .map(Value::Tuple);
         }
+        if let Value::Record { owner, fields } = &value {
+            if source.type_id(ty, receiver) == Some(*owner) {
+                if source.derived_base(*owner).is_some() {
+                    return self.derived_value(*owner, fields.clone(), depth + 1, span);
+                }
+                let declaration = source
+                    .structure(*owner)
+                    .filter(|declaration| {
+                        declaration.base.is_none() && declaration.params.params.is_empty()
+                    })
+                    .ok_or_else(fail)?;
+                if fields.len() != declaration.fields.len() {
+                    return Err(fail());
+                }
+                return Ok(Value::Record {
+                    owner: *owner,
+                    fields: self.conform_values(
+                        fields.clone(),
+                        declaration.fields.iter().map(|field| &field.ty),
+                        Some(*owner),
+                        depth + 1,
+                        span,
+                    )?,
+                });
+            }
+        }
         source
             .bind_value(ty, value, receiver, false)
             .ok_or_else(fail)
+    }
+
+    pub(super) fn derived_conversion(
+        &mut self,
+        target: DefId,
+        value: Value,
+        depth: u32,
+        span: Span,
+    ) -> Result<Value, NotConstant> {
+        let fail = || NotConstant {
+            span,
+            reason: Reason::Unsupported,
+        };
+        if depth > 64 {
+            return Err(NotConstant {
+                reason: Reason::RecursionLimit,
+                ..fail()
+            });
+        }
+        let source = self.environment.source().ok_or_else(fail)?;
+        if let Some(projected) = source.project_derived(&value, target) {
+            if let Value::Record { owner, fields } = projected.as_ref() {
+                if source.derived_base(*owner).is_some() {
+                    return self.derived_value(*owner, fields.clone(), depth + 1, span);
+                }
+            }
+            return Ok(projected.into_owned());
+        }
+        // A common representation does not make two sibling newtypes convertible.
+        let owner = source.value_type(&value).ok_or_else(fail)?;
+        if !source.derives_from(target, owner) {
+            return Err(fail());
+        }
+        let base = source.derived_base(target).ok_or_else(fail)?;
+        let parent = source.type_id(base, None).ok_or_else(fail)?;
+        let value = self.derived_conversion(parent, value, depth + 1, span)?;
+        self.derived_value(target, Arc::from([value]), depth + 1, span)
+    }
+
+    fn derived_value(
+        &mut self,
+        owner: DefId,
+        fields: Arc<[Value]>,
+        depth: u32,
+        span: Span,
+    ) -> Result<Value, NotConstant> {
+        let fail = || NotConstant {
+            span,
+            reason: Reason::Unsupported,
+        };
+        if fields.len() != 1 {
+            return Err(fail());
+        }
+        let source = self.environment.source().ok_or_else(fail)?;
+        let base = source.derived_base(owner).ok_or_else(fail)?;
+        Ok(Value::Record {
+            owner,
+            fields: self.conform_values(fields, std::iter::once(base), Some(owner), depth, span)?,
+        })
     }
 
     /// Keep the original allocation unless a nested target changes its labels.
@@ -567,18 +652,34 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(super) fn project_field(&self, value: Value, field: &Ident) -> Option<Value> {
-        match value {
-            Value::Tuple(values) => values.get(field.text.parse::<usize>().ok()?).cloned(),
-            Value::Record { owner, fields } => {
-                let source = self.environment.source()?;
-                let position = source
-                    .structure(owner)?
-                    .fields
-                    .iter()
-                    .position(|f| f.name.text == field.text)?;
-                fields.get(position).cloned()
+        let mut value = &value;
+        loop {
+            match value {
+                Value::Tuple(values) => {
+                    return values.get(field.text.parse::<usize>().ok()?).cloned()
+                }
+                Value::Record { owner, fields } => {
+                    let source = self.environment.source()?;
+                    if let Some(base) = source.derived_base(*owner) {
+                        let parent = source.type_id(base, None)?;
+                        let [base] = fields.as_ref() else {
+                            return None;
+                        };
+                        if source.value_type(base) != Some(parent) {
+                            return None;
+                        }
+                        value = base;
+                        continue;
+                    }
+                    let position = source
+                        .structure(*owner)?
+                        .fields
+                        .iter()
+                        .position(|f| f.name.text == field.text)?;
+                    return fields.get(position).cloned();
+                }
+                _ => return None,
             }
-            _ => None,
         }
     }
 }

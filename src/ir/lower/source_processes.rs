@@ -14966,6 +14966,13 @@ mod tests {
              type Scalar = real;
              impl Suffix<\"cycles\", real> for RateAlias {
                  static fn suffix(value: Scalar) -> RateAlias { return RateAlias(value * 1000.0); }
+             }
+             fn adjust(value: Amount) -> Amount { let local: Amount = value + 1; return local * 37; }
+             impl Suffix<\"helper\", integer> for Alias {
+                 static fn suffix(value: Amount) -> Alias {
+                     let local: Amount = value;
+                     return Alias(adjust(local));
+                 }
              }",
             "module right; pub struct Measure(integer);",
         ];
@@ -14988,12 +14995,32 @@ mod tests {
                 functions.insert_declaration(item);
             }
             let suffixes = constant_suffixes(&modules, &functions);
-            assert_eq!(suffixes.len(), 3);
+            assert_eq!(suffixes.len(), 4);
             let [ticks] = suffixes["ticks"].as_slice() else {
                 panic!("only the suffix method is a literal implementation");
             };
             assert!(matches!(ticks.domain, SuffixDomain::Integer));
             assert_eq!(eval_suffix_block(ticks.body, ticks, 2), Some(74));
+            for input in [0, 1, 2, 7, 19, 1000] {
+                let value = crate::types::consteval::evaluate_function(
+                    ticks.function,
+                    vec![crate::types::consteval::Value::Integer(i128::from(input))],
+                    &crate::types::consteval::Source::new(ticks.declarations),
+                    0,
+                )
+                .unwrap();
+                let crate::types::consteval::Value::Record { owner, fields } = value else {
+                    panic!("the shared evaluator must retain the suffix target");
+                };
+                assert_eq!(owner, ticks.target);
+                let [crate::types::consteval::Value::Integer(value)] = fields.as_ref() else {
+                    panic!("integer-backed suffix");
+                };
+                assert_eq!(
+                    u64::try_from(*value).ok(),
+                    eval_suffix_block(ticks.body, ticks, input)
+                );
+            }
             let source = modules
                 .iter()
                 .flat_map(|module| &module.items)
@@ -15018,6 +15045,16 @@ mod tests {
                 panic!("one wrong-owner constructor probe");
             };
             assert_eq!(eval_suffix_block(wrong.body, wrong, 2), None);
+            assert!(
+                crate::types::consteval::evaluate_function(
+                    wrong.function,
+                    vec![crate::types::consteval::Value::Integer(2)],
+                    &crate::types::consteval::Source::new(wrong.declarations),
+                    0,
+                )
+                .is_err(),
+                "matching storage cannot authorize the wrong nominal return type"
+            );
             let [cycles] = suffixes["cycles"].as_slice() else {
                 panic!("one real suffix implementation");
             };
@@ -15025,6 +15062,47 @@ mod tests {
             assert_eq!(
                 eval_real_suffix_block(cycles.body, cycles, 2.5),
                 Some(2500.0)
+            );
+            for input in [0.0, -0.0, 2.5, -1.25, f64::INFINITY] {
+                let value = crate::types::consteval::evaluate_function(
+                    cycles.function,
+                    vec![crate::types::consteval::Value::Real(input)],
+                    &crate::types::consteval::Source::new(cycles.declarations),
+                    0,
+                )
+                .unwrap();
+                let crate::types::consteval::Value::Record { owner, fields } = value else {
+                    panic!("the shared evaluator must retain the suffix target");
+                };
+                assert_eq!(owner, cycles.target);
+                let [crate::types::consteval::Value::Real(value)] = fields.as_ref() else {
+                    panic!("real-backed suffix");
+                };
+                assert_eq!(
+                    value.to_bits(),
+                    eval_real_suffix_block(cycles.body, cycles, input)
+                        .unwrap()
+                        .to_bits()
+                );
+            }
+            let [helper] = suffixes["helper"].as_slice() else {
+                panic!("one helper-backed suffix");
+            };
+            assert_eq!(eval_suffix_block(helper.body, helper, 2), None);
+            let value = crate::types::consteval::evaluate_function(
+                helper.function,
+                vec![crate::types::consteval::Value::Integer(2)],
+                &crate::types::consteval::Source::new(helper.declarations),
+                0,
+            )
+            .unwrap();
+            let crate::types::consteval::Value::Record { owner, fields } = value else {
+                panic!("helper result retains its target");
+            };
+            assert_eq!(owner, helper.target);
+            assert_eq!(
+                fields.as_ref(),
+                [crate::types::consteval::Value::Integer(111)]
             );
         }
     }

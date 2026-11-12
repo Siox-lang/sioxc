@@ -1210,6 +1210,54 @@ fn an_unresolved_spelling_never_falls_back_to_a_known_leaf() {
 }
 
 #[test]
+fn generic_function_contracts_borrow_source_and_preserve_foreign_provenance() {
+    let mut sources = [
+        "module left;
+         pub fn choose<T>(value: T) -> T { return value; }
+         pub fn forward<T>(value: T) -> T;",
+        "module right; extern \"C\" { pub fn choose<T>(value: T) -> T; }",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let mut index = DeclarationIndex::collect(&resolved, &modules);
+        let mut bare = DeclarationIndex::new(&resolved);
+        let mut checked = 0;
+        for item in modules.iter().flat_map(|module| &module.items) {
+            let (functions, module) = match item {
+                Item::Fn(function) => (std::slice::from_ref(function), true),
+                Item::ExternBlock { fns, .. } => (fns.as_slice(), false),
+                _ => continue,
+            };
+            for function in functions {
+                let id = resolved.declared(function.name.span).unwrap();
+                bare.insert_function(function);
+                assert!(std::ptr::eq(bare.function(id).unwrap(), function));
+                assert!(
+                    bare.module_function(id).is_none(),
+                    "a bare insertion has no container evidence"
+                );
+                assert!(std::ptr::eq(index.function(id).unwrap(), function));
+                assert_eq!(index.module_function(id).is_some(), module);
+                if let Some(borrowed) = index.module_function(id) {
+                    assert!(std::ptr::eq(borrowed, function));
+                    assert!(std::ptr::eq(&borrowed.generics, &function.generics));
+                    assert!(std::ptr::eq(&borrowed.params[0], &function.params[0]));
+                }
+                index.insert_function(function);
+                assert_eq!(
+                    index.module_function(id).is_some(),
+                    module,
+                    "re-insertion must retain foreign source provenance"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 3);
+        sources.reverse();
+    }
+}
+
+#[test]
 fn foreign_prototypes_are_indexed_but_never_executed_as_constants() {
     let (modules, resolved) = parse(&["module a;
         extern \"C\" { fn host(n: integer) -> integer; }
