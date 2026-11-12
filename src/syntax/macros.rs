@@ -1899,6 +1899,36 @@ fn clock_write_backs(
                 clock_write_backs(inner, names, write_backs, clocked, sink);
             }
         }
+        // `c.inc();`: a method call made for its effect writes its receiver,
+        // as an assignment does; outside an edge it was a feedback loop the
+        // check did not see (#633).
+        Stmt::Expr(Expr::Call { callee, span, .. }) if !clocked => {
+            let Expr::Field { base, field, .. } = callee.as_ref() else {
+                return;
+            };
+            let mut root = base.as_ref();
+            while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Path(path) = root {
+                if let [segment] = path.segments.as_slice() {
+                    if names.contains(&segment.text) {
+                        sink.emit(
+                            Diagnostic::error(format!(
+                                "a hardware `static let` is written only under a clock edge; \
+                                 `{}.{}()` may write `{}` here without one",
+                                segment.text, field.text, segment.text
+                            ))
+                            .at(*span)
+                            .help(
+                                "a register changes at an edge: call it inside \
+                                 `if clk.rising() { ... }`",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         Stmt::Assign { target, span, .. } if !clocked => {
             let mut root = &*target;
             while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
