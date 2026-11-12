@@ -767,14 +767,6 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Inline the operator-trait impl body for `lhs OP rhs` when the left
-    /// operand is an enum- or struct-typed local with a matching impl. The
-    /// body must be a pure expression tree: `return e;` or `if c { .. } else
-    /// { .. }` chains ending in returns (which become [`Expr::Select`], per
-    /// field for struct values). `None` falls back to built-in lowering.
-    // ponytail: operand types come from the outer locals, so `self + rhs`
-    // nested *inside* an impl body doesn't re-inline; loops/match in bodies
-    // unsupported until needed.
     /// Lower a derived logical operator on a *packed* vector natively, as
     /// `and`/`or` already are, instead of inlining std's body.
     ///

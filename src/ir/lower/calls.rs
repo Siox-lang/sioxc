@@ -1919,6 +1919,15 @@ impl<'a> Lowering<'a> {
                     .or_else(|| self.local_struct.get(&p))
                     .or_else(|| self.local_numeric.get(&p))
                     .cloned()
+                    // Inside an inlined operator body `self.start` is no
+                    // local: its checked type names it, so `self.start +
+                    // rhs.start` finds `Point`'s impl (#631).
+                    .or_else(|| match self.expr_types.get(&ast::expr_span(e)) {
+                        Some(crate::types::Ty::Named(definition)) => {
+                            self.free_fns.nominal_type_key(*definition)
+                        }
+                        _ => None,
+                    })
             }
         }
     }
