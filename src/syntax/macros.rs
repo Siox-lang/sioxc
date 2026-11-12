@@ -1396,24 +1396,27 @@ pub fn derive(
     sources: &mut crate::diag::SourceMap,
     sink: &mut DiagnosticSink,
 ) {
+    // An enum is never a packed family, so an array of one derives
+    // element-wise (#548), wherever the enum is declared: one imported or
+    // named by path (`std::numeric::Overflow[4]`) kept the conversion, which
+    // a plain array does not have (#613).
+    let enums: std::collections::HashSet<String> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Enum(declaration) => Some(declaration.name.text.clone()),
+            _ => None,
+        })
+        .collect();
     for module in modules.iter_mut() {
         let mut generated = Vec::new();
-        // An enum is never a packed family, so an array of one derives
-        // element-wise (#548).
-        let enums: std::collections::HashSet<String> = module
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Enum(declaration) => Some(declaration.name.text.clone()),
-                _ => None,
-            })
-            .collect();
+        let enums = &enums;
         for item in &module.items {
             let Item::Struct(declaration) = item else {
                 continue;
             };
             for derive in &declaration.derives {
-                let Some(text) = derive_text(declaration, derive, &enums, sink) else {
+                let Some(text) = derive_text(declaration, derive, enums, sink) else {
                     continue;
                 };
                 let name = format!("<derive {} for {}>", derive.text, declaration.name.text);
@@ -1588,6 +1591,30 @@ fn derive_text(
             };
             format!("impl{binder} Eq<{applied}> for {applied} {{ fn eq(rhs: {applied}) -> Bool {{ return {body}; }} }}")
         }
+        // A long comparison is flat statements, the first difference
+        // returning: as one expression each element nests two levels, and
+        // 64 of them passed the parser's limit (#635).
+        _ if operands.len() > 32 => {
+            let order = |tie: &str| {
+                operands
+                    .iter()
+                    .map(|(left, right)| {
+                        format!(
+                            "if {left} < {right} {{ return true; }} \
+                             if {right} < {left} {{ return false; }} "
+                        )
+                    })
+                    .collect::<String>()
+                    + &format!("return {tie};")
+            };
+            format!(
+                "impl{binder} Ord<{applied}> for {applied} {{ \
+                 fn lt(rhs: {applied}) -> Bool {{ {} }} \
+                 fn le(rhs: {applied}) -> Bool {{ {} }} }}",
+                order("false"),
+                order("true"),
+            )
+        }
         _ => format!(
             "impl{binder} Ord<{applied}> for {applied} {{ \
              fn lt(rhs: {applied}) -> Bool {{ return {}; }} \
@@ -1601,8 +1628,6 @@ fn derive_text(
 /// The indices of a plain array of a kernel or logic element with a literal
 /// size (`Bit[8]`, `Logic[3..0]`), in declared order; `None` for anything
 /// else, a vector family (`unsigned[8]`) among them.
-// ponytail: an array of a user enum or struct is read as a family and keeps
-// the conversion, which fails; it needs the module's declarations here.
 fn plain_array_positions(
     base: &crate::syntax::ast::Type,
     enums: &std::collections::HashSet<String>,
@@ -1625,8 +1650,7 @@ fn plain_array_positions(
         head.text.as_str(),
         "Bit" | "Logic" | "ULogic" | "Bool" | "integer" | "natural" | "real" | "Char"
     );
-    let local_enum = path.segments.len() == 1 && enums.contains(&head.text);
-    if !(scalar || local_enum) {
+    if !(scalar || enums.contains(&head.text)) {
         return None;
     }
     let literal = |e: &Expr| match e {
@@ -1637,10 +1661,6 @@ fn plain_array_positions(
         Expr::Range { lo, hi, .. } => (literal(lo)?, literal(hi)?),
         size => (0, literal(size)? - 1),
     };
-    // ponytail: unrolled, so a large array writes a long impl; bounded here.
-    if left.abs_diff(right) >= 256 {
-        return None;
-    }
     Some(if left <= right {
         (left..=right).collect()
     } else {
