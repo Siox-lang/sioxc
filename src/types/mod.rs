@@ -431,6 +431,9 @@ struct Checker<'a> {
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
     trait_required: HashMap<String, Vec<String>>,
+    /// Each trait's parameter names and declared methods, to hold an impl's
+    /// methods to their signatures (#615).
+    trait_signatures: HashMap<String, (Vec<String>, Vec<FnDecl>)>,
     /// Trait name -> exported flag, owning module, and declaration span.
     /// Methods in a trait impl inherit this visibility.
     trait_visibility: HashMap<String, (bool, String, Span)>,

@@ -132,6 +132,7 @@ impl<'a> Checker<'a> {
             trait_impl_sites: HashSet::new(),
             trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
+            trait_signatures: HashMap::new(),
             trait_visibility,
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
@@ -812,6 +813,27 @@ impl<'a> Checker<'a> {
                     .map(|f| f.name.text.clone())
                     .collect();
                 self.trait_required.insert(trait_key.clone(), required);
+                // core's traits are the compiler's hooks, read by the compiler
+                // and not by their written signatures (`From`'s `from(v:
+                // Self)`, `Suffix`'s `suffix`): only the rest are contracts.
+                let hook = self
+                    .resolved
+                    .declared(t.name.span)
+                    .is_some_and(|id| is_compiler_trait(self.resolved, id))
+                    || trait_key.starts_with("core::");
+                if !hook {
+                    self.trait_signatures.insert(
+                        trait_key.clone(),
+                        (
+                            t.params
+                                .params
+                                .iter()
+                                .map(|p| p.name.text.clone())
+                                .collect(),
+                            t.items.clone(),
+                        ),
+                    );
+                }
                 if t.params.params.is_empty() {
                     self.trait_default_bodies.insert(
                         trait_key.clone(),

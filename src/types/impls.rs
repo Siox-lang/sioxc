@@ -36,6 +36,7 @@ impl<'a> Checker<'a> {
             .filter(|m| !provided.contains(m.as_str()))
             .map(|m| format!("`{m}`"))
             .collect();
+        self.check_trait_signatures(im, &trait_key, trait_name);
         if !missing.is_empty() {
             let target = type_head_name(&im.target).unwrap_or("this type");
             self.error(
@@ -47,6 +48,119 @@ impl<'a> Checker<'a> {
                     missing.join(", ")
                 ),
             );
+        }
+    }
+
+    /// Each method an impl provides takes the parameter types and returns the
+    /// type its trait declares, the trait's parameters read as the impl's
+    /// arguments and `Self` as its target. Only arity was compared, so a
+    /// call through a bound checked against the trait and lowered the impl's
+    /// mismatched body, which failed in lowering or at run time (#615). A
+    /// type that does not resolve here, and a generic impl, are left alone;
+    /// an unsized vector (`-> signed`) takes any width.
+    fn check_trait_signatures(&mut self, im: &ImplDecl, trait_key: &str, trait_name: &str) {
+        if !im.params.params.is_empty() {
+            return;
+        }
+        let Some((names, declared)) = self.trait_signatures.get(trait_key).cloned() else {
+            return;
+        };
+        // A trait whose impls name more than it declares is read by the
+        // compiler, not by its written signature.
+        if names.len() != im.trait_args.len() {
+            return;
+        }
+        let mut bindings = HashMap::new();
+        for (name, arg) in names.iter().zip(&im.trait_args) {
+            if let Some(ty) = arg.as_type().map(|ty| self.ast_ty(&ty)) {
+                if !matches!(ty, Ty::Error) {
+                    bindings.insert(name.clone(), ty);
+                }
+            }
+        }
+        let target = self.ast_ty(&im.target);
+        if !matches!(target, Ty::Error) {
+            bindings.insert("Self".to_string(), target);
+        }
+        let saved = self.type_bindings.replace(bindings);
+        let fits = |want: &Ty, got: &Ty| match (want, got) {
+            (Ty::Error, _) | (_, Ty::Error) => true,
+            (
+                Ty::Array {
+                    elem: want_elem,
+                    len: want_len,
+                    family: want_family,
+                    ..
+                },
+                Ty::Array {
+                    elem: got_elem,
+                    len: got_len,
+                    family: got_family,
+                    ..
+                },
+            ) => {
+                want_elem == got_elem
+                    && want_family == got_family
+                    && (*want_len == 0 || *got_len == 0 || want_len == got_len)
+            }
+            _ => want == got,
+        };
+        let mut mismatches = Vec::new();
+        for item in &im.items {
+            let ImplItem::Fn(function) = item else {
+                continue;
+            };
+            let Some(contract) = declared.iter().find(|f| f.name.text == function.name.text) else {
+                continue;
+            };
+            let given = function.params.iter().filter(|p| !p.is_self);
+            let wanted = contract.params.iter().filter(|p| !p.is_self);
+            for (got, want) in given.zip(wanted) {
+                let (Some(got_ty), Some(want_ty)) = (&got.ty, &want.ty) else {
+                    continue;
+                };
+                let (got_ty, want_ty) = (self.ast_ty(got_ty), self.ast_ty(want_ty));
+                if !fits(&want_ty, &got_ty) {
+                    mismatches.push((
+                        got.span,
+                        format!(
+                            "`{}` takes `{}` in `{trait_name}`, not `{}`",
+                            function.name.text,
+                            self.ty_display(&want_ty),
+                            self.ty_display(&got_ty)
+                        ),
+                    ));
+                }
+            }
+            let (want_ret, got_ret) = (
+                contract.ret.as_ref().map(|ty| self.ast_ty(ty)),
+                function.ret.as_ref().map(|ty| self.ast_ty(ty)),
+            );
+            let returns_differ = match (&want_ret, &got_ret) {
+                (Some(want), Some(got)) => !fits(want, got),
+                (None, None) => false,
+                _ => true,
+            };
+            if returns_differ {
+                let shown = |ty: &Option<Ty>| {
+                    ty.as_ref().map_or("nothing".to_string(), |ty| {
+                        format!("`{}`", self.ty_display(ty))
+                    })
+                };
+                mismatches.push((
+                    function.name.span,
+                    format!(
+                        "`{}` returns {} in `{trait_name}`, not {}",
+                        function.name.text,
+                        shown(&want_ret),
+                        shown(&got_ret)
+                    ),
+                ));
+            }
+        }
+        self.type_bindings.replace(saved);
+        for (span, message) in mismatches {
+            self.error(codes::TYPE_MISMATCH, span, message);
         }
     }
 
