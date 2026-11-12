@@ -1200,6 +1200,7 @@ fn rewrite_callers(
     sink: &mut DiagnosticSink,
 ) {
     let mut instances: HashMap<String, Instance> = HashMap::new();
+    let mut arrays: HashMap<String, String> = HashMap::new();
     for item in &implementation.items {
         let ImplItem::Let(declaration) = item else {
             continue;
@@ -1207,6 +1208,12 @@ fn rewrite_callers(
         let Some(ty) = &declaration.ty else {
             continue;
         };
+        if let Type::Indexed { base, .. } = ty {
+            if let Some(entity) = head_name(base).filter(|name| methods.contains_key(name)) {
+                arrays.insert(declaration.name.text.clone(), entity);
+            }
+            continue;
+        }
         let Some(entity) = head_name(ty).filter(|name| methods.contains_key(name)) else {
             continue;
         };
@@ -1228,11 +1235,12 @@ fn rewrite_callers(
         }
         instances.insert(declaration.name.text.clone(), Instance { entity, args });
     }
-    if instances.is_empty() {
+    if instances.is_empty() && arrays.is_empty() {
         return;
     }
     let mut context = Callers {
         instances: &instances,
+        arrays: &arrays,
         methods,
         testbench,
         sites: HashMap::new(),
@@ -1380,6 +1388,8 @@ fn substitute(ty: &Type, args: &HashMap<String, GenericArg>) -> Type {
 
 struct Callers<'a, 'b> {
     instances: &'a HashMap<String, Instance>,
+    /// Instance arrays (`let cells: Cell[2];`) by name, to their entity.
+    arrays: &'a HashMap<String, String>,
     methods: &'a HashMap<String, Vec<Method>>,
     testbench: bool,
     /// Where each `(instance, method)` is called, for the one-site rule.
@@ -1598,6 +1608,40 @@ impl Callers<'_, '_> {
     }
 
     /// `instance.method(args)` on a direct child, with its span.
+    /// `cells[i].method(..)` of an instance array whose entity has `method`.
+    fn array_method_call(&self, e: &Expr) -> Option<(String, String, Span)> {
+        let Expr::Call {
+            callee,
+            bang: false,
+            span,
+            ..
+        } = e
+        else {
+            return None;
+        };
+        let Expr::Field { base, field, .. } = callee.as_ref() else {
+            return None;
+        };
+        let mut root = base.as_ref();
+        while let Expr::Index { base, .. } = root {
+            root = base;
+        }
+        if std::ptr::eq(root, base.as_ref()) {
+            return None;
+        }
+        let Expr::Path(path) = root else {
+            return None;
+        };
+        let [array] = path.segments.as_slice() else {
+            return None;
+        };
+        let entity = self.arrays.get(&array.text)?;
+        self.methods[entity]
+            .iter()
+            .any(|m| m.name == field.text)
+            .then(|| (array.text.clone(), field.text.clone(), *span))
+    }
+
     fn method_call(&self, e: &Expr) -> Option<(String, String, Span)> {
         let Expr::Call {
             callee,
@@ -1627,6 +1671,20 @@ impl Callers<'_, '_> {
     /// Rewrite one call: set its strobe and arguments in `pre`, and stand
     /// for its result. Returns whether `e` was a method call.
     fn call(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>, statement: bool) -> bool {
+        // `cells[0].step()`: an element of an instance array has no strobe
+        // ports wired, so the call was left as written and failed later, in
+        // hardware lowering or at run time in a testbench (#660).
+        if let Some((array, method, span)) = self.array_method_call(e) {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "calling entity method `{method}` on an element of the instance array \
+                     `{array}` is not supported yet"
+                ))
+                .at(span)
+                .help("declare the instance on its own (`let cell: Cell;`) to call its methods"),
+            );
+            return true;
+        }
         let Some((instance, method, span)) = self.method_call(e) else {
             return false;
         };
