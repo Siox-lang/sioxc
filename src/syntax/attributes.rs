@@ -495,18 +495,18 @@ impl Reads<'_> {
                     for member in &mut implementation.items {
                         match member {
                             ImplItem::Const(constant) => {
+                                self.fold_type(&mut constant.ty, scope, sink);
                                 self.fold_expr(&mut constant.value, scope, sink)
                             }
                             ImplItem::Let(declaration) => {
+                                if let Some(ty) = &mut declaration.ty {
+                                    self.fold_type(ty, scope, sink);
+                                }
                                 if let Some(value) = &mut declaration.value {
                                     self.fold_expr(value, scope, sink);
                                 }
                             }
-                            ImplItem::Fn(function) => {
-                                if let Some(body) = &mut function.body {
-                                    self.fold_block(body, scope, sink);
-                                }
-                            }
+                            ImplItem::Fn(function) => self.fold_fn(function, scope, sink),
                             ImplItem::Process(process) => {
                                 self.fold_block(&mut process.body, scope, sink)
                             }
@@ -518,12 +518,11 @@ impl Reads<'_> {
                         }
                     }
                 }
-                Item::Fn(function) => {
-                    if let Some(body) = &mut function.body {
-                        self.fold_block(body, scope, sink);
-                    }
+                Item::Fn(function) => self.fold_fn(function, scope, sink),
+                Item::Const(constant) => {
+                    self.fold_type(&mut constant.ty, scope, sink);
+                    self.fold_expr(&mut constant.value, scope, sink)
                 }
-                Item::Const(constant) => self.fold_expr(&mut constant.value, scope, sink),
                 _ => {}
             }
         }
@@ -540,6 +539,9 @@ impl Reads<'_> {
             Stmt::Use(_) => {}
             Stmt::Process(process) => self.fold_block(&mut process.body, scope, sink),
             Stmt::Let(declaration) => {
+                if let Some(ty) = &mut declaration.ty {
+                    self.fold_type(ty, scope, sink);
+                }
                 if let Some(value) = &mut declaration.value {
                     self.fold_expr(value, scope, sink);
                 }
@@ -586,6 +588,58 @@ impl Reads<'_> {
             Some(ElseBranch::Block(block)) => self.fold_block(block, scope, sink),
             Some(ElseBranch::If(inner)) => self.fold_if(inner, scope, sink),
             None => {}
+        }
+    }
+
+    /// Fold the reads inside a type: `unsigned[w'speed]` sizes by the
+    /// attribute (#697), as a value read does.
+    fn fold_type(&self, ty: &mut Type, scope: &Scope, sink: &mut DiagnosticSink) {
+        match ty {
+            Type::Path(_) => {}
+            Type::Indexed { base, index, .. } => {
+                self.fold_type(base, scope, sink);
+                if let Some(index) = index {
+                    self.fold_expr(index, scope, sink);
+                }
+            }
+            Type::Generic { base, args, .. } => {
+                self.fold_type(base, scope, sink);
+                self.fold_generic_args(args, scope, sink);
+            }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.fold_type(elem, scope, sink);
+                }
+            }
+            Type::View { target, .. } => self.fold_type(target, scope, sink),
+        }
+    }
+
+    fn fold_generic_args(&self, args: &mut [GenericArg], scope: &Scope, sink: &mut DiagnosticSink) {
+        for arg in args {
+            match arg {
+                GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
+                    self.fold_expr(value, scope, sink)
+                }
+                GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                    self.fold_type(ty, scope, sink)
+                }
+            }
+        }
+    }
+
+    /// A function's parameter and return types, then its body.
+    fn fold_fn(&self, function: &mut FnDecl, scope: &Scope, sink: &mut DiagnosticSink) {
+        for parameter in &mut function.params {
+            if let Some(ty) = &mut parameter.ty {
+                self.fold_type(ty, scope, sink);
+            }
+        }
+        if let Some(ret) = &mut function.ret {
+            self.fold_type(ret, scope, sink);
+        }
+        if let Some(body) = &mut function.body {
+            self.fold_block(body, scope, sink);
         }
     }
 
@@ -641,13 +695,24 @@ impl Reads<'_> {
                     self.fold_block(&mut arm.body, scope, sink);
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+                ..
+            } => {
                 self.fold_expr(callee, scope, sink);
+                self.fold_generic_args(type_args, scope, sink);
                 for arg in args {
                     self.fold_expr(arg, scope, sink);
                 }
             }
-            Expr::Construct { args, spread, .. } => {
+            Expr::Construct {
+                ty, args, spread, ..
+            } => {
+                if let Some(ty) = ty {
+                    self.fold_type(ty, scope, sink);
+                }
                 for arg in args {
                     if let Some(value) = &mut arg.value {
                         self.fold_expr(value, scope, sink);
@@ -678,8 +743,10 @@ impl Reads<'_> {
         sink: &mut DiagnosticSink,
     ) -> Option<Expr> {
         let name = attr.text.as_str();
+        // `m1::Worker'speed` names another module's entity (#697), which
+        // `Within` resolves; a local is always one segment.
         let object = match base {
-            Expr::Path(path) if path.segments.len() == 1 => path.segments[0].text.as_str(),
+            Expr::Path(path) => path_text(path),
             _ => {
                 sink.emit(
                     Diagnostic::error(format!("`'{name}` reads a declaration's attribute"))
@@ -690,6 +757,7 @@ impl Reads<'_> {
                 return None;
             }
         };
+        let object = object.as_str();
         let bound = if let Some((attrs, entity)) = scope.members.get(object) {
             find(attrs, name).or_else(|| {
                 entity
