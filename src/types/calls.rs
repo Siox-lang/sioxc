@@ -755,6 +755,32 @@ impl<'a> Checker<'a> {
             // in the backend as "unsupported call `abs` in testbench
             // expression", blaming the emitter for a missing `use`.
             let callee_key = self.path_key(p).unwrap_or_else(|| name.text.clone());
+            // `rising(clk)`: a method called as a free function. The checker
+            // took any method name for one, which no lowering supports, and
+            // hardware failed (E-P017) (#634). Methods are called on their
+            // receiver (spec 3.20).
+            let method_only = p.segments.len() == 1
+                && !args.is_empty()
+                && self.callee_is_declared(&callee_key)
+                && !self.callee_is_declared_as_function(&callee_key);
+            if method_only {
+                let receiver = crate::syntax::pretty::expr_string(&args[0]);
+                let rest = args[1..]
+                    .iter()
+                    .map(crate::syntax::pretty::expr_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.error_with_help(
+                    codes::UNKNOWN_NAME,
+                    expr_span(callee),
+                    format!("`{}` is a method, not a function", name.text),
+                    format!(
+                        "call it on its receiver: `{receiver}.{}({rest})`",
+                        name.text
+                    ),
+                );
+                return;
+            }
             if !self.callee_is_declared(&callee_key) {
                 self.error_with_help(
                     codes::UNKNOWN_NAME,
@@ -1226,7 +1252,29 @@ impl<'a> Checker<'a> {
         // A method reached through UFCS-ish sugar, or a trait method the
         // receiver supplies: if any type implements a method of this name it
         // is not an unknown *function*.
-        self.methods.keys().any(|(_, m)| m == name)
+        self.callee_is_declared_as_function(name) || self.methods.keys().any(|(_, m)| m == name)
+    }
+
+    /// [`Self::callee_is_declared`] without the method fallback: a runtime
+    /// function, a compiler primitive or a conversion.
+    pub(super) fn callee_is_declared_as_function(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "rand" | "uniform" | "randint" | "seed" | "exists" | "read"
+        ) || matches!(
+            name,
+            "print"
+                | "assert"
+                | "warn"
+                | "write"
+                | "await"
+                | "wait"
+                | "tick"
+                | "clock"
+                | "stop"
+                | "finish"
+                | "resize"
+        ) || self.is_conversion_name(name)
     }
 
     /// The definition a call's path names, when it resolves to a function.
