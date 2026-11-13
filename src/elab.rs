@@ -523,6 +523,20 @@ fn elaborate_roots(
                 _ => None,
             })
             .collect(),
+        struct_fields: modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|item| match item {
+                Item::Struct(s) if !s.fields.is_empty() => Some((
+                    s.name.text.clone(),
+                    s.fields
+                        .iter()
+                        .map(|field| (field.name.text.clone(), field.ty.clone()))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect(),
         enums: modules
             .iter()
             .flat_map(|m| &m.items)
@@ -602,6 +616,8 @@ struct Elaborator<'a> {
     /// Names of user enums and newtypes: types as definite as a record
     /// (#719).
     enums: HashSet<String>,
+    /// Each struct's declared fields, to project `pkt.a` in a connection.
+    struct_fields: HashMap<String, Vec<(String, Type)>>,
     /// Module-level integer and `Bool` constants, folded once and keyed by
     /// qualified name (`m1::N`): the base of every entity's constant
     /// environment, which its parameters shadow, with its own module's by
@@ -1618,7 +1634,13 @@ impl<'a> Elaborator<'a> {
                     let nominal = |name: &str| {
                         self.record_structs.contains(name) || self.enums.contains(name)
                     };
-                    let Some(found) = project_signal(&c.signal, parent_signals, &nominal) else {
+                    let field = |owner: &str, name: &str| {
+                        let fields = self.struct_fields.get(owner)?;
+                        let (_, ty) = fields.iter().find(|(field, _)| field == name)?;
+                        Some(concrete_ty(ty, &HashMap::new()))
+                    };
+                    let Some(found) = project_signal(&c.signal, parent_signals, &nominal, &field)
+                    else {
                         continue;
                     };
                     projected = found;
@@ -1986,25 +2008,33 @@ fn project_signal(
     signal: &str,
     signals: &HashMap<String, EType>,
     nominal: &dyn Fn(&str) -> bool,
+    field: &dyn Fn(&str, &str) -> Option<EType>,
 ) -> Option<EType> {
-    let (base, mut rest) = signal.split_once('[')?;
-    if base.contains('.') {
-        return None;
-    }
-    // `mat[0][1]`: each index projects the type the previous one gave (#719).
-    let mut current = signals.get(base)?.clone();
-    loop {
-        let (inner, after) = rest.split_once(']')?;
-        if inner.contains('[') {
+    let first = signal.find(['[', '.'])?;
+    let mut current = signals.get(&signal[..first])?.clone();
+    let mut rest = &signal[first..];
+    // `mat[0][1]`, `pkt.a`, `pts[0].a`: each step projects the type the
+    // previous one gave (#719).
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('[') {
+            let (inner, after) = after.split_once(']')?;
+            if inner.contains('[') {
+                return None;
+            }
+            current = project_once(&current, inner, nominal)?;
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix('.') {
+            let end = after.find(['[', '.']).unwrap_or(after.len());
+            let EType::Named(owner) = &current else {
+                return None;
+            };
+            current = field(owner, &after[..end])?;
+            rest = &after[end..];
+        } else {
             return None;
         }
-        current = project_once(&current, inner, nominal)?;
-        match after.strip_prefix('[') {
-            Some(next) => rest = next,
-            None if after.is_empty() => return Some(current),
-            None => return None,
-        }
     }
+    Some(current)
 }
 
 /// One index or slice (`0`, `2..5`) of an array type.
