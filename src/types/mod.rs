@@ -572,6 +572,10 @@ struct Checker<'a> {
     /// Struct and trait members with a receiver, which a bare call cannot
     /// supply (`read_v(2)` for `self.read_v(2)`).
     receiver_members: HashSet<DefId>,
+    /// Each `static fn`'s name to its owner's key, for a bare call's
+    /// `Owner::name(..)` suggestion (#710); `None` where several types
+    /// declare it (`default`).
+    static_owners: HashMap<String, Option<String>>,
     /// `(type head, method name)` -> the traits whose impls define it, so a
     /// method two traits share is ambiguous unqualified.
     method_traits: HashMap<(String, String), Vec<String>>,

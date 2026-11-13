@@ -785,26 +785,46 @@ impl<'a> Checker<'a> {
             // took any method name for one, which no lowering supports, and
             // hardware failed (E-P017) (#634). Methods are called on their
             // receiver (spec 3.20).
+            // With no arguments too (`rising()`, `default()`), which no
+            // lowering supports either; a `static fn` is called through its
+            // type, not on a receiver (#710).
             let method_only = p.segments.len() == 1
-                && !args.is_empty()
                 && self.callee_is_declared(&callee_key)
                 && !self.callee_is_declared_as_function(&callee_key);
             if method_only {
-                let receiver = crate::syntax::pretty::expr_string(&args[0]);
-                let rest = args[1..]
-                    .iter()
-                    .map(crate::syntax::pretty::expr_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.error_with_help(
-                    codes::UNKNOWN_NAME,
-                    expr_span(callee),
-                    format!("`{}` is a method, not a function", name.text),
-                    format!(
-                        "call it on its receiver: `{receiver}.{}({rest})`",
-                        name.text
+                let shown = |arguments: &[Expr]| {
+                    arguments
+                        .iter()
+                        .map(crate::syntax::pretty::expr_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let (message, help) = match self.static_owners.get(&name.text) {
+                    Some(owner) => (
+                        format!("`{}` is an associated function, not a function", name.text),
+                        format!(
+                            "call it through its type: `{}::{}({})`",
+                            owner
+                                .as_deref()
+                                .map_or("Type", |owner| self.key_leaf(owner)),
+                            name.text,
+                            shown(args)
+                        ),
                     ),
-                );
+                    None => (
+                        format!("`{}` is a method, not a function", name.text),
+                        match args.split_first() {
+                            Some((receiver, rest)) => format!(
+                                "call it on its receiver: `{}.{}({})`",
+                                crate::syntax::pretty::expr_string(receiver),
+                                name.text,
+                                shown(rest)
+                            ),
+                            None => format!("call it on its receiver: `value.{}()`", name.text),
+                        },
+                    ),
+                };
+                self.error_with_help(codes::UNKNOWN_NAME, expr_span(callee), message, help);
                 return;
             }
             if !self.callee_is_declared(&callee_key) {

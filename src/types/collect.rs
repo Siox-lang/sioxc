@@ -175,6 +175,7 @@ impl<'a> Checker<'a> {
             methods: HashMap::new(),
             method_ids: HashMap::new(),
             receiver_members: HashSet::new(),
+            static_owners: HashMap::new(),
             method_traits: HashMap::new(),
             array_methods: HashSet::new(),
             method_param_types: HashMap::new(),
@@ -354,6 +355,16 @@ impl<'a> Checker<'a> {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
                                 self.methods.insert(key.clone(), f.ret.clone());
+                                if f.is_static {
+                                    self.static_owners
+                                        .entry(f.name.text.clone())
+                                        .and_modify(|owner| {
+                                            if owner.as_ref() != Some(&ty) {
+                                                *owner = None;
+                                            }
+                                        })
+                                        .or_insert_with(|| Some(ty.clone()));
+                                }
                                 if !f.generics.params.is_empty() {
                                     let params = f
                                         .params
