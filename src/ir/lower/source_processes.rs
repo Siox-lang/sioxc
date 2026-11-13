@@ -2759,8 +2759,25 @@ fn lower_statement(
                     },
                     context,
                 );
-                context.process_ir.value_layouts[place.0 as usize] = Some(field_layout);
+                context.process_ir.value_layouts[place.0 as usize] = Some(field_layout.clone());
                 let value = value_ref_with_type(value, process, context, field_type.as_ref());
+                // A struct literal for a generic field (`.inner = Packet {
+                // .data = 42 }` of `Outer<Packet<8>>`) takes the field's
+                // concrete layout: its own type, rebuilt from the layout,
+                // lost `<8>`, and the literal had no width (#412).
+                if context.process_ir.values[value.0 as usize]
+                    .bit_width
+                    .is_none()
+                    && matches!(
+                        context.process_ir.values[value.0 as usize].kind,
+                        ProcessValueKind::Construct { .. }
+                    )
+                    && matches!(field_layout.kind, LayoutKind::Struct { .. })
+                {
+                    context.process_ir.values[value.0 as usize].bit_width =
+                        field_layout.packed_width();
+                    context.process_ir.value_layouts[value.0 as usize] = Some(field_layout);
+                }
                 let semantics = process_place_assignment(place, context.process_ir)?;
                 process.blocks[block.0 as usize]
                     .instructions
