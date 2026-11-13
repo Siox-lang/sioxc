@@ -131,6 +131,7 @@ impl<'a> Checker<'a> {
             trait_default_bodies: HashMap::new(),
             trait_impl_sites: HashSet::new(),
             trait_impls_by_type: HashMap::new(),
+            impl_bounds: HashMap::new(),
             trait_required: HashMap::new(),
             trait_signatures: HashMap::new(),
             trait_visibility,
@@ -495,6 +496,31 @@ impl<'a> Checker<'a> {
                                 ),
                                 "keep one `impl` block for this trait and type".to_string(),
                             );
+                        }
+                        if let Type::Generic { args, .. } = &im.target {
+                            let bounds: Vec<(usize, String)> =
+                                args.iter()
+                                    .enumerate()
+                                    .filter_map(|(position, argument)| {
+                                        let Some(Type::Path(path)) = argument.as_type() else {
+                                            return None;
+                                        };
+                                        let [name] = path.segments.as_slice() else {
+                                            return None;
+                                        };
+                                        let parameter =
+                                            im.params.params.iter().find(|p| {
+                                                p.name.text == name.text && !p.is_value()
+                                            })?;
+                                        let Some(Type::Path(bound)) = &parameter.bound else {
+                                            return None;
+                                        };
+                                        Some((position, self.trait_key(bound)?))
+                                    })
+                                    .collect();
+                            if !bounds.is_empty() {
+                                self.impl_bounds.insert((key.clone(), ty.clone()), bounds);
+                            }
                         }
                         self.trait_impls_by_type.entry(ty).or_default().push(key);
                     }

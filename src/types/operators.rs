@@ -395,6 +395,25 @@ impl<'a> Checker<'a> {
         if char_numeric || suspicious_enum_equality {
             return true;
         }
+        // A generic comparison impl's bounds hold for the arguments the
+        // operands carry, the same type on both sides or not (#403).
+        if let Some((argument, bound)) = self.unmet_impl_bound(op, &self.type_of(lhs, sym)) {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "cannot compare {} with `{}`: its type argument {} has no `{bound}`",
+                    self.ty_display(&self.type_of(lhs, sym)),
+                    crate::syntax::pretty::bin_op(op),
+                    self.ty_display(&argument)
+                ),
+                format!(
+                    "give {} an `{bound}` implementation",
+                    self.ty_display(&argument)
+                ),
+            );
+            return true;
+        }
         if self.comparison_domains_compatible(lhs, rhs, sym) {
             return false;
         }
@@ -887,6 +906,31 @@ impl Checker<'_> {
                 "give that type an `Eq` implementation, or compare the other positions".to_string(),
             );
         }
+    }
+
+    /// A type argument of `ty` that its comparison impl's bounds exclude:
+    /// `Box<NoEq>` through `impl<T: Eq> Eq<Box<T>> for Box<T>` (#403).
+    fn unmet_impl_bound(&self, op: &BinOp, ty: &Ty) -> Option<(Ty, String)> {
+        let Ty::Named(_, arguments) = ty else {
+            return None;
+        };
+        let trait_key = if comparison_symbol(op) == "==" {
+            "Eq"
+        } else {
+            "Ord"
+        };
+        let owner = self.type_kind_name(ty)?;
+        let bounds = self.impl_bounds.get(&(trait_key.to_string(), owner))?;
+        bounds.iter().find_map(|(position, bound)| {
+            let argument = arguments.get(*position)?;
+            let Ty::Named(..) = argument else {
+                return None;
+            };
+            let name = self.type_kind_name(argument)?;
+            let met = self.has_impl(bound, &name)
+                || (bound == "Eq" && self.enum_operand_name(argument).is_some());
+            (!met).then(|| (argument.clone(), bound.clone()))
+        })
     }
 
     /// The first element type, through nested tuples, that has no equality.
