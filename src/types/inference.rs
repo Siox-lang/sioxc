@@ -513,7 +513,7 @@ impl<'a> Checker<'a> {
                             .get(&("Index".to_string(), owner.clone()))
                             .and_then(|sigs| {
                                 sigs.iter().find(|(i, _, _)| {
-                                    Self::index_contract_type_matches(i, input.as_deref(), &owner)
+                                    self.index_type_matches(i, input.as_deref(), &owner, &base_ty)
                                 })
                             })
                             .cloned();
@@ -534,7 +534,9 @@ impl<'a> Checker<'a> {
                             Some(name) if input.as_deref() == Some(name) => {
                                 self.type_of(index, sym)
                             }
-                            Some(name) => self.ty_from_head(name),
+                            Some(name) => self
+                                .param_argument(&base_ty, name)
+                                .unwrap_or_else(|| self.ty_from_head(name)),
                             None => Ty::Error,
                         }
                     }

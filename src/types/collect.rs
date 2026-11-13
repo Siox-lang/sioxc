@@ -132,6 +132,7 @@ impl<'a> Checker<'a> {
             trait_impl_sites: HashSet::new(),
             trait_impls_by_type: HashMap::new(),
             impl_bounds: HashMap::new(),
+            type_param_positions: HashMap::new(),
             trait_required: HashMap::new(),
             trait_signatures: HashMap::new(),
             trait_visibility,
@@ -498,6 +499,23 @@ impl<'a> Checker<'a> {
                             );
                         }
                         if let Type::Generic { args, .. } = &im.target {
+                            for (position, argument) in args.iter().enumerate() {
+                                if let Some(Type::Path(path)) = argument.as_type() {
+                                    if let [name] = path.segments.as_slice() {
+                                        if im
+                                            .params
+                                            .params
+                                            .iter()
+                                            .any(|p| p.name.text == name.text && !p.is_value())
+                                        {
+                                            self.type_param_positions
+                                                .entry(ty.clone())
+                                                .or_default()
+                                                .insert(name.text.clone(), position);
+                                        }
+                                    }
+                                }
+                            }
                             let bounds: Vec<(usize, String)> =
                                 args.iter()
                                     .enumerate()
@@ -560,7 +578,22 @@ impl<'a> Checker<'a> {
                                 .first()
                                 .and_then(GenericArg::as_type)
                                 .and_then(|ty| self.type_key(&ty));
-                            if let Some(source) = source {
+                            // `impl<T> From<T> for Box<T>` takes any source,
+                            // which becomes the argument (#608).
+                            let generic = im
+                                .trait_args
+                                .first()
+                                .and_then(GenericArg::as_type)
+                                .is_some_and(|source| {
+                                    matches!(&source, Type::Path(path)
+                                    if path.segments.len() == 1
+                                        && im.params.params.iter().any(|p| {
+                                            p.name.text == path.segments[0].text && !p.is_value()
+                                        }))
+                                });
+                            if generic {
+                                self.conversion_sigs.insert((ty.clone(), "*".to_string()));
+                            } else if let Some(source) = source {
                                 self.conversion_sigs.insert((ty.clone(), source));
                             }
                         }

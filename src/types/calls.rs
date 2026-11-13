@@ -138,10 +138,9 @@ impl<'a> Checker<'a> {
             _ => return,
         };
         let Some(source) = source else { return };
-        let routed = self
-            .conversion_sigs
-            .iter()
-            .any(|(to, from)| short(to) == target && short(from) == short(&source));
+        let routed = self.conversion_sigs.iter().any(|(to, from)| {
+            short(to) == target && (short(from) == short(&source) || from == "*")
+        });
         if routed {
             return;
         }
@@ -166,6 +165,9 @@ impl<'a> Checker<'a> {
             || self
                 .conversion_sigs
                 .contains(&(target.to_string(), source.to_string()))
+            || self
+                .conversion_sigs
+                .contains(&(target.to_string(), "*".to_string()))
             || self.enum_conversion_is_total(target, source)
             || self.struct_conversion_is_total(target, source)
     }

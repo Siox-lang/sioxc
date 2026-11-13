@@ -197,6 +197,34 @@ impl<'a> Checker<'a> {
     /// a plain array of `Logic` — a different type from the vector families
     /// over it. A family keeps only its last segment, as declared and as
     /// carried by checked types alike.
+    /// The owner's type argument a signature's type parameter stands for:
+    /// `T` of `impl<T> .. for Box<T>`, read on a `Box<Bit>`, is `Bit` (#608).
+    pub(super) fn param_argument(&self, owner: &Ty, declared: &str) -> Option<Ty> {
+        let Ty::Named(_, arguments) = owner else {
+            return None;
+        };
+        let head = self.ty_head(owner)?;
+        let name = declared.rsplit("::").next()?;
+        let position = self.type_param_positions.get(&head)?.get(name)?;
+        arguments.get(*position).cloned()
+    }
+
+    /// Whether an index contract's declared type matches the actual one, a
+    /// type parameter matching the owner's argument for it (#608).
+    pub(super) fn index_type_matches(
+        &self,
+        declared: &Option<String>,
+        actual: Option<&str>,
+        owner: &str,
+        owner_ty: &Ty,
+    ) -> bool {
+        Self::index_contract_type_matches(declared, actual, owner)
+            || declared
+                .as_deref()
+                .and_then(|declared| self.param_argument(owner_ty, declared))
+                .is_some_and(|argument| self.type_kind_name(&argument).as_deref() == actual)
+    }
+
     pub(super) fn conversion_key(&self, t: &Ty) -> Option<String> {
         let short = |name: String| name.rsplit("::").next().unwrap_or(&name).to_string();
         match t {
