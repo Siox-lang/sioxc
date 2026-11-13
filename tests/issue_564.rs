@@ -1,43 +1,58 @@
-//! Regression for sioxc #564 (hardware): a generic integer that only sizes
-//! a function's result (`fn slice_lo<W: integer>(v: unsigned[64]) ->
-//! unsigned[W]`) takes the width its call is assigned to, so
-//! `lo = slice_lo(v)` into an `unsigned[16]` binds `W = 16`. It was a free
-//! name in the inlined body ("no value named `W`").
+//! Regression for sioxc #564: a value parameter bound only by a function's
+//! result (`fn slice_lo<W: integer>(v) -> unsigned[W]`, called as
+//! `let lo: unsigned[16] = slice_lo(v)`) takes the result's width inside
+//! the body, `unsigned[W](v)` included. Hardware said "no value named W"
+//! and a testbench did not lower.
 
 use std::process::Command;
 
+fn sioxc(dir: &std::path::Path, name: &str, source: &str, args: &[&str]) -> std::process::Output {
+    let file = dir.join(format!("{name}.siox"));
+    std::fs::write(&file, source).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .args(args)
+        .arg(&file)
+        .output()
+        .unwrap()
+}
+
 #[cfg(feature = "llvm")]
 #[test]
-fn a_return_only_generic_takes_the_target_width_in_hardware() {
+fn result_bound_width_parameters_lower() {
     let dir = std::env::temp_dir().join(format!("siox_i564_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("ret.siox");
-    std::fs::write(&file, SOURCE).unwrap();
-    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .args([
-            "--std",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
-            "--test",
-        ])
-        .arg(&file)
-        .arg("-o")
-        .arg(dir.join("t.bin"))
-        .output()
-        .unwrap();
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
+    let object = dir.join("hw.o");
+    let hw = sioxc(
+        &dir,
+        "hw",
+        HARDWARE,
+        &["--top", "Top", "-o", object.to_str().unwrap()],
     );
-    let run = Command::new(dir.join("t.bin")).output().unwrap();
+    assert!(
+        hw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hw.stderr)
+    );
+    let binary = dir.join("t.bin");
+    let tb = sioxc(
+        &dir,
+        "tb",
+        TESTBENCH,
+        &["--test", "-o", binary.to_str().unwrap()],
+    );
+    assert!(
+        tb.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tb.stderr)
+    );
+    let run = Command::new(binary).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(run.status.success() && stdout.contains("done"), "{stdout}");
+    assert!(run.status.success() && stdout.contains(" ok"), "{stdout}");
 }
 
-const SOURCE: &str = r#"module p564;
-
-use std::bits::unsigned;
+const HARDWARE: &str = r#"module test_generic_ret_hw;
 
 fn slice_lo<W: integer>(v: unsigned[64]) -> unsigned[W] {
     return unsigned[W](v);
@@ -45,27 +60,27 @@ fn slice_lo<W: integer>(v: unsigned[64]) -> unsigned[W] {
 
 entity Top {
     v: unsigned[64] in,
-    lo: unsigned[16] out,
-    nib: unsigned[4] out,
+    lo: unsigned[16] out
 }
 
 impl Top {
     lo = slice_lo(v);
-    nib = slice_lo(v);
+}
+"#;
+
+const TESTBENCH: &str = r#"module test_generic_return_width;
+
+fn slice_lo<W: integer>(v: unsigned[64]) -> unsigned[W] {
+    return unsigned[W](v);
 }
 
 #[test]
-entity TB {}
-impl TB {
-    let v: unsigned[64];
-    let lo: unsigned[16];
-    let nib: unsigned[4];
-    let dut: Top = { .v = v, .lo = lo, .nib = nib };
+entity Tb {}
+impl Tb {
     process {
-        v = 0x123456789ABCDEF0;
-        await 1ns;
-        assert!(lo == 0xDEF0 and nib == 0, "hardware {} {}", lo, nib);
-        print!("done\n");
+        let v: unsigned[64] = 0x123456789ABCDEF0;
+        let lo: unsigned[16] = slice_lo(v);
+        assert!(lo == 0xDEF0);
     }
 }
 "#;

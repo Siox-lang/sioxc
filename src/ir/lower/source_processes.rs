@@ -8214,8 +8214,24 @@ fn lower_process_raw_resize(
             if !family_known {
                 return None;
             }
-            let eval = |bound: &ast::Expr| {
+            // A bound is a constant, or a function's value parameter bound
+            // at its call (`unsigned[W](v)` of `slice_lo<W>` with `W` taken
+            // from the result, #564), which lowers to one.
+            let mut eval = |bound: &ast::Expr| {
                 crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+                    .or_else(|| {
+                        let first = context.process_ir.values.len();
+                        let value = value_ref_with_type(
+                            bound,
+                            process,
+                            context,
+                            Some(&crate::types::Ty::Integer),
+                        );
+                        let constant = arena_constant_integer(value, &context.process_ir.values)
+                            .and_then(|value| i64::try_from(value).ok());
+                        truncate_process_values(context, first);
+                        constant
+                    })
             };
             let (len, low) = match index.as_ref() {
                 ast::Expr::Range { lo, hi, .. } => {
