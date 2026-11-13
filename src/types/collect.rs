@@ -676,7 +676,7 @@ impl<'a> Checker<'a> {
                                 im.trait_args
                                     .get(index + skip)
                                     .and_then(GenericArg::as_type)
-                                    .and_then(|ty| self.type_key(&ty))
+                                    .and_then(|ty| self.operand_key(&ty))
                             };
                             let input = arg_name(0).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
@@ -685,7 +685,7 @@ impl<'a> Checker<'a> {
                                         .iter()
                                         .find(|p| !p.is_self)
                                         .and_then(|p| p.ty.as_ref())
-                                        .and_then(|ty| self.type_key(ty)),
+                                        .and_then(|ty| self.operand_key(ty)),
                                     _ => None,
                                 })
                             });

@@ -351,7 +351,14 @@ impl<'a> Checker<'a> {
                 // A tuple compares position by position and has no other
                 // operator.
                 let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
-                if matches!(left, Ty::Tuple(_)) || matches!(right, Ty::Tuple(_)) {
+                // A tuple on the right is an operand like any other when the
+                // left's type has an impl taking it (`impl Add<(integer,
+                // integer)> for Point`, #639).
+                let implemented = !matches!(left, Ty::Tuple(_))
+                    && self
+                        .operator_output(crate::syntax::pretty::bin_op(op), &left, &right, false)
+                        .is_some();
+                if (matches!(left, Ty::Tuple(_)) || matches!(right, Ty::Tuple(_))) && !implemented {
                     if !matches!(op, BinOp::Eq | BinOp::Ne) {
                         self.error_with_help(
                             codes::TYPE_MISMATCH,
