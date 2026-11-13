@@ -114,6 +114,17 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// A call whose body returns one struct literal, as that literal.
+    pub(super) fn call_as_struct_literal(&self, value: &ast::Expr) -> Option<ast::Expr> {
+        let (args, spread) = self.struct_literal_from_call(value)?;
+        Some(ast::Expr::Construct {
+            ty: None,
+            args,
+            spread: spread.map(Box::new),
+            span: ast::expr_span(value),
+        })
+    }
+
     /// An array-typed initializer other than a literal: a module constant
     /// (`let w: T[3] = K`) seeds from its folded elements, and a function
     /// whose body returns one array literal (`= table()`) seeds from that
@@ -294,6 +305,10 @@ impl<'a> Lowering<'a> {
             // stayed a concat and seeded nothing.
             let field_ty = fields.iter().find(|(n, _)| *n == field).map(|(_, t)| t);
             let value = &self.as_struct_literal(field_ty, value);
+            // `.p = Pt::default()`: a call returning one literal is that
+            // literal, as a struct local's initializer folds it (#708).
+            let folded = self.call_as_struct_literal(value);
+            let value = folded.as_ref().unwrap_or(value);
             // A field whose value is itself an aggregate names no leaf of its
             // own, so each of these used to fall through the lookup below and
             // seed nothing — silently, and without even reaching the
@@ -377,6 +392,10 @@ impl<'a> Lowering<'a> {
                 // element position, read against the element's type like any
                 // other.
                 if let Some(struct_name) = self.local_struct.get(&path).cloned() {
+                    // `[Pt::default(), ..]`: a call returning one literal is
+                    // that literal; it was skipped and zeroed (#708).
+                    let folded = self.call_as_struct_literal(elem);
+                    let elem = folded.as_ref().unwrap_or(elem);
                     match elem {
                         ast::Expr::Construct { args, spread, .. } => self.seed_struct_literal(
                             &path,
