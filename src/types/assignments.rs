@@ -123,8 +123,8 @@ impl<'a> Checker<'a> {
             .get(&("IndexAssign".to_string(), owner.clone()))
             .is_some_and(|sigs| {
                 sigs.iter().any(|(i, v, written)| {
-                    Self::index_contract_type_matches(i, input.as_deref(), &owner)
-                        && (Self::index_contract_type_matches(v, value_ty.as_deref(), &owner)
+                    self.index_type_matches(i, input.as_deref(), &owner, &base_ty)
+                        && (self.index_type_matches(v, value_ty.as_deref(), &owner, &base_ty)
                             || (literal && v.as_deref().is_some_and(|k| self.is_array_family(k))))
                         // A sized, element-array or tuple value type is held
                         // to its width and shape, as a `let` of it is: the

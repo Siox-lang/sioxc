@@ -435,6 +435,12 @@ struct Checker<'a> {
     /// type arguments, by position: `impl<T: Eq> Eq<Box<T>> for Box<T>` is
     /// `[(0, "Eq")]`. A key alone took `Box<NoEq>` for comparable (#403).
     impl_bounds: HashMap<(String, String), Vec<(usize, String)>>,
+    /// Owner -> its impls' type parameters, by the position each takes in
+    /// the owner's arguments: `impl<T> Add<T, Box<T>> for Box<T>` records
+    /// `T` at 0, so a signature's `T` reads as `Box<Bit>`'s `Bit` (#608).
+    // ponytail: one map per owner; two impls naming different positions
+    // with the same letter would collide, key by impl if that turns up.
+    type_param_positions: HashMap<String, HashMap<String, usize>>,
     /// Trait name -> the methods an implementation must provide (those the
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
