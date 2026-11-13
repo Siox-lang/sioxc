@@ -7154,7 +7154,7 @@ fn generic_struct_layout(
                 types.insert(name, ty.clone());
             }
             ast::GenericArg::Positional(value) | ast::GenericArg::Named { value, .. }
-                if parameter.bound.is_some() =>
+                if parameter.is_value() =>
             {
                 values.insert(name, value.clone());
             }
@@ -12344,7 +12344,7 @@ fn qualifier_value_bindings(
             .params
             .params
             .iter()
-            .find(|parameter| parameter.name.text == name.text && parameter.bound.is_some())
+            .find(|parameter| parameter.name.text == name.text && parameter.is_value())
         else {
             continue;
         };

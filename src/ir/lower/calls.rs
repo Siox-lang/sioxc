@@ -522,7 +522,7 @@ impl<'a> Lowering<'a> {
                 .params
                 .params
                 .iter()
-                .any(|parameter| parameter.name.text == name.text && parameter.bound.is_some());
+                .any(|parameter| parameter.name.text == name.text && parameter.is_value());
             if value_parameter {
                 let value = self.eval_const(value, &constants)?;
                 fenv.insert(name.text.clone(), Val::Scalar(Expr::Const(value as u64)));

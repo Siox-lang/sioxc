@@ -322,9 +322,10 @@ impl<'a> Lowering<'a> {
             .last()
             .and_then(|entity| self.entities.get(entity))
             .is_some_and(|decl| {
-                decl.params.params.iter().any(|param| {
-                    param.bound.is_some() && !self.cur_env.contains_key(&param.name.text)
-                })
+                decl.params
+                    .params
+                    .iter()
+                    .any(|param| param.is_value() && !self.cur_env.contains_key(&param.name.text))
             })
     }
 
