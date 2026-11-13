@@ -668,15 +668,39 @@ impl<'a> Checker<'a> {
 
     /// Every type `name` takes where it appears inside `ty` (`(T, T)` gives
     /// two), for bound and consistency checks.
-    pub(super) fn type_param_occurrences(ty: &Type, argument: &Ty, name: &str, out: &mut Vec<Ty>) {
+    /// Each type `name` takes inside a declared parameter type, with the
+    /// expression that gives it where the argument spells that position
+    /// (`(42, true)`'s `42`), so a literal can be told from a typed value.
+    /// A generic struct's arguments (`Box<T>` of a `Box<integer>`) count,
+    /// as `Ty` carries them (#622).
+    pub(super) fn type_param_occurrences<'e>(
+        ty: &Type,
+        argument: &Ty,
+        expression: Option<&'e Expr>,
+        name: &str,
+        out: &mut Vec<(Ty, Option<&'e Expr>)>,
+    ) {
         match (ty, argument) {
-            _ if Self::is_direct_type_param(ty, name) => out.push(argument.clone()),
+            _ if Self::is_direct_type_param(ty, name) => out.push((argument.clone(), expression)),
             (Type::Indexed { base, .. }, Ty::Array { elem, .. }) => {
-                Self::type_param_occurrences(base, elem, name, out)
+                Self::type_param_occurrences(base, elem, None, name, out)
             }
             (Type::Tuple { elems, .. }, Ty::Tuple(arguments)) => {
-                for (elem, argument) in elems.iter().zip(arguments) {
-                    Self::type_param_occurrences(elem, argument, name, out);
+                let parts = match expression {
+                    Some(Expr::Tuple { elems, .. }) if elems.len() == arguments.len() => {
+                        elems.iter().map(Some).collect()
+                    }
+                    _ => vec![None; arguments.len()],
+                };
+                for ((elem, argument), part) in elems.iter().zip(arguments).zip(parts) {
+                    Self::type_param_occurrences(elem, argument, part, name, out);
+                }
+            }
+            (Type::Generic { args, .. }, Ty::Named(_, arguments)) => {
+                for (arg, argument) in args.iter().zip(arguments) {
+                    if let Some(arg) = arg.as_type() {
+                        Self::type_param_occurrences(&arg, argument, None, name, out);
+                    }
                 }
             }
             _ => {}
