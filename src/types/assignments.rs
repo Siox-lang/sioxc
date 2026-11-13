@@ -1020,19 +1020,35 @@ impl Checker<'_> {
     // ponytail: a view field's direction through an instance (`u.bus.data`)
     // is not checked here.
     pub(super) fn check_instance_output_write(&mut self, target: &Expr, sym: &HashMap<String, Ty>) {
-        let Expr::Field { base, field, .. } = target else {
+        // Each part of a tuple target, and the instance output anywhere in
+        // a place: `u.q[0]`, `u.pt.x` write `u.q` and `u.pt` (#717).
+        if let Expr::Tuple { elems, .. } = target {
+            for elem in elems {
+                self.check_instance_output_write(elem, sym);
+            }
             return;
+        }
+        let mut place = target;
+        let (head, field) = loop {
+            match place {
+                Expr::Field { base, field, .. } => {
+                    let base_ty = self.type_of(base, sym);
+                    let output = self.ty_head(&base_ty).filter(|head| {
+                        self.entities
+                            .get(head)
+                            .and_then(|ports| ports.iter().find(|port| port.name == field.text))
+                            .is_some_and(|port| port.dir == Some(Direction::Out))
+                    });
+                    if let Some(head) = output {
+                        break (head, field);
+                    }
+                    place = base;
+                }
+                Expr::Index { base, .. } => place = base,
+                _ => return,
+            }
         };
-        let base_ty = self.type_of(base, sym);
-        let Some(head) = self.ty_head(&base_ty) else {
-            return;
-        };
-        let output = self
-            .entities
-            .get(&head)
-            .and_then(|ports| ports.iter().find(|port| port.name == field.text))
-            .is_some_and(|port| port.dir == Some(Direction::Out));
-        if output {
+        {
             self.error_with_help(
                 codes::INVALID_ASSIGN_TARGET,
                 expr_span(target),

@@ -442,6 +442,7 @@ impl<'a> Checker<'a> {
             } => {
                 for leaf in tuple_target_leaves(target) {
                     self.check_write_target(leaf, dirs);
+                    self.check_instance_output_write(leaf, sym);
                     self.check_expr(leaf, sym);
                 }
                 self.check_assignment(target, value, sym);
