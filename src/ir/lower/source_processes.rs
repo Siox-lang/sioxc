@@ -9885,6 +9885,40 @@ fn runtime_array_copy(
         Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
             if matches!(elem.as_ref(), crate::types::Ty::Char)
     );
+    // A call returning a fixed string through a `string` result (`echo(
+    // "hello")` of `fn echo(s: string) -> string`) carries that `Char[5]`:
+    // typed as the unsized result, it was stored as a runtime handle it is
+    // not, and did not lower (#737).
+    if runtime_string {
+        let mut inner = value;
+        while let ProcessValueKind::InlineCall { operand, .. } =
+            &context.process_ir.values[inner.0 as usize].kind
+        {
+            inner = *operand;
+        }
+        let fixed = match &context.process_ir.values[inner.0 as usize].kind {
+            ProcessValueKind::String(text) if !text.is_empty() => {
+                u32::try_from(text.chars().count()).ok()
+            }
+            _ => match process_value_type(inner, context) {
+                Some(crate::types::Ty::Array {
+                    elem,
+                    len,
+                    family: None,
+                    ..
+                }) if len > 0 && matches!(elem.as_ref(), crate::types::Ty::Char) => Some(len),
+                _ => None,
+            },
+        };
+        if let (true, Some(len)) = (inner != value, fixed) {
+            context.process_ir.values[value.0 as usize].ty = Some(crate::types::Ty::Array {
+                elem: Box::new(crate::types::Ty::Char),
+                len,
+                family: None,
+                low: 0,
+            });
+        }
+    }
     if runtime_string
         && (matches!(
             process_value_type(value, context),
