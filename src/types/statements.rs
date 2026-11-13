@@ -212,7 +212,7 @@ impl<'a> Checker<'a> {
         }
         match self.type_of(scrutinee, names) {
             Ty::Tuple(elems) => self.tuple_arms_missing(&elems, arms).is_none(),
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let Some(enum_name) = self.definition_key(id) else {
                     return false;
                 };

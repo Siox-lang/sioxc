@@ -85,7 +85,7 @@ impl<'a> Checker<'a> {
         if !matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
             return false;
         }
-        let Ty::Named(id) = expected else {
+        let Ty::Named(id, ..) = expected else {
             return false;
         };
         let Some(head) = self.definition_key(*id) else {

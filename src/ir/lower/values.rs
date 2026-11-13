@@ -703,7 +703,7 @@ impl<'a> Lowering<'a> {
             matches!(
                 self.expr_types.get(&ast::expr_span(base)),
                 Some(
-                    crate::types::Ty::Named(_)
+                    crate::types::Ty::Named(..)
                         | crate::types::Ty::Tuple(_)
                         | crate::types::Ty::Array { family: None, .. }
                 )

@@ -68,7 +68,23 @@ impl<'a> Checker<'a> {
                     },
                 }
             }
-            Type::Generic { base, .. } => self.ast_ty(base),
+            // `Box<integer>` keeps its type arguments; a value argument
+            // (`Packet<8>`) is not a type, and an application with one is
+            // left bare, as before.
+            Type::Generic { base, args, .. } => match self.ast_ty(base) {
+                Ty::Named(id, _) => {
+                    let types: Option<Vec<Ty>> = args
+                        .iter()
+                        .map(|arg| {
+                            arg.as_type()
+                                .map(|ty| self.ast_ty(&ty))
+                                .filter(|ty| !matches!(ty, Ty::Error))
+                        })
+                        .collect();
+                    Ty::Named(id, types.unwrap_or_default())
+                }
+                other => other,
+            },
             Type::View { view, .. } => self.path_ty(view),
             Type::Tuple { elems, .. } => {
                 Ty::Tuple(elems.iter().map(|elem| self.ast_ty(elem)).collect())
@@ -121,7 +137,7 @@ impl<'a> Checker<'a> {
                 .def(id)
                 .and_then(|d| self.type_bindings.borrow().get(&d.name).cloned())
                 .unwrap_or(Ty::Error),
-            Some(id) => Ty::Named(id),
+            Some(id) => Ty::Named(id, Vec::new()),
             None => Ty::Error,
         }
     }
@@ -254,7 +270,7 @@ impl<'a> Checker<'a> {
     /// `real`), `Char`, and non-enums.
     pub(super) fn enum_operand_name(&self, t: &Ty) -> Option<String> {
         match t {
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let d = self.resolved.def(*id)?;
                 matches!(d.kind, DefKind::Enum).then(|| self.definition_key(*id))?
             }

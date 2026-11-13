@@ -58,8 +58,10 @@ pub enum Ty {
     /// The kernel character scalar. Unlike library enums, its value set is the
     /// full Unicode scalar range rather than a finite declaration.
     Char,
-    /// Named struct / enum / entity, keyed by its definition.
-    Named(crate::resolve::DefId),
+    /// Named struct / enum / entity, keyed by its definition, with the type
+    /// arguments it is applied to (`Box<integer>` keeps its `integer`);
+    /// empty for a non-generic type.
+    Named(crate::resolve::DefId, Vec<Ty>),
     /// The single indexed collection representation. Plain arrays have no
     /// family; a library newtype over an unconstrained array (`unsigned`,
     /// `signed`, or a user equivalent) retains its nominal family for method
@@ -93,7 +95,7 @@ impl Ty {
     /// a packed value wider than the 64-bit word (little-endian words).
     pub fn is_c_aggregate(&self) -> bool {
         match self {
-            Ty::Named(_) | Ty::Array { family: None, .. } => true,
+            Ty::Named(..) | Ty::Array { family: None, .. } => true,
             Ty::Array {
                 family: Some(_),
                 len,
@@ -121,7 +123,7 @@ impl Ty {
             Ty::Tuple(elems) => elems
                 .iter()
                 .try_fold(0u32, |total, elem| total.checked_add(elem.bit_width()?)),
-            Ty::Named(_) | Ty::Void | Ty::Error => None,
+            Ty::Named(..) | Ty::Void | Ty::Error => None,
         }
     }
 }
@@ -318,7 +320,9 @@ type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<
 /// An operator's output type key, and the type as written when it is more
 /// than its head (`unsigned[3]`, an alias), which the result keeps (#143).
 type OperatorOutput = (String, Option<Type>);
-/// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
+/// Each `Into` impl by its (target, source) keys: its declared target and
+/// source types and whether it is generic (#491).
+type IntoSignatures = HashMap<(String, String), Vec<(Ty, Ty, bool)>>;
 /// Each `Index`/`IndexAssign` impl by (trait, owner): its index and value
 /// type keys, and the value type as written, whose width, elements or
 /// tuple shape a key drops (#630, #637, #640).
@@ -638,7 +642,10 @@ struct Checker<'a> {
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
     /// `impl Into<T> for S` as `(T, S)` keys (see `conversion_key`).
-    into_sigs: HashSet<(String, String)>,
+    /// Each `Into` impl's (target, source) keys, to the declared target and
+    /// source types and whether the impl is generic: a key alone took
+    /// `Source<real>` into `Target<integer>` (#491).
+    into_sigs: IntoSignatures,
     /// Values converted by an `impl Into` where stored; handed on in [`Typed`].
     conversions: HashMap<Span, Conversion>,
 }

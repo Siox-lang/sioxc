@@ -163,13 +163,13 @@ fn string_literal_gets_a_targeted_hint() {
         span: sp,
     };
     // A named scalar points at the character literal.
-    let h = strlit_help(&Ty::Named(crate::resolve::DefId(0)), &s("0")).unwrap();
+    let h = strlit_help(&Ty::Named(crate::resolve::DefId(0), Vec::new()), &s("0")).unwrap();
     assert!(h.contains("'0'"), "{h}");
     // A bit vector points at a binary literal, which exists, not `b"..."`,
     // which does not (#534).
     let h = strlit_help(
         &Ty::Array {
-            elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+            elem: Box::new(Ty::Named(crate::resolve::DefId(0), Vec::new())),
             family: Some("unsigned".to_string()),
             len: 4,
             low: 0,
@@ -516,7 +516,7 @@ fn literals_default_to_their_core_types() {
     // The enum must be in scope for them to resolve as a named type.
     assert!(matches!(
         ty("module m;\nenum Bool { false, true }\nimpl E { y = true; }\n"),
-        Ty::Named(_)
+        Ty::Named(..)
     ));
 }
 

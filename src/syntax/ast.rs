@@ -317,6 +317,20 @@ pub struct Param {
     pub span: Span,
 }
 
+impl Param {
+    /// Whether this is a value parameter (`W: integer`, `N: natural`)
+    /// rather than a type parameter, bounded by a trait or not (`T: Trait`).
+    /// Any bound read as a value made `struct Container<T: Trait>` lose its
+    /// field types (#650, #652).
+    pub fn is_value(&self) -> bool {
+        matches!(
+            self.bound.as_ref(),
+            Some(Type::Path(path))
+                if path.segments.last().is_some_and(|s| matches!(s.text.as_str(), "integer" | "natural"))
+        )
+    }
+}
+
 /// `struct Packet<T> { valid: Bit, data: T }` (spec 3.7). No directions.
 #[derive(Clone, Debug)]
 pub struct StructDecl {

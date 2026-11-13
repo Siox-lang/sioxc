@@ -9,7 +9,7 @@ impl<'a> Checker<'a> {
     pub(super) fn is_digital_ty(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Void | Ty::Error => false,
-            Ty::Named(id) => self
+            Ty::Named(id, ..) => self
                 .resolved
                 .kind_of(*id)
                 .is_some_and(|kind| matches!(kind, DefKind::Struct | DefKind::Enum)),
@@ -65,7 +65,7 @@ impl<'a> Checker<'a> {
                                 && self.definition_key_str(DefId(*index as u32))
                                     == Some(ty.as_str())
                         })
-                        .map(|(index, _)| Ty::Named(DefId(index as u32)))
+                        .map(|(index, _)| Ty::Named(DefId(index as u32), Vec::new()))
                         .unwrap_or(Ty::Error);
                 }
                 if suffix_scale(&suffix.text).is_some() {
@@ -127,7 +127,7 @@ impl<'a> Checker<'a> {
                                 .and_then(|s| self.resolved.resolved(s.span))
                                 .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Enum));
                             match qualifier.or(d.parent) {
-                                Some(pid) => Ty::Named(pid),
+                                Some(pid) => Ty::Named(pid, Vec::new()),
                                 None => Ty::Error,
                             }
                         }
@@ -166,7 +166,7 @@ impl<'a> Checker<'a> {
                 // A character literal on the left is the right operand's
                 // variant: `'1' and u` is a `Logic`, not a `Char` (#190).
                 let lhs_ty = if matches!(lhs.as_ref(), Expr::CharLit { .. })
-                    && matches!(rhs_ty, Ty::Named(_))
+                    && matches!(rhs_ty, Ty::Named(..))
                     && self.assignable(&rhs_ty, lhs, sym)
                 {
                     rhs_ty.clone()
@@ -281,14 +281,14 @@ impl<'a> Checker<'a> {
                 }
                 // A mixed-operand operator impl (`10 + 5i`) yields the
                 // impl-owning operand's type.
-                if !matches!(lhs_ty, Ty::Named(_)) {
-                    if let Ty::Named(id) = self.type_of(rhs, sym) {
+                if !matches!(lhs_ty, Ty::Named(..)) {
+                    if let Ty::Named(id, ..) = self.type_of(rhs, sym) {
                         let has_impl = self.resolved.def(id).map(|d| &d.name).is_some_and(|name| {
                             let tr = crate::syntax::pretty::bin_op(op);
                             self.has_impl(tr, name)
                         });
                         if has_impl {
-                            return Ty::Named(id);
+                            return Ty::Named(id, Vec::new());
                         }
                         // No impl: the operator error says so, and the
                         // recovery type keeps it from also failing as a
@@ -343,7 +343,7 @@ impl<'a> Checker<'a> {
                         }
                         let width = match ty {
                             Ty::Array { len, .. } if len > 0 => len,
-                            Ty::Named(id) => self
+                            Ty::Named(id, ..) => self
                                 .definition_key(id)
                                 .filter(|key| self.has_impl("LogicEncoding", key))
                                 .map(|_| 1)?,
@@ -573,7 +573,7 @@ impl<'a> Checker<'a> {
                     name if name != "integer"
                         && name != "resize"
                         && match self.path_ty(p) {
-                            Ty::Named(id) => self
+                            Ty::Named(id, ..) => self
                                 .resolved
                                 .def(id)
                                 .is_some_and(|d| matches!(d.kind, DefKind::Struct | DefKind::Enum)),

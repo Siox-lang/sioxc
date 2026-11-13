@@ -672,7 +672,7 @@ impl<'a> Lowering<'a> {
                         ast::GenericArg::Positional(value) | ast::GenericArg::Named { value, .. },
                     ) = (declared, arg)
                     {
-                        if parameter.bound.is_some() {
+                        if parameter.is_value() {
                             values.insert(parameter.name.text.clone(), value.clone());
                             continue;
                         }

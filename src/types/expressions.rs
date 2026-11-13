@@ -104,7 +104,7 @@ impl<'a> Checker<'a> {
                     let base_ty = self.type_of(base, sym);
                     let shapeless = match &base_ty {
                         Ty::Tuple(_) => Some(ty_name(&base_ty)),
-                        Ty::Named(_) => self
+                        Ty::Named(..) => self
                             .ty_head(&base_ty)
                             .filter(|head| !self.base_struct_fields_named(head).is_empty()),
                         _ => None,
@@ -282,7 +282,7 @@ impl<'a> Checker<'a> {
                 // A struct negates only through its own `Neg` impl: `-z` on a
                 // `Complex` was accepted and computed nonsense.
                 if matches!(op, UnOp::Neg) {
-                    if let Ty::Named(definition) = self.type_of(rhs, sym) {
+                    if let Ty::Named(definition, ..) = self.type_of(rhs, sym) {
                         let owner = self.resolved.def(definition).map(|d| d.name.clone());
                         let is_struct = self.resolved.kind_of(definition) == Some(DefKind::Struct);
                         // Impls are keyed by the qualified name: the bare
@@ -536,7 +536,7 @@ impl<'a> Checker<'a> {
                     for (operand, other) in [(lhs, rhs), (rhs, lhs)] {
                         // A char literal reads through the other operand's
                         // enum, as in a comparison (`l and '0'`).
-                        if let (Expr::CharLit { ch, .. }, Ty::Named(id)) =
+                        if let (Expr::CharLit { ch, .. }, Ty::Named(id, ..)) =
                             (operand.as_ref(), self.type_of(other, sym))
                         {
                             if self.enum_has_char_variant(id, *ch) {
