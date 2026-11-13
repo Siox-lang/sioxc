@@ -68,7 +68,23 @@ impl<'a> Checker<'a> {
                     },
                 }
             }
-            Type::Generic { base, .. } => self.ast_ty(base),
+            // `Box<integer>` keeps its type arguments; a value argument
+            // (`Packet<8>`) is not a type, and an application with one is
+            // left bare, as before.
+            Type::Generic { base, args, .. } => match self.ast_ty(base) {
+                Ty::Named(id, _) => {
+                    let types: Option<Vec<Ty>> = args
+                        .iter()
+                        .map(|arg| {
+                            arg.as_type()
+                                .map(|ty| self.ast_ty(&ty))
+                                .filter(|ty| !matches!(ty, Ty::Error))
+                        })
+                        .collect();
+                    Ty::Named(id, types.unwrap_or_default())
+                }
+                other => other,
+            },
             Type::View { view, .. } => self.path_ty(view),
             Type::Tuple { elems, .. } => {
                 Ty::Tuple(elems.iter().map(|elem| self.ast_ty(elem)).collect())
