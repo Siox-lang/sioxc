@@ -7180,7 +7180,7 @@ fn generic_struct_layout(
         .flat_map(|module| &module.items)
         .find_map(|item| match item {
             ast::Item::Struct(declaration)
-                if !declaration.fields.is_empty()
+                if (!declaration.fields.is_empty() || declaration.base.is_some())
                     && match (&tuple, definition) {
                         (Some(name), _) => &declaration.name.text == name,
                         (None, definition) => {
@@ -7221,6 +7221,17 @@ fn generic_struct_layout(
                 types.insert(name, crate::ir::expr_to_type(value)?);
             }
         }
+    }
+    // A generic newtype (`struct MyVec<N: integer>(unsigned[N])`) is laid
+    // out as its base with the arguments put in (#562).
+    if declaration.fields.is_empty() {
+        let base = crate::ir::subst_type_values(
+            &crate::ir::subst_type_params(declaration.base.as_ref()?, &types),
+            &values,
+        );
+        return generic_struct_layout(&base, span, context).or_else(|| {
+            process_layout_for_type(&process_declared_type(&base, context)?, span, context)
+        });
     }
     let fields = declaration
         .fields
