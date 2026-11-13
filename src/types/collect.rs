@@ -199,7 +199,7 @@ impl<'a> Checker<'a> {
             conflicting_attr_reads: HashSet::new(),
             conflicting_expr_types: HashSet::new(),
             promotions: HashMap::new(),
-            into_sigs: HashSet::new(),
+            into_sigs: HashMap::new(),
             conversions: HashMap::new(),
         }
     }
@@ -514,11 +514,15 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 });
                             let source = self.ast_ty(&im.target);
-                            if let (Some(target), Some(source)) = (
+                            if let (Some(target_ty), Some(target), Some(source_key)) = (
+                                target.clone(),
                                 target.and_then(|t| self.conversion_key(&t)),
                                 self.conversion_key(&source),
                             ) {
-                                self.into_sigs.insert((target, source));
+                                self.into_sigs
+                                    .entry((target, source_key))
+                                    .or_default()
+                                    .push((target_ty, source, !im.params.params.is_empty()));
                             }
                         }
                         // A sized argument (`From<unsigned[8]>`) parses as an

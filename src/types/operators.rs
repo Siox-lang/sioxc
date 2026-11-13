@@ -624,11 +624,44 @@ impl<'a> Checker<'a> {
             (Ty::Array { len: a, .. }, Ty::Array { len: b, .. }) => a == b || *a == 0 || *b == 0,
             _ => true,
         };
+        // The impl's declared types hold the conversion to its arguments: a
+        // monomorphic `Into<Target<integer>> for Source<integer>` converts
+        // only that pair, and a generic one over the same parameters on both
+        // sides (`Into<Target<T>> for Source<T>`) only like arguments (#491).
+        let arguments = |ty: &Ty| match ty {
+            Ty::Named(_, arguments) => arguments.clone(),
+            _ => Vec::new(),
+        };
+        let fits = |(target, source, generic): &(Ty, Ty, bool)| {
+            if *generic {
+                let (left, right) = (arguments(lhs), arguments(&rhs));
+                arguments(target) != arguments(source)
+                    || left.is_empty()
+                    || right.is_empty()
+                    || left.len() == right.len()
+                        && left.iter().zip(&right).all(|(a, b)| compatible(a, b))
+            } else {
+                // Only the type arguments are held: the keys already match,
+                // and an array's declared length (`Into<Logic[]>`) is open.
+                let agree = |declared: &Ty, actual: &Ty| {
+                    let (declared, actual) = (arguments(declared), arguments(actual));
+                    declared.is_empty()
+                        || actual.is_empty()
+                        || declared.len() == actual.len()
+                            && declared.iter().zip(&actual).all(|(a, b)| compatible(a, b))
+                };
+                agree(target, lhs) && agree(source, &rhs)
+            }
+        };
         let keys = match (self.conversion_key(lhs), self.conversion_key(&rhs)) {
             (Some(target), Some(source)) if same_length => Some((target, source)),
             _ => None,
         }
-        .filter(|keys| self.into_sigs.contains(keys));
+        .filter(|keys| {
+            self.into_sigs
+                .get(keys)
+                .is_some_and(|signatures| signatures.iter().any(fits))
+        });
         let Some((target_key, source_key)) = keys else {
             return false;
         };

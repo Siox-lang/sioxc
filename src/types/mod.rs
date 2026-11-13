@@ -640,7 +640,10 @@ struct Checker<'a> {
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
     /// `impl Into<T> for S` as `(T, S)` keys (see `conversion_key`).
-    into_sigs: HashSet<(String, String)>,
+    /// Each `Into` impl's (target, source) keys, to the declared target and
+    /// source types and whether the impl is generic: a key alone took
+    /// `Source<real>` into `Target<integer>` (#491).
+    into_sigs: HashMap<(String, String), Vec<(Ty, Ty, bool)>>,
     /// Values converted by an `impl Into` where stored; handed on in [`Typed`].
     conversions: HashMap<Span, Conversion>,
 }
