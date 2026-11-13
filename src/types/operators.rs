@@ -140,6 +140,22 @@ impl<'a> Checker<'a> {
     /// Find the output of the operator overload selected by these operands.
     /// `Self` is the impl owner, not a wildcard: it only matches the owner's
     /// type. A contextual literal may also take that type at the call site.
+    /// An operator's operand type as a signature key: its type key, or for a
+    /// tuple its written form, `(integer, integer)`, which no other type
+    /// spells. A tuple had no key, so `impl Add<(integer, integer)> for
+    /// Point` matched no right operand (#639).
+    pub(super) fn operand_key(&self, ty: &Type) -> Option<String> {
+        self.type_key(ty).or_else(|| match ty {
+            Type::Tuple { .. } => self.tuple_key(&self.ast_ty(ty)),
+            _ => None,
+        })
+    }
+
+    /// The key of a tuple type, as [`Self::operand_key`] records it.
+    pub(super) fn tuple_key(&self, ty: &Ty) -> Option<String> {
+        matches!(ty, Ty::Tuple(_)).then(|| self.ty_display(ty))
+    }
+
     pub(super) fn operator_output(
         &self,
         symbol: &str,
@@ -148,7 +164,7 @@ impl<'a> Checker<'a> {
         coerces_to_owner: bool,
     ) -> Option<Option<OperatorOutput>> {
         let owner = self.ty_head(left)?;
-        let input = self.ty_head(right)?;
+        let input = self.ty_head(right).or_else(|| self.tuple_key(right))?;
         self.operator_sigs
             .get(&(symbol.to_string(), owner.clone()))
             .and_then(|signatures| {
