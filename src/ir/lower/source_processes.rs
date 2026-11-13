@@ -2742,54 +2742,8 @@ fn lower_statement(
             let LayoutKind::Struct { fields, .. } = &layout.kind else {
                 return None;
             };
-            for arg in args {
-                let (Some(field), Some(value)) = (&arg.field, &arg.value) else {
-                    continue;
-                };
-                let field_layout = fields.iter().find(|f| f.name == field.text)?.layout.clone();
-                let field_type = process_type_from_layout(&field_layout, context.resolved);
-                let base = cfg_calls::local_value(local, process, context);
-                let place = push_value(
-                    arg.span,
-                    field_type.clone(),
-                    field_layout.packed_width(),
-                    ProcessValueKind::Field {
-                        base,
-                        field: field.text.clone(),
-                    },
-                    context,
-                );
-                context.process_ir.value_layouts[place.0 as usize] = Some(field_layout.clone());
-                let value = value_ref_with_type(value, process, context, field_type.as_ref());
-                // A struct literal for a generic field (`.inner = Packet {
-                // .data = 42 }` of `Outer<Packet<8>>`) takes the field's
-                // concrete layout: its own type, rebuilt from the layout,
-                // lost `<8>`, and the literal had no width (#412).
-                if context.process_ir.values[value.0 as usize]
-                    .bit_width
-                    .is_none()
-                    && matches!(
-                        context.process_ir.values[value.0 as usize].kind,
-                        ProcessValueKind::Construct { .. }
-                    )
-                    && matches!(field_layout.kind, LayoutKind::Struct { .. })
-                {
-                    context.process_ir.values[value.0 as usize].bit_width =
-                        field_layout.packed_width();
-                    context.process_ir.value_layouts[value.0 as usize] = Some(field_layout);
-                }
-                let semantics = process_place_assignment(place, context.process_ir)?;
-                process.blocks[block.0 as usize]
-                    .instructions
-                    .push(ProcessInstruction::Assign {
-                        semantics,
-                        driver_context: None,
-                        target: place,
-                        value,
-                        span: arg.span,
-                    });
-            }
-
+            let base = cfg_calls::local_value(local, process, context);
+            assign_construct_fields(base, fields, args, context, process, block)?;
             Some(block)
         }
         Stmt::Let(declaration) => {
@@ -4203,6 +4157,90 @@ fn function_writes_parameter(function: &ast::FnDecl, parameter: Option<&ast::FnP
 /// one: kept as the literal, the callee's write targeted a constant and
 /// native code generation failed (#628). A callee that only reads it keeps
 /// the literal, as it always has.
+/// Write a struct literal into `base` field by field, as `layout_fields`
+/// lays it out: a generic struct's construct has no field types of its own
+/// (#196, #412), and a nested literal is written the same way (#408).
+fn assign_construct_fields(
+    base: ProcessValueId,
+    fields: &[crate::ir::LayoutField],
+    args: &[ast::ConnectArg],
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<()> {
+    for arg in args {
+        let (Some(field), Some(value)) = (&arg.field, &arg.value) else {
+            continue;
+        };
+        let field_layout = fields.iter().find(|f| f.name == field.text)?.layout.clone();
+        let field_type = process_type_from_layout(&field_layout, context.resolved);
+        let place = push_value(
+            arg.span,
+            field_type.clone(),
+            field_layout.packed_width(),
+            ProcessValueKind::Field {
+                base,
+                field: field.text.clone(),
+            },
+            context,
+        );
+        context.process_ir.value_layouts[place.0 as usize] = Some(field_layout.clone());
+        // A struct literal nested in one (`(Node { .data = [10, 20]
+        // }, 3)` of `(Node<unsigned[8], 2>, integer)`) is written
+        // field by field into its place as well: lowered whole, its
+        // generic fields had no types, and `[10, 20]` no width (#408).
+        if let (
+            ast::Expr::Construct {
+                args: inner,
+                spread: None,
+                ..
+            },
+            LayoutKind::Struct {
+                fields: inner_fields,
+                ..
+            },
+        ) = (value, &field_layout.kind)
+        {
+            if !inner.is_empty()
+                && inner
+                    .iter()
+                    .all(|arg| arg.field.is_some() && arg.value.is_some())
+            {
+                assign_construct_fields(place, inner_fields, inner, context, process, block)?;
+                continue;
+            }
+        }
+        let value = value_ref_with_type(value, process, context, field_type.as_ref());
+        // A struct literal for a generic field (`.inner = Packet {
+        // .data = 42 }` of `Outer<Packet<8>>`) takes the field's
+        // concrete layout: its own type, rebuilt from the layout,
+        // lost `<8>`, and the literal had no width (#412).
+        if context.process_ir.values[value.0 as usize]
+            .bit_width
+            .is_none()
+            && matches!(
+                context.process_ir.values[value.0 as usize].kind,
+                ProcessValueKind::Construct { .. }
+            )
+            && matches!(field_layout.kind, LayoutKind::Struct { .. })
+        {
+            context.process_ir.values[value.0 as usize].bit_width = field_layout.packed_width();
+            context.process_ir.value_layouts[value.0 as usize] = Some(field_layout);
+        }
+        let semantics = process_place_assignment(place, context.process_ir)?;
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics,
+                driver_context: None,
+                target: place,
+                value,
+                span: arg.span,
+            });
+    }
+    Some(())
+}
+
 fn capture_parameter_argument(
     argument: ProcessValueId,
     written: bool,
