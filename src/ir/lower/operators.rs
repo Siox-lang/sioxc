@@ -875,6 +875,14 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
         let src = src?;
+        // A newtype over an enum unwrapped (`Mode(im)` of `struct
+        // InnerMode(Mode)`) is the enum's own value: the newtype's signal is
+        // laid out, and its operand typed, as the enum (#712).
+        if src == target
+            || self.enum_variants.contains_key(target) && self.struct_derives_from(src, target)
+        {
+            return Some(self.lower_val_env(arg, env));
+        }
         // Enum case: chain-connected and source variants subset of target.
         if let (Some(sv), Some(tv)) = (self.enum_variants.get(src), self.enum_variants.get(target))
         {
