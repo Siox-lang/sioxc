@@ -62,6 +62,29 @@ pub enum EType {
     Other(String),
 }
 
+/// Whether two array element types differ in shape: nesting depth, or a
+/// known length (`unsigned[16]` elements against `unsigned[8]` ones, or
+/// against a scalar element).
+fn elements_differ(port: &EType, signal: &EType) -> bool {
+    match (port, signal) {
+        (
+            EType::Array {
+                elem: port_elem,
+                len: port_len,
+            },
+            EType::Array {
+                elem: signal_elem,
+                len: signal_len,
+            },
+        ) => {
+            matches!((port_len, signal_len), (Some(a), Some(b)) if a != b)
+                || elements_differ(port_elem, signal_elem)
+        }
+        (EType::Array { .. }, EType::Named(_)) | (EType::Named(_), EType::Array { .. }) => true,
+        _ => false,
+    }
+}
+
 impl EType {
     /// The width the connection check compares: an array's length (a bit
     /// vector's bit count). A named scalar has none, so the check skips it.
@@ -500,6 +523,16 @@ fn elaborate_roots(
                 _ => None,
             })
             .collect(),
+        enums: modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|item| match item {
+                Item::Enum(e) => Some(e.name.text.clone()),
+                // A newtype (`struct Score(unsigned[8])`) is nominal too.
+                Item::Struct(s) if s.base.is_some() => Some(s.name.text.clone()),
+                _ => None,
+            })
+            .collect(),
         module_consts: module_constants(modules),
         out: Hierarchy::default(),
     };
@@ -566,6 +599,9 @@ struct Elaborator<'a> {
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
     /// Names of structs with fields, which are connected field by field.
     record_structs: HashSet<String>,
+    /// Names of user enums and newtypes: types as definite as a record
+    /// (#719).
+    enums: HashSet<String>,
     /// Module-level integer and `Bool` constants, folded once and keyed by
     /// qualified name (`m1::N`): the base of every entity's constant
     /// environment, which its parameters shadow, with its own module's by
@@ -1579,7 +1615,10 @@ impl<'a> Elaborator<'a> {
             let sig = match parent_signals.get(&c.signal) {
                 Some(sig) => sig,
                 None => {
-                    let Some(found) = project_signal(&c.signal, parent_signals) else {
+                    let nominal = |name: &str| {
+                        self.record_structs.contains(name) || self.enums.contains(name)
+                    };
+                    let Some(found) = project_signal(&c.signal, parent_signals, &nominal) else {
                         continue;
                     };
                     projected = found;
@@ -1600,7 +1639,11 @@ impl<'a> Elaborator<'a> {
                     "integer" | "natural" | "real" | "Bit" | "Logic" | "ULogic" | "Bool" | "Char"
                 ))
             };
-            let definite = |ty: &EType| record(ty) || kernel(ty);
+            // A user enum is as definite too: `Color` wired to `State` (of
+            // other widths) crashed a testbench at run time (#719).
+            let user_enum =
+                |ty: &EType| matches!(ty, EType::Named(name) if self.enums.contains(name));
+            let definite = |ty: &EType| record(ty) || kernel(ty) || user_enum(ty);
             // `Bit`, `Logic` and `ULogic` connect to one another, as a
             // `Logic` clock drives a `Bit` port.
             let logic = |name: &str| matches!(name, "Bit" | "Logic" | "ULogic");
@@ -1613,6 +1656,12 @@ impl<'a> Elaborator<'a> {
                 }
                 (EType::Named(_), EType::Array { .. }) | (EType::Array { .. }, EType::Named(_)) => {
                     definite(&c.ty) || definite(sig)
+                }
+                // An array's elements have their own shape: `unsigned[4]`
+                // wired to `unsigned[16][4]` matched on the outer length
+                // alone (#719).
+                (EType::Array { elem: port, .. }, EType::Array { elem: signal, .. }) => {
+                    elements_differ(port, signal)
                 }
                 _ => false,
             };
@@ -1933,13 +1982,34 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 /// declared signal. A field (`pkt.data`) or an index read through a family
 /// vector (`v[3]` of an `unsigned[8]`, whose element names the family) is
 /// not projected.
-fn project_signal(signal: &str, signals: &HashMap<String, EType>) -> Option<EType> {
-    let (base, rest) = signal.split_once('[')?;
-    let inner = rest.strip_suffix(']')?;
-    if inner.contains('[') || inner.contains(']') || base.contains('.') {
+fn project_signal(
+    signal: &str,
+    signals: &HashMap<String, EType>,
+    nominal: &dyn Fn(&str) -> bool,
+) -> Option<EType> {
+    let (base, mut rest) = signal.split_once('[')?;
+    if base.contains('.') {
         return None;
     }
-    let EType::Array { elem, .. } = signals.get(base)? else {
+    // `mat[0][1]`: each index projects the type the previous one gave (#719).
+    let mut current = signals.get(base)?.clone();
+    loop {
+        let (inner, after) = rest.split_once(']')?;
+        if inner.contains('[') {
+            return None;
+        }
+        current = project_once(&current, inner, nominal)?;
+        match after.strip_prefix('[') {
+            Some(next) => rest = next,
+            None if after.is_empty() => return Some(current),
+            None => return None,
+        }
+    }
+}
+
+/// One index or slice (`0`, `2..5`) of an array type.
+fn project_once(ty: &EType, inner: &str, nominal: &dyn Fn(&str) -> bool) -> Option<EType> {
+    let EType::Array { elem, .. } = ty else {
         return None;
     };
     match inner.split_once("..") {
@@ -1972,6 +2042,10 @@ fn project_signal(signal: &str, signals: &HashMap<String, EType>) -> Option<ETyp
                 {
                     Some(elem.as_ref().clone())
                 }
+                // An element of an array of records, enums or newtypes
+                // (`pts[0]` of `Other[2]`) is that type; only a bit vector's
+                // element name is its family, not its element (#719).
+                EType::Named(name) if nominal(name) => Some(elem.as_ref().clone()),
                 _ => None,
             }
         }
