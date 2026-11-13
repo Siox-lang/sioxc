@@ -676,9 +676,8 @@ impl<'a> Checker<'a> {
             // A nested position spelled as a literal (`(42, true)`'s `42`)
             // adopts `T`, as a direct literal argument does; any other
             // position, `integer` included, is a typed `T` (#622).
-            let literal = |position: &Option<&Expr>| {
-                position.is_some_and(|position| Self::is_contextual_literal(position))
-            };
+            let literal =
+                |position: &Option<&Expr>| position.is_some_and(Self::is_contextual_literal);
             if inferred.is_none() {
                 inferred = nested
                     .iter()
