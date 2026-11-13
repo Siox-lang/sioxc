@@ -339,6 +339,22 @@ pub fn struct_defaults(modules: &mut [Module]) {
             .last()
             .is_some_and(|name| defaulted.contains(&name.text))
     };
+    let call_of = |path: &Path, name: &str| {
+        let span = path.span;
+        let mut path = path.clone();
+        path.segments.push(Ident {
+            text: name.to_string(),
+            span: path.span,
+        });
+        Expr::Call {
+            callee: Box::new(Expr::Path(path)),
+            type_args: Vec::new(),
+            qualifier: None,
+            args: Vec::new(),
+            bang: false,
+            span,
+        }
+    };
     let default_of = |path: &Path| {
         let mut path = path.clone();
         path.segments.push(Ident {
@@ -347,23 +363,122 @@ pub fn struct_defaults(modules: &mut [Module]) {
         });
         path
     };
+    // A struct without its own default whose fields have one, directly or
+    // through another such struct (`struct Outer { p: Pt }`), defaults to its
+    // structural value with those fields defaulted (#708).
+    let declarations: HashMap<String, StructDecl> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Struct(declaration) if declaration.params.params.is_empty() => {
+                Some((declaration.name.text.clone(), declaration.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let field_name = |ty: &Type| match ty {
+        Type::Path(path) => path.segments.last().map(|name| name.text.clone()),
+        _ => None,
+    };
+    let mut containing: HashSet<String> = HashSet::new();
+    loop {
+        let before = containing.len();
+        for (name, declaration) in &declarations {
+            if !defaulted.contains(name)
+                && declaration.fields.iter().any(|field| {
+                    field_name(&field.ty)
+                        .is_some_and(|ty| defaulted.contains(&ty) || containing.contains(&ty))
+                })
+            {
+                containing.insert(name.clone());
+            }
+        }
+        if containing.len() == before {
+            break;
+        }
+    }
+    // The default value of a named type, if it has one other than zero.
+    fn default_value(
+        path: &Path,
+        defaulted: &HashSet<String>,
+        containing: &HashSet<String>,
+        declarations: &HashMap<String, StructDecl>,
+        call_of: &impl Fn(&Path, &str) -> Expr,
+        depth: usize,
+    ) -> Option<Expr> {
+        let name = &path.segments.last()?.text;
+        if defaulted.contains(name) {
+            return Some(call_of(path, "default"));
+        }
+        if !containing.contains(name) || depth > 16 {
+            return None;
+        }
+        let declaration = declarations.get(name)?;
+        let args = declaration
+            .fields
+            .iter()
+            .filter_map(|field| {
+                let Type::Path(field_path) = &field.ty else {
+                    return None;
+                };
+                let value = default_value(
+                    field_path,
+                    defaulted,
+                    containing,
+                    declarations,
+                    call_of,
+                    depth + 1,
+                )?;
+                Some(ConnectArg {
+                    field: Some(field.name.clone()),
+                    value: Some(value),
+                    span: field.span,
+                })
+            })
+            .collect();
+        Some(Expr::Construct {
+            ty: Some(Type::Path(path.clone())),
+            args,
+            // `T::default()` of a type with no `impl Default` is its
+            // structural value, a path this pass leaves be.
+            spread: Some(Box::new(call_of(path, "default"))),
+            span: path.span,
+        })
+    }
+    let value_of =
+        |path: &Path| default_value(path, &defaulted, &containing, &declarations, &call_of, 0);
     let mut give_default = |declaration: &mut LetDecl| {
         if declaration.value.is_some() {
             return;
         }
-        let Some(Type::Path(path)) = &declaration.ty else {
-            return;
+        declaration.value = match &declaration.ty {
+            Some(Type::Path(path)) => value_of(path),
+            // `let ps: Pt[2];`: each element its default.
+            Some(Type::Indexed {
+                base,
+                index: Some(index),
+                ..
+            }) => match (base.as_ref(), index.as_ref()) {
+                (Type::Path(path), Expr::Int { text, span })
+                    if !text.contains('.') && !text.contains('\'') =>
+                {
+                    let count = text
+                        .replace('_', "")
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| *n <= 256);
+                    match (count, value_of(path)) {
+                        (Some(count), Some(element)) => Some(Expr::Array {
+                            elems: vec![element; count],
+                            span: *span,
+                        }),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
         };
-        if named(path) {
-            declaration.value = Some(Expr::Call {
-                callee: Box::new(Expr::Path(default_of(path))),
-                type_args: Vec::new(),
-                qualifier: None,
-                args: Vec::new(),
-                bang: false,
-                span: declaration.span,
-            });
-        }
     };
     for module in modules.iter_mut() {
         for item in &mut module.items {
@@ -389,6 +504,7 @@ pub fn struct_defaults(modules: &mut [Module]) {
                 _ => {}
             }
             crate::syntax::walk::walk_item(item, &mut |e| {
+                let mut replacement = None;
                 if let Expr::Call {
                     callee,
                     type_args,
@@ -400,10 +516,26 @@ pub fn struct_defaults(modules: &mut [Module]) {
                     if let Expr::Path(path) = callee.as_mut() {
                         if args.is_empty() && type_args.is_empty() && named(path) {
                             *path = default_of(path);
+                        } else if args.is_empty()
+                            && type_args.is_empty()
+                            && path
+                                .segments
+                                .last()
+                                .is_some_and(|name| containing.contains(&name.text))
+                        {
+                            replacement = value_of(path);
                         }
                     }
                 }
-                true
+                // `Outer()` built here holds `Outer::default()` and defaults
+                // already: not walked again.
+                match replacement {
+                    Some(value) => {
+                        *e = value;
+                        false
+                    }
+                    None => true,
+                }
             });
         }
     }
