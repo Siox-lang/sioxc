@@ -267,37 +267,8 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                // `r = 10..25` into a `Range` signal: the struct literal it
-                // stands for, `{ .left = 10, .right = 25 }` (#445).
-                let range_struct;
-                let value = match value {
-                    ast::Expr::Range { lo, hi, span }
-                        if self
-                            .folded_elem_path(target)
-                            .or_else(|| expr_path(target))
-                            .and_then(|path| self.persisted_layout(&path))
-                            .is_some_and(|layout| {
-                                matches!(layout.kind, LayoutKind::Struct { .. })
-                            }) =>
-                    {
-                        let field = |name: &str, value: &ast::Expr| ast::ConnectArg {
-                            field: Some(ast::Ident {
-                                text: name.to_string(),
-                                span: *span,
-                            }),
-                            value: Some(value.clone()),
-                            span: *span,
-                        };
-                        range_struct = ast::Expr::Construct {
-                            ty: None,
-                            args: vec![field("left", lo), field("right", hi)],
-                            spread: None,
-                            span: *span,
-                        };
-                        &range_struct
-                    }
-                    value => value,
-                };
+                let range_struct = self.range_struct_value(target, value);
+                let value = range_struct.as_ref().unwrap_or(value);
                 // Array and struct stores share one recursive canonical
                 // value path, including nested and returned aggregates.
                 if let Some(leaves) = self.aggregate_assign_leaves(target, value) {
@@ -1040,6 +1011,35 @@ impl<'a> Lowering<'a> {
 
     /// Lower the body of an event-controlled block into next-state updates,
     /// accumulating the priority condition through nested `if`/`else`.
+    /// `r = 10..25` into a `Range` signal: the struct literal it stands for,
+    /// `{ .left = 10, .right = 25 }` (#445), combinational or clocked (#692).
+    fn range_struct_value(&self, target: &ast::Expr, value: &ast::Expr) -> Option<ast::Expr> {
+        let ast::Expr::Range { lo, hi, span } = value else {
+            return None;
+        };
+        let layout = self
+            .folded_elem_path(target)
+            .or_else(|| expr_path(target))
+            .and_then(|path| self.persisted_layout(&path))?;
+        if !matches!(layout.kind, LayoutKind::Struct { .. }) {
+            return None;
+        }
+        let field = |name: &str, value: &ast::Expr| ast::ConnectArg {
+            field: Some(ast::Ident {
+                text: name.to_string(),
+                span: *span,
+            }),
+            value: Some(value.clone()),
+            span: *span,
+        };
+        Some(ast::Expr::Construct {
+            ty: None,
+            args: vec![field("left", lo), field("right", hi)],
+            spread: None,
+            span: *span,
+        })
+    }
+
     pub(super) fn lower_event_block(
         &mut self,
         block: &ast::Block,
@@ -1100,6 +1100,39 @@ impl<'a> Lowering<'a> {
                         span: *span,
                     };
                     self.lower_event_block(&chain, cond.clone(), out);
+                }
+                // `rng = 10..25` and `{x, y} = arr` under a clock, as the
+                // combinational path writes them (#692, #691).
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after: None,
+                    ..
+                } if self.range_struct_value(target, value).is_some() => {
+                    let mut statement = s.clone();
+                    if let (ast::Stmt::Assign { value: written, .. }, Some(literal)) =
+                        (&mut statement, self.range_struct_value(target, value))
+                    {
+                        *written = literal;
+                    }
+                    let block = ast::Block {
+                        span: ast::stmt_span(s),
+                        stmts: vec![statement],
+                    };
+                    self.lower_event_block(&block, cond.clone(), out);
+                }
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } if self.concat_from_array(target, value).is_some() => {
+                    let elements = ast::Block {
+                        stmts: self.concat_from_array(target, value).unwrap_or_default(),
+                        span: *span,
+                    };
+                    self.lower_event_block(&elements, cond.clone(), out);
                 }
                 ast::Stmt::Assign {
                     target,
@@ -1192,7 +1225,9 @@ impl<'a> Lowering<'a> {
                             });
                         }
                     } else if let Some(target) = self.target_signal(target) {
-                        let expr = self.lower_expr(value);
+                        // A character into an enum or `Char` register, an
+                        // integer into a `real` one, as combinationally (#692).
+                        let expr = self.coerce_to_target(target, self.lower_expr(value));
                         out.push(NextUpdate {
                             span: self.cur_span,
                             target,
