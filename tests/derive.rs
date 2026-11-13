@@ -107,8 +107,8 @@ struct Pair<A, B> { pub a: A, pub b: B }
 struct Word<W: integer> { pub v: unsigned[W] }
 #[test] entity T {}
 impl T { process {
-    let x: Pair<unsigned[4], Bit> = Pair { .a = 3, .b = '1' };
-    let y: Pair<unsigned[4], Bit> = Pair { .a = 3, .b = '0' };
+    let x: Pair<unsigned[4], unsigned[2]> = Pair { .a = 3, .b = 1 };
+    let y: Pair<unsigned[4], unsigned[2]> = Pair { .a = 3, .b = 0 };
     let p: Word<8> = Word { .v = 200 };
     let q: Word<8> = Word { .v = 200 };
     print!("{} {} {} {}\n", x == y, y < x, x >= y, p == q);

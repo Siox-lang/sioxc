@@ -431,6 +431,10 @@ struct Checker<'a> {
     trait_impl_sites: HashSet<(String, String, String)>,
     /// Type identity -> the traits it implements, for that inheritance.
     trait_impls_by_type: HashMap<String, Vec<String>>,
+    /// (trait, owner) -> the trait bounds a generic impl puts on its owner's
+    /// type arguments, by position: `impl<T: Eq> Eq<Box<T>> for Box<T>` is
+    /// `[(0, "Eq")]`. A key alone took `Box<NoEq>` for comparable (#403).
+    impl_bounds: HashMap<(String, String), Vec<(usize, String)>>,
     /// Trait name -> the methods an implementation must provide (those the
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
