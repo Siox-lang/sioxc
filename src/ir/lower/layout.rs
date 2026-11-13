@@ -138,6 +138,14 @@ impl<'a> Lowering<'a> {
                     if let Some(element) = element_enum {
                         self.out.array_element_enums.insert(id.0, element.clone());
                     }
+                    // A newtype's own `impl Default` (`Score(42)` for
+                    // `struct Score(unsigned[8])`), as a testbench local of
+                    // it starts at (#708).
+                    if let Some(&default) = self.new_defaults.get(family) {
+                        if *width <= 64 {
+                            self.out.signals[id.0 as usize].init = vec![default];
+                        }
+                    }
                 }
             }
             LayoutKind::Scalar {
@@ -153,6 +161,9 @@ impl<'a> Lowering<'a> {
                 if let Some(nominal) = nominal {
                     self.local_numeric.insert(name.to_string(), nominal.clone());
                     self.sig_type.insert(id.0, nominal.clone());
+                    if let Some(&default) = self.new_defaults.get(nominal) {
+                        self.out.signals[id.0 as usize].init = vec![default];
+                    }
                 }
                 let signal = &mut self.out.signals[id.0 as usize];
                 signal.range = *value_range;
