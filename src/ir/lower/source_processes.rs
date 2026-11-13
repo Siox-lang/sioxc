@@ -374,7 +374,7 @@ fn declared_nominal_type(ty: Option<&ast::Type>, resolved: &Resolved) -> Option<
         resolved.def(definition)?.kind,
         crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
     )
-    .then_some(crate::types::Ty::Named(definition))
+    .then_some(crate::types::Ty::Named(definition, Vec::new()))
 }
 
 /// Recover the concrete scalar/nominal portion of a function signature when
@@ -397,7 +397,7 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
                 resolved.def(definition)?.kind,
                 crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
             )
-            .then_some(crate::types::Ty::Named(definition))
+            .then_some(crate::types::Ty::Named(definition, Vec::new()))
         }
     }
 }
@@ -592,7 +592,9 @@ fn tuple_type_base(base: &ast::Type) -> Option<usize> {
 
 /// The condition type, `core`'s `bool` lang item.
 fn bool_type(resolved: &Resolved) -> Option<crate::types::Ty> {
-    resolved.lang("bool").map(crate::types::Ty::Named)
+    resolved
+        .lang("bool")
+        .map(|id| crate::types::Ty::Named(id, Vec::new()))
 }
 
 fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::types::Ty> {
@@ -627,7 +629,7 @@ fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::type
         let first = candidates.next()?;
         candidates.next().is_none().then_some(first)
     })?;
-    Some(crate::types::Ty::Named(definition))
+    Some(crate::types::Ty::Named(definition, Vec::new()))
 }
 
 /// Recover the checked value shape from the declaration-owned layout. This is
@@ -900,7 +902,7 @@ fn process_layout_for_type(
             }),
             element: Box::new(process_layout_for_type(elem, span, context)?),
         },
-        crate::types::Ty::Named(definition) => {
+        crate::types::Ty::Named(definition, ..) => {
             let info = context.resolved.def(*definition)?;
             if let Some(aliased) = context.type_aliases.get(definition) {
                 let concrete = process_declared_type(aliased, context)?;
@@ -980,7 +982,7 @@ fn process_aggregate_layout_for_type(
     let aggregate = matches!(
         ty,
         crate::types::Ty::Array { .. } | crate::types::Ty::Tuple(_)
-    ) || matches!(ty, crate::types::Ty::Named(definition)
+    ) || matches!(ty, crate::types::Ty::Named(definition, ..)
             if context.resolved.kind_of(*definition) == Some(crate::resolve::DefKind::Struct));
     aggregate.then(|| process_layout_for_type(ty, span, context))?
 }
@@ -3446,7 +3448,7 @@ fn await_is_time(argument: &ast::Expr, context: &LoweringContext<'_>) -> bool {
         .typed
         .expr_type(ast::expr_span(argument))
         .is_some_and(|ty| {
-            matches!(ty, crate::types::Ty::Named(definition)
+            matches!(ty, crate::types::Ty::Named(definition, ..)
                 if context.resolved.lang_of(*definition) == Some("time"))
         })
 }
@@ -5082,7 +5084,7 @@ fn process_display_kind_for_type(
                 Some(ProcessDisplayKind::Unsigned)
             }
         }
-        crate::types::Ty::Named(definition) => {
+        crate::types::Ty::Named(definition, ..) => {
             let info = context.resolved.def(*definition)?;
             if info.kind != crate::resolve::DefKind::Enum {
                 return None;
@@ -5174,7 +5176,7 @@ fn enum_variant_type(
     let variant = resolved.def(definition)?;
     (variant.kind == crate::resolve::DefKind::EnumVariant)
         .then_some(variant.parent?)
-        .map(crate::types::Ty::Named)
+        .map(|id| crate::types::Ty::Named(id, Vec::new()))
 }
 
 /// Result type of a layout attribute. Attributes are compiler primitives, but
@@ -5432,7 +5434,7 @@ fn widen_operand(
 fn is_concrete_type(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> bool {
     match ty {
         crate::types::Ty::Error => false,
-        crate::types::Ty::Named(id) => {
+        crate::types::Ty::Named(id, ..) => {
             context.resolved.kind_of(*id) != Some(crate::resolve::DefKind::Param)
         }
         _ => true,
@@ -7553,7 +7555,7 @@ fn character_number(
     ty: Option<&crate::types::Ty>,
     context: &LoweringContext<'_>,
 ) -> Option<ProcessNumber> {
-    let crate::types::Ty::Named(definition) = ty? else {
+    let crate::types::Ty::Named(definition, ..) = ty? else {
         return None;
     };
     let enumeration = context.resolved.def(*definition)?;
@@ -7606,7 +7608,7 @@ fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Opt
         crate::types::Ty::Natural => Some("natural".into()),
         crate::types::Ty::Real => Some("real".into()),
         crate::types::Ty::Char => Some("Char".into()),
-        crate::types::Ty::Named(definition) => context.functions.nominal_type_key(*definition),
+        crate::types::Ty::Named(definition, ..) => context.functions.nominal_type_key(*definition),
         crate::types::Ty::Array {
             family: Some(family),
             ..
@@ -7911,7 +7913,7 @@ fn lower_process_named_conversion(
     let target_type = return_type
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned()
-        .unwrap_or(crate::types::Ty::Named(definition));
+        .unwrap_or(crate::types::Ty::Named(definition, Vec::new()));
     // A string literal fills a newtype's field (`B("0110")`); the raw resize
     // shapes it there.
     if matches!(argument, ast::Expr::StrLit { .. })
@@ -8242,10 +8244,10 @@ fn lower_process_raw_resize(
                 ));
             }
             match target {
-                Some(crate::types::Ty::Named(target_definition))
+                Some(crate::types::Ty::Named(target_definition, ..))
                     if *target_definition == definition =>
                 {
-                    crate::types::Ty::Named(definition)
+                    crate::types::Ty::Named(definition, Vec::new())
                 }
                 // A newtype over a vector is checked as that vector of its
                 // own family (`struct B(Bit[4])` is `B`-family `Bit[4]`).
@@ -8254,7 +8256,9 @@ fn lower_process_raw_resize(
                         family: Some(name), ..
                     },
                 ) if name.rsplit("::").next() == family.rsplit("::").next() => vector.clone(),
-                None | Some(crate::types::Ty::Error) => crate::types::Ty::Named(definition),
+                None | Some(crate::types::Ty::Error) => {
+                    crate::types::Ty::Named(definition, Vec::new())
+                }
                 _ => return None,
             }
         }
@@ -8265,7 +8269,7 @@ fn lower_process_raw_resize(
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        } | crate::types::Ty::Named(_)
+        } | crate::types::Ty::Named(_, ..)
     ) {
         return None;
     }
@@ -8299,7 +8303,7 @@ fn lower_process_raw_resize(
         (argument, &target),
         (
             ast::Expr::Construct { ty: None, .. },
-            crate::types::Ty::Named(_)
+            crate::types::Ty::Named(_, ..)
         )
     );
     let operand_type = field_type
@@ -8316,7 +8320,7 @@ fn lower_process_raw_resize(
     // `Wrapper(Inner { .x = 42 })`, `Pair((1, 2))`: a newtype derives its
     // base's fields, so a constructed base is the newtype built from the same
     // fields. A raw resize of an aggregate construct did not lower (#176).
-    if let (crate::types::Ty::Named(_), ProcessValueKind::Construct { fields, spread, .. }) =
+    if let (crate::types::Ty::Named(_, ..), ProcessValueKind::Construct { fields, spread, .. }) =
         (&target, &context.process_ir.values[operand.0 as usize].kind)
     {
         let kind = ProcessValueKind::Construct {
@@ -8383,7 +8387,7 @@ fn push_converted(
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        } | crate::types::Ty::Named(_)
+        } | crate::types::Ty::Named(_, ..)
     )
     .then(|| process_aggregate_layout_for_type(&target, span, context))
     .flatten()
@@ -8397,7 +8401,7 @@ fn push_converted(
 
 /// Whether `base` is a struct with an `index_assign` method (`IndexAssign`).
 fn index_assign_contract(base: &ast::Expr, context: &LoweringContext<'_>) -> bool {
-    let Some(ty @ crate::types::Ty::Named(definition)) =
+    let Some(ty @ crate::types::Ty::Named(definition, ..)) =
         context.typed.expr_type(ast::expr_span(base)).cloned()
     else {
         return false;
@@ -8423,7 +8427,7 @@ fn custom_index_value(
     if matches!(index, ast::Expr::PartialRange { .. }) {
         return None;
     }
-    let ty @ crate::types::Ty::Named(definition) =
+    let ty @ crate::types::Ty::Named(definition, ..) =
         context.typed.expr_type(ast::expr_span(base)).cloned()?
     else {
         return None;
@@ -8453,7 +8457,7 @@ fn custom_index_value(
             let range_type = context
                 .typed
                 .expr_type(*span)
-                .filter(|ty| matches!(ty, crate::types::Ty::Named(_)))
+                .filter(|ty| matches!(ty, crate::types::Ty::Named(_, ..)))
                 .cloned()?;
             let integer = Some(crate::types::Ty::Integer);
             let left = value_ref_with_type(lo, process, context, integer.as_ref());
@@ -9020,7 +9024,7 @@ fn lower_process_default(
             definition_kind,
             crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
         )
-        .then_some(crate::types::Ty::Named(definition))
+        .then_some(crate::types::Ty::Named(definition, Vec::new()))
     })?;
     if matches!(target, crate::types::Ty::Error) {
         return None;
@@ -9208,7 +9212,7 @@ fn lower_process_foreign_call(
 /// Whether `ty` is `std::ffi::Handle`: an opaque C pointer, which crosses
 /// `extern "C"` by value rather than by pointer as other structs do.
 fn is_c_handle(ty: &crate::types::Ty, resolved: &Resolved) -> bool {
-    matches!(ty, crate::types::Ty::Named(id) if resolved.lang_of(*id) == Some("c_handle"))
+    matches!(ty, crate::types::Ty::Named(id, ..) if resolved.lang_of(*id) == Some("c_handle"))
 }
 
 /// Normalize deterministic randomization before it can become a generic
@@ -11149,7 +11153,7 @@ fn inline_process_binary_operator(
     // A character literal beside an enum is that enum's variant: `u and
     // '1'` found no `And<Char>` for `Logic` and fell back to raw
     // discriminant arithmetic, `'U' and '1'` giving `'0'` (#190).
-    let named = |ty: &Option<crate::types::Ty>| matches!(ty, Some(crate::types::Ty::Named(_)));
+    let named = |ty: &Option<crate::types::Ty>| matches!(ty, Some(crate::types::Ty::Named(_, ..)));
     let char_left = matches!(lhs, ast::Expr::CharLit { .. }) && named(&right_type);
     let left_type = match operand_type(lhs, process, context) {
         Some(crate::types::Ty::Integer) | None if literal_left => right_type.clone()?,
@@ -12152,7 +12156,8 @@ fn struct_suffix_literal(
     if normalized_suffix(text, &suffix.text, context).is_some() {
         return None;
     }
-    let ty @ crate::types::Ty::Named(definition) = context.typed.expr_type(*span).cloned()? else {
+    let ty @ crate::types::Ty::Named(definition, ..) = context.typed.expr_type(*span).cloned()?
+    else {
         return None;
     };
     // `time` literals fold to a constant; one left over overflowed, which
@@ -12402,7 +12407,7 @@ fn value_ref_with_type_inner(
     // the `Range { left, right }` value, as an `Index<Range, _>` argument
     // already was. As a bare range it had no width (#445). A slice index is
     // lowered with no expected type and stays a range.
-    if let (ast::Expr::Range { lo, hi, span }, Some(range_type @ crate::types::Ty::Named(_))) =
+    if let (ast::Expr::Range { lo, hi, span }, Some(range_type @ crate::types::Ty::Named(_, ..))) =
         (expression, contextual_type)
     {
         let range_type = range_type.clone();
@@ -13431,7 +13436,7 @@ fn value_ref_with_type_inner(
         ast::Expr::Concat { parts, .. }
             if matches!(
                 ty.as_ref(),
-                Some(crate::types::Ty::Named(definition))
+                Some(crate::types::Ty::Named(definition, ..))
                     if context.resolved.kind_of(*definition)
                         == Some(crate::resolve::DefKind::Struct)
             ) =>
@@ -13577,7 +13582,7 @@ fn value_ref_with_type_inner(
         // `wrap<T>`: `Boxed<T>` has no declared layout, so its field values
         // give it one. Without it the construct did not lower (#204).
         ProcessValueKind::Construct {
-            ty: Some(struct_type @ crate::types::Ty::Named(_)),
+            ty: Some(struct_type @ crate::types::Ty::Named(_, ..)),
             fields,
             spread: None,
         } if process_aggregate_layout_for_type(struct_type, span, context).is_none() => (|| {
@@ -13850,7 +13855,7 @@ fn source_value_width(
     let typed_width = |ty: &crate::types::Ty| {
         ty.bit_width()
             .or_else(|| {
-                let crate::types::Ty::Named(definition) = ty else {
+                let crate::types::Ty::Named(definition, ..) = ty else {
                     return None;
                 };
                 let qualified = context.resolved.qualified_name(*definition)?;

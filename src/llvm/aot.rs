@@ -998,7 +998,7 @@ signed main(void) {
                 ],
             },
         };
-        let pair_ty = siox::types::Ty::Named(siox::resolve::DefId(41));
+        let pair_ty = siox::types::Ty::Named(siox::resolve::DefId(41), Vec::new());
         let number = |value| ProcessValue {
             span,
             ty: None,

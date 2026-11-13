@@ -50,7 +50,7 @@ fn typed_records_expression_types() {
         .defs()
         .iter()
         .position(|def| def.name == "Logic")
-        .map(|index| Ty::Named(crate::resolve::DefId(index as u32)))
+        .map(|index| Ty::Named(crate::resolve::DefId(index as u32), Vec::new()))
         .expect("Logic definition");
     assert!(
         typed.expr_types().values().any(|ty| *ty == logic),
@@ -142,21 +142,21 @@ fn array_aliases_preserve_declared_index_bounds() {
 fn vector_names_its_real_family() {
     // A known family displays by name; anonymous vectors fall back to unsigned.
     let int8 = Ty::Array {
-        elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+        elem: Box::new(Ty::Named(crate::resolve::DefId(0), Vec::new())),
         family: Some("signed".to_string()),
         len: 8,
         low: 0,
     };
     assert_eq!(ty_name(&int8), "signed[8]");
     let byte = Ty::Array {
-        elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+        elem: Box::new(Ty::Named(crate::resolve::DefId(0), Vec::new())),
         family: Some("Byte".to_string()),
         len: 0,
         low: 0,
     };
     assert_eq!(ty_name(&byte), "Byte");
     let anon = Ty::Array {
-        elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+        elem: Box::new(Ty::Named(crate::resolve::DefId(0), Vec::new())),
         family: Some("unsigned".to_string()),
         len: 4,
         low: 0,
@@ -166,7 +166,7 @@ fn vector_names_its_real_family() {
     assert!(compatible(
         &int8,
         &Ty::Array {
-            elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+            elem: Box::new(Ty::Named(crate::resolve::DefId(0), Vec::new())),
             family: Some("unsigned".to_string()),
             len: 8,
             low: 0,

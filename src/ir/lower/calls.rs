@@ -87,7 +87,7 @@ impl<'a> Lowering<'a> {
             Some(crate::types::Ty::Array {
                 family: None, elem, ..
             }) => match elem.as_ref() {
-                crate::types::Ty::Named(definition) => self
+                crate::types::Ty::Named(definition, ..) => self
                     .free_fns
                     .nominal_type_key(*definition)
                     .map(|key| format!("{key}[]")),
@@ -1799,7 +1799,7 @@ impl<'a> Lowering<'a> {
                     family: Some(family),
                     ..
                 }) => Some(self.free_fns.canonical_type_key(family)),
-                Some(crate::types::Ty::Named(definition)) => {
+                Some(crate::types::Ty::Named(definition, ..)) => {
                     self.free_fns.nominal_type_key(*definition)
                 }
                 _ => None,
@@ -1923,7 +1923,7 @@ impl<'a> Lowering<'a> {
                     // local: its checked type names it, so `self.start +
                     // rhs.start` finds `Point`'s impl (#631).
                     .or_else(|| match self.expr_types.get(&ast::expr_span(e)) {
-                        Some(crate::types::Ty::Named(definition)) => {
+                        Some(crate::types::Ty::Named(definition, ..)) => {
                             self.free_fns.nominal_type_key(*definition)
                         }
                         _ => None,

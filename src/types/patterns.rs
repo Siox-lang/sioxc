@@ -399,7 +399,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let variants = match ty {
-            Ty::Named(id) => self
+            Ty::Named(id, ..) => self
                 .definition_key(*id)
                 .and_then(|name| self.enum_variants.get(&name).map(|v| (name, v.clone()))),
             _ => None,
@@ -466,7 +466,7 @@ impl<'a> Checker<'a> {
             self.check_pattern_bounds(&ty, &arm.pattern, sym);
         }
         self.check_char_patterns(&ty, arms);
-        let Ty::Named(id) = ty else {
+        let Ty::Named(id, ..) = ty else {
             // A numeric scrutinee has a domain rather than a variant list.
             // Only enums were ever checked, so `match s { 0 => .. }` on an
             // `unsigned[2]` passed silently while the same hole over an enum
@@ -706,7 +706,7 @@ impl<'a> Checker<'a> {
 
     /// The variant names of an enum type, `'0'`-quoted for a character enum.
     fn enum_variant_names(&self, ty: &Ty) -> Option<Vec<String>> {
-        let Ty::Named(id) = ty else { return None };
+        let Ty::Named(id, ..) = ty else { return None };
         self.enum_variants.get(&self.definition_key(*id)?).cloned()
     }
 
@@ -986,7 +986,7 @@ impl<'a> Checker<'a> {
             Ty::Natural => Some("natural".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
-            Ty::Named(id) => self.definition_key(*id),
+            Ty::Named(id, ..) => self.definition_key(*id),
             Ty::Array {
                 family: Some(name), ..
             } => Some(name.clone()),

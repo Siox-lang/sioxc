@@ -506,9 +506,10 @@ impl<'a> Checker<'a> {
                         if t == "Into" {
                             let target =
                                 im.trait_args.first().and_then(|argument| match argument {
-                                    GenericArg::Positional(Expr::Path(path)) => {
-                                        Some(Ty::Named(self.resolved.resolved(path.span)?))
-                                    }
+                                    GenericArg::Positional(Expr::Path(path)) => Some(Ty::Named(
+                                        self.resolved.resolved(path.span)?,
+                                        Vec::new(),
+                                    )),
                                     GenericArg::PositionalType(ty) => Some(self.ast_ty(ty)),
                                     _ => None,
                                 });

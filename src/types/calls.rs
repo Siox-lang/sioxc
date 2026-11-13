@@ -120,7 +120,7 @@ impl<'a> Checker<'a> {
         }
         let short = |key: &str| key.rsplit("::").next().unwrap_or(key).to_string();
         let source = match &source_ty {
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let key = self.definition_key(*id);
                 let record = key.as_ref().is_some_and(|key| {
                     self.structs
@@ -432,7 +432,7 @@ impl<'a> Checker<'a> {
             } => matches!(elem.as_ref(), Ty::Char),
             _ => false,
         };
-        let enumeration = matches!(&ty, Ty::Named(id)
+        let enumeration = matches!(&ty, Ty::Named(id, ..)
             if self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Enum));
         let message = if spec.kind.is_radix() && matches!(ty, Ty::Real) {
             Some("a radix form (`x`, `X`, `b`, `o`) writes integers; this argument is a `real`")
@@ -462,7 +462,7 @@ impl<'a> Checker<'a> {
     /// only say "a named type" — never show that to a user.
     pub(super) fn ty_display(&self, t: &Ty) -> String {
         match t {
-            Ty::Named(id) => self
+            Ty::Named(id, ..) => self
                 .resolved
                 .def(*id)
                 .map(|d| d.name.clone())
@@ -951,7 +951,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 // `read<Logic[]>`: a character enum reads as text.
-                let symbols = |ty: &Ty| matches!(ty, Ty::Named(id) if self.is_char_enum(*id));
+                let symbols = |ty: &Ty| matches!(ty, Ty::Named(id, ..) if self.is_char_enum(*id));
                 let supported = matches!(requested, Ty::Integer)
                     || matches!(
                         requested,
@@ -1114,7 +1114,7 @@ impl<'a> Checker<'a> {
             "write" => {
                 // `write!(f, "fmt", ..)` appends to a `Display::fmt` output.
                 let formatter = self.type_of(&args[0], sym);
-                let is_formatter = matches!(&formatter, Ty::Named(id)
+                let is_formatter = matches!(&formatter, Ty::Named(id, ..)
                     if self.resolved.def(*id).is_some_and(|d| d.name == "Formatter"));
                 if !is_formatter {
                     self.error_with_help(
@@ -1393,7 +1393,7 @@ impl<'a> Checker<'a> {
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
     /// array, which is always declared with a plain element count.
     pub(super) fn is_entity_ty(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Named(id)
+        matches!(t, Ty::Named(id, ..)
             if self.resolved.def(*id).map(|d| d.kind) == Some(DefKind::Entity))
     }
 }

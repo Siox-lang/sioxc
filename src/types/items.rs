@@ -341,7 +341,7 @@ impl<'a> Checker<'a> {
     /// Whether `ty` is `std::ffi::Handle`, an opaque C pointer passed by
     /// value.
     pub(super) fn is_c_handle(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named(id) if self.resolved.lang_of(*id) == Some("c_handle"))
+        matches!(ty, Ty::Named(id, ..) if self.resolved.lang_of(*id) == Some("c_handle"))
     }
 
     /// Why `ty` cannot cross to C as an aggregate, or `None`: a struct or
@@ -365,7 +365,7 @@ impl<'a> Checker<'a> {
                 Type::Indexed { base, .. } => self.c_aggregate_problem(base, depth + 1),
                 _ => Some("an array needs a declared length".to_string()),
             },
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let key = self.definition_key(id)?;
                 if self
                     .structs
@@ -447,7 +447,7 @@ impl<'a> Checker<'a> {
             } if len > 64 => {
                 format!("packed value is {len} bits, but the current C ABI carries one 64-bit word")
             }
-            Ty::Array { .. } | Ty::Named(_) | Ty::Tuple(_) => {
+            Ty::Array { .. } | Ty::Named(_, ..) | Ty::Tuple(_) => {
                 "aggregate and nominal values have no C layout mapping".to_string()
             }
             Ty::Char => "Char has no declared C character ABI".to_string(),

@@ -42,7 +42,7 @@ impl<'a> Checker<'a> {
         let fieldless = match &base_ty {
             Ty::Integer | Ty::Real | Ty::Char => true,
             Ty::Array { family: None, .. } => true,
-            Ty::Named(id) => self
+            Ty::Named(id, ..) => self
                 .definition_key(*id)
                 .is_some_and(|key| self.enum_variants.contains_key(&key)),
             _ => false,

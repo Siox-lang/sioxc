@@ -228,7 +228,7 @@ impl<'a> Checker<'a> {
     /// The head name of a checked type, for diagnostics and impl lookup.
     pub(super) fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
-            Ty::Named(id) => self.definition_key(*id)?,
+            Ty::Named(id, ..) => self.definition_key(*id)?,
             Ty::Real => "real".to_string(),
             Ty::Integer => "integer".to_string(),
             Ty::Natural => "natural".to_string(),
@@ -293,7 +293,7 @@ impl<'a> Checker<'a> {
                             is_type_kind(definition.kind) && definition.name == name
                         })
                 })
-                .map(|(index, _)| Ty::Named(DefId(index as u32)))
+                .map(|(index, _)| Ty::Named(DefId(index as u32), Vec::new()))
                 .unwrap_or(Ty::Error),
         }
     }
@@ -311,7 +311,7 @@ impl<'a> Checker<'a> {
     /// unknowns, which keep built-in operator semantics.
     pub(super) fn named_operand_name(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Option<String> {
         match self.type_of(e, sym) {
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let d = self.resolved.def(id)?;
                 matches!(d.kind, DefKind::Struct | DefKind::Enum)
                     .then(|| self.definition_key(id))?

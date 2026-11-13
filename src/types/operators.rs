@@ -691,7 +691,7 @@ impl<'a> Checker<'a> {
                 // A character literal reads through its context type (spec:
                 // type kernel): builtin scalars, `Char`, or a user enum with
                 // a matching character variant (e.g. ULogic's 'Z').
-                if let Ty::Named(id) = lhs {
+                if let Ty::Named(id, ..) = lhs {
                     return self.enum_has_char_variant(*id, *ch);
                 }
                 matches!(lhs, Ty::Char | Ty::Error)
@@ -749,15 +749,15 @@ impl<'a> Checker<'a> {
             // It is structurally assignable to a named struct when its arity
             // matches; field-value checks are contextualized during lowering.
             Expr::Concat { parts, .. } => match lhs {
-                Ty::Named(id) => self.struct_field_count(*id) == Some(parts.len()),
+                Ty::Named(id, ..) => self.struct_field_count(*id) == Some(parts.len()),
                 Ty::Error => true,
                 // Bits concatenate into a plain bit vector too (`Bit[8] =
                 // { v[3..0], v[7..4] }`) when every part holds its element.
                 Ty::Array {
                     elem, family: None, ..
-                } if matches!(elem.as_ref(), Ty::Named(_)) => {
+                } if matches!(elem.as_ref(), Ty::Named(_, ..)) => {
                     parts.iter().all(|part| match (part, elem.as_ref()) {
-                        (Expr::CharLit { ch, .. }, Ty::Named(id)) => {
+                        (Expr::CharLit { ch, .. }, Ty::Named(id, ..)) => {
                             self.enum_has_char_variant(*id, *ch)
                         }
                         _ => match self.type_of(part, sym) {
@@ -790,8 +790,8 @@ impl<'a> Checker<'a> {
                         len,
                         family: None,
                         ..
-                    } if matches!(elem.as_ref(), Ty::Named(_)) => {
-                        let Ty::Named(id) = elem.as_ref() else {
+                    } if matches!(elem.as_ref(), Ty::Named(_, ..)) => {
+                        let Ty::Named(id, ..) = elem.as_ref() else {
                             unreachable!()
                         };
                         (*len == 0 || n == *len)
@@ -866,8 +866,8 @@ impl Checker<'_> {
             Ty::Array {
                 family: Some(_), ..
             } => None,
-            Ty::Named(_) if self.enum_operand_name(ty).is_some() => None,
-            Ty::Named(_)
+            Ty::Named(_, ..) if self.enum_operand_name(ty).is_some() => None,
+            Ty::Named(_, ..)
                 if self
                     .type_kind_name(ty)
                     .is_some_and(|name| self.has_impl("Eq", &name)) =>

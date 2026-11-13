@@ -166,7 +166,7 @@ impl<'a> Lowering<'a> {
         }
         matches!(
             self.expr_types.get(&ast::expr_span(e)),
-            Some(crate::types::Ty::Named(definition))
+            Some(crate::types::Ty::Named(definition, ..))
                 if self.resolved.def(*definition).is_some_and(|definition| {
                     self.logic_encodings
                         .keys()

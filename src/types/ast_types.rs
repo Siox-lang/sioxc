@@ -121,7 +121,7 @@ impl<'a> Checker<'a> {
                 .def(id)
                 .and_then(|d| self.type_bindings.borrow().get(&d.name).cloned())
                 .unwrap_or(Ty::Error),
-            Some(id) => Ty::Named(id),
+            Some(id) => Ty::Named(id, Vec::new()),
             None => Ty::Error,
         }
     }
@@ -254,7 +254,7 @@ impl<'a> Checker<'a> {
     /// `real`), `Char`, and non-enums.
     pub(super) fn enum_operand_name(&self, t: &Ty) -> Option<String> {
         match t {
-            Ty::Named(id) => {
+            Ty::Named(id, ..) => {
                 let d = self.resolved.def(*id)?;
                 matches!(d.kind, DefKind::Enum).then(|| self.definition_key(*id))?
             }

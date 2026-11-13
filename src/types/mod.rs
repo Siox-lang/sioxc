@@ -58,8 +58,10 @@ pub enum Ty {
     /// The kernel character scalar. Unlike library enums, its value set is the
     /// full Unicode scalar range rather than a finite declaration.
     Char,
-    /// Named struct / enum / entity, keyed by its definition.
-    Named(crate::resolve::DefId),
+    /// Named struct / enum / entity, keyed by its definition, with the type
+    /// arguments it is applied to (`Box<integer>` keeps its `integer`);
+    /// empty for a non-generic type.
+    Named(crate::resolve::DefId, Vec<Ty>),
     /// The single indexed collection representation. Plain arrays have no
     /// family; a library newtype over an unconstrained array (`unsigned`,
     /// `signed`, or a user equivalent) retains its nominal family for method
@@ -93,7 +95,7 @@ impl Ty {
     /// a packed value wider than the 64-bit word (little-endian words).
     pub fn is_c_aggregate(&self) -> bool {
         match self {
-            Ty::Named(_) | Ty::Array { family: None, .. } => true,
+            Ty::Named(_, ..) | Ty::Array { family: None, .. } => true,
             Ty::Array {
                 family: Some(_),
                 len,
@@ -121,7 +123,7 @@ impl Ty {
             Ty::Tuple(elems) => elems
                 .iter()
                 .try_fold(0u32, |total, elem| total.checked_add(elem.bit_width()?)),
-            Ty::Named(_) | Ty::Void | Ty::Error => None,
+            Ty::Named(_, ..) | Ty::Void | Ty::Error => None,
         }
     }
 }
