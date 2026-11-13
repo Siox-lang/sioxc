@@ -13,16 +13,27 @@ fn runs(name: &str, source: &str) {
     let file = dir.join(format!("{name}.siox"));
     std::fs::write(&file, source).unwrap();
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std"), "--test"])
+        .args([
+            "--std",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+            "--test",
+        ])
         .arg(&file)
         .arg("-o")
         .arg(dir.join("t.bin"))
         .output()
         .unwrap();
-    assert!(build.status.success(), "{name}: {}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let run = Command::new(dir.join("t.bin")).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(run.status.success() && stdout.contains(" ok"), "{name}: {stdout}");
+    assert!(
+        run.status.success() && stdout.contains(" ok"),
+        "{name}: {stdout}"
+    );
 }
 
 #[cfg(feature = "llvm")]
