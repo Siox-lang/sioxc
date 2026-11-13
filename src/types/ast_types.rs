@@ -200,6 +200,23 @@ impl<'a> Checker<'a> {
                             .filter(|width| *width > 0)
                             .map(|width| (width as u64, 0)),
                     },
+                    // A newtype of a sized newtype (`struct Outer(Inner)` of
+                    // `struct Inner(unsigned[8])`) is as long as its base
+                    // (#711); a cyclic chain stays unsized.
+                    Some(base @ Type::Path(_)) => {
+                        if self.expanding.borrow_mut().insert(key.clone()) {
+                            let base = self.ast_ty(base);
+                            self.expanding.borrow_mut().remove(&key);
+                            match base {
+                                Ty::Array { len, low, .. } if len > 0 => {
+                                    Some((u64::from(len), low))
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 let (len, low) = sized

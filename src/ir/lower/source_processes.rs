@@ -426,7 +426,14 @@ fn sized_struct_base<'a>(
                 && context.resolved.declared(declaration.name.span) == Some(definition))
             .then_some(declaration.base.as_ref())
             .flatten()
-            .filter(|base| matches!(base, ast::Type::Indexed { index: Some(_), .. }))
+            // A sized vector, or a newtype naming one (`struct Outer(Inner)`,
+            // #711): the caller follows the chain.
+            .filter(|base| {
+                matches!(
+                    base,
+                    ast::Type::Indexed { index: Some(_), .. } | ast::Type::Path(_)
+                )
+            })
         })
 }
 
@@ -480,15 +487,21 @@ fn process_declared_type_inner(
                 let first = candidates.next()?.clone();
                 candidates.next().is_none().then_some(first)
             });
-            // A struct over a sized vector has that vector's length.
+            // A struct over a sized vector has that vector's length, through
+            // a chain of newtypes (#711); a cyclic chain has none.
             let len = context
                 .resolved
                 .resolved(path.span)
-                .and_then(|definition| sized_struct_base(definition, context))
-                .and_then(|base| process_declared_type_inner(base, context, aliases))
-                .and_then(|base| match base {
-                    crate::types::Ty::Array { len, .. } => Some(len),
-                    _ => None,
+                .filter(|definition| aliases.insert(*definition))
+                .and_then(|definition| {
+                    let length = sized_struct_base(definition, context)
+                        .and_then(|base| process_declared_type_inner(base, context, aliases))
+                        .and_then(|base| match base {
+                            crate::types::Ty::Array { len, .. } => Some(len),
+                            _ => None,
+                        });
+                    aliases.remove(&definition);
+                    length
                 })
                 .unwrap_or(0);
             family.map(|family| {
