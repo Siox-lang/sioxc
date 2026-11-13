@@ -3861,14 +3861,22 @@ fn inline_process_procedure_call(
     // element place to alias, so the parameter is a copy, written back
     // element by element when the call returns (#446).
     let mut write_backs = Vec::new();
-    for (_, value) in &mut bindings {
+    for (name, value) in &mut bindings {
         if let Some(back) = unpacked_slice_argument(*value, context) {
             let copy = capture_into_local(*value, context, process, block);
             write_backs.push((back, copy));
             *value = copy;
             continue;
         }
-        *value = capture_call_argument(*value, context, process, block);
+        let parameter = function.params.iter().find(|parameter| {
+            parameter
+                .name
+                .as_ref()
+                .and_then(|n| context.resolved.declared(n.span))
+                == Some(*name)
+        });
+        let written = function_writes_parameter(function, parameter);
+        *value = capture_parameter_argument(*value, written, context, process, block);
     }
     let bindings = bindings.into_iter().collect();
     let resume = process.push_block();
@@ -4127,6 +4135,87 @@ fn capture_process_operand(
 /// constant gets a local too, since the callee may write its parameter
 /// (`inc(5)` with `x = x + 1`, `Counter::default().bumped()`) and a constant
 /// is no place (#378).
+/// Whether `function`'s body assigns its parameter `parameter` (`s = ..`,
+/// `s[0] = ..`), anywhere.
+fn function_writes_parameter(function: &ast::FnDecl, parameter: Option<&ast::FnParam>) -> bool {
+    fn root(target: &ast::Expr) -> Option<&str> {
+        match target {
+            ast::Expr::Path(path) => match path.segments.as_slice() {
+                [name] => Some(name.text.as_str()),
+                _ => None,
+            },
+            ast::Expr::Index { base, .. } | ast::Expr::Field { base, .. } => root(base),
+            _ => None,
+        }
+    }
+    fn writes(statements: &[Stmt], name: &str) -> bool {
+        statements.iter().any(|statement| match statement {
+            Stmt::Assign { target, .. } => root(target) == Some(name),
+            Stmt::If(chain) => {
+                let mut link = Some(chain);
+                let mut found = false;
+                while let Some(current) = link.take() {
+                    found |= writes(&current.then.stmts, name);
+                    match current.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(block)) => found |= writes(&block.stmts, name),
+                        Some(ast::ElseBranch::If(nested)) => link = Some(nested),
+                        None => {}
+                    }
+                }
+                found
+            }
+            Stmt::Match(m) => m.arms.iter().any(|arm| writes(&arm.body.stmts, name)),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => writes(&body.stmts, name),
+            _ => false,
+        })
+    }
+    let (Some(parameter), Some(body)) = (parameter, function.body.as_ref()) else {
+        return false;
+    };
+    parameter
+        .name
+        .as_ref()
+        .is_some_and(|name| writes(&body.stmts, &name.text))
+}
+
+/// `argument` bound to `parameter`, captured as [`capture_call_argument`]
+/// does. A string literal for a parameter the callee writes is first a
+/// local of its own, sized by its text as `let s: string = "hello";` makes
+/// one: kept as the literal, the callee's write targeted a constant and
+/// native code generation failed (#628). A callee that only reads it keeps
+/// the literal, as it always has.
+fn capture_parameter_argument(
+    argument: ProcessValueId,
+    written: bool,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    let length = match &context.process_ir.values[argument.0 as usize].kind {
+        _ if !written => None,
+        ProcessValueKind::String(text) if !text.is_empty() => {
+            u32::try_from(text.chars().count()).ok()
+        }
+        _ => None,
+    };
+    if let Some(len) = length {
+        let sized = crate::types::Ty::Array {
+            elem: Box::new(crate::types::Ty::Char),
+            len,
+            family: None,
+            low: 0,
+        };
+        let span = context.process_ir.values[argument.0 as usize].span;
+        let layout = process_layout_for_type(&sized, span, context);
+        let node = &mut context.process_ir.values[argument.0 as usize];
+        node.ty = Some(sized);
+        node.bit_width = Some(len * 32);
+        context.process_ir.value_layouts[argument.0 as usize] = layout;
+        return capture_into_local(argument, context, process, block);
+    }
+    capture_call_argument(argument, context, process, block)
+}
+
 fn capture_call_argument(
     value: ProcessValueId,
     context: &mut LoweringContext<'_>,
