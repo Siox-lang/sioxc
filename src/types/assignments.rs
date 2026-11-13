@@ -416,7 +416,7 @@ impl<'a> Checker<'a> {
         // not a data assignment: a positional/empty block lexes as a concat,
         // and a dotted one as a name-less construct. Either way it is checked
         // structurally by elaboration, not by initializer compatibility.
-        if matches!(lhs, Ty::Named(_, ..))
+        if matches!(lhs, Ty::Named(..))
             && matches!(value, Expr::Construct { .. } | Expr::Concat { .. })
         {
             return;
@@ -984,7 +984,7 @@ impl<'a> Checker<'a> {
                 // A named (struct/enum) type without the impl fails; a kernel
                 // scalar / vector has the built-in capabilities of core and
                 // std traits, but not a user trait's (#231).
-                !matches!(ty, Ty::Named(_, ..)) && Self::builtin_trait(trait_name)
+                !matches!(ty, Ty::Named(..)) && Self::builtin_trait(trait_name)
             }
             None => Self::builtin_trait(trait_name),
         }

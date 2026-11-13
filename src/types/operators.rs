@@ -788,7 +788,7 @@ impl<'a> Checker<'a> {
                 // { v[3..0], v[7..4] }`) when every part holds its element.
                 Ty::Array {
                     elem, family: None, ..
-                } if matches!(elem.as_ref(), Ty::Named(_, ..)) => {
+                } if matches!(elem.as_ref(), Ty::Named(..)) => {
                     parts.iter().all(|part| match (part, elem.as_ref()) {
                         (Expr::CharLit { ch, .. }, Ty::Named(id, ..)) => {
                             self.enum_has_char_variant(*id, *ch)
@@ -823,7 +823,7 @@ impl<'a> Checker<'a> {
                         len,
                         family: None,
                         ..
-                    } if matches!(elem.as_ref(), Ty::Named(_, ..)) => {
+                    } if matches!(elem.as_ref(), Ty::Named(..)) => {
                         let Ty::Named(id, ..) = elem.as_ref() else {
                             unreachable!()
                         };
@@ -899,8 +899,8 @@ impl Checker<'_> {
             Ty::Array {
                 family: Some(_), ..
             } => None,
-            Ty::Named(_, ..) if self.enum_operand_name(ty).is_some() => None,
-            Ty::Named(_, ..)
+            Ty::Named(..) if self.enum_operand_name(ty).is_some() => None,
+            Ty::Named(..)
                 if self
                     .type_kind_name(ty)
                     .is_some_and(|name| self.has_impl("Eq", &name)) =>

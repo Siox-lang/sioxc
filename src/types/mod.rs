@@ -95,7 +95,7 @@ impl Ty {
     /// a packed value wider than the 64-bit word (little-endian words).
     pub fn is_c_aggregate(&self) -> bool {
         match self {
-            Ty::Named(_, ..) | Ty::Array { family: None, .. } => true,
+            Ty::Named(..) | Ty::Array { family: None, .. } => true,
             Ty::Array {
                 family: Some(_),
                 len,
@@ -123,7 +123,7 @@ impl Ty {
             Ty::Tuple(elems) => elems
                 .iter()
                 .try_fold(0u32, |total, elem| total.checked_add(elem.bit_width()?)),
-            Ty::Named(_, ..) | Ty::Void | Ty::Error => None,
+            Ty::Named(..) | Ty::Void | Ty::Error => None,
         }
     }
 }

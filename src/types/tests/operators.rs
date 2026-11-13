@@ -516,7 +516,7 @@ fn literals_default_to_their_core_types() {
     // The enum must be in scope for them to resolve as a named type.
     assert!(matches!(
         ty("module m;\nenum Bool { false, true }\nimpl E { y = true; }\n"),
-        Ty::Named(_, ..)
+        Ty::Named(..)
     ));
 }
 

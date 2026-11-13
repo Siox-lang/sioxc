@@ -447,7 +447,7 @@ impl<'a> Checker<'a> {
             } if len > 64 => {
                 format!("packed value is {len} bits, but the current C ABI carries one 64-bit word")
             }
-            Ty::Array { .. } | Ty::Named(_, ..) | Ty::Tuple(_) => {
+            Ty::Array { .. } | Ty::Named(..) | Ty::Tuple(_) => {
                 "aggregate and nominal values have no C layout mapping".to_string()
             }
             Ty::Char => "Char has no declared C character ABI".to_string(),

@@ -104,7 +104,7 @@ impl<'a> Checker<'a> {
                     let base_ty = self.type_of(base, sym);
                     let shapeless = match &base_ty {
                         Ty::Tuple(_) => Some(ty_name(&base_ty)),
-                        Ty::Named(_, ..) => self
+                        Ty::Named(..) => self
                             .ty_head(&base_ty)
                             .filter(|head| !self.base_struct_fields_named(head).is_empty()),
                         _ => None,

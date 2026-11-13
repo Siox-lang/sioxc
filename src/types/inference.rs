@@ -166,7 +166,7 @@ impl<'a> Checker<'a> {
                 // A character literal on the left is the right operand's
                 // variant: `'1' and u` is a `Logic`, not a `Char` (#190).
                 let lhs_ty = if matches!(lhs.as_ref(), Expr::CharLit { .. })
-                    && matches!(rhs_ty, Ty::Named(_, ..))
+                    && matches!(rhs_ty, Ty::Named(..))
                     && self.assignable(&rhs_ty, lhs, sym)
                 {
                     rhs_ty.clone()
@@ -281,7 +281,7 @@ impl<'a> Checker<'a> {
                 }
                 // A mixed-operand operator impl (`10 + 5i`) yields the
                 // impl-owning operand's type.
-                if !matches!(lhs_ty, Ty::Named(_, ..)) {
+                if !matches!(lhs_ty, Ty::Named(..)) {
                     if let Ty::Named(id, ..) = self.type_of(rhs, sym) {
                         let has_impl = self.resolved.def(id).map(|d| &d.name).is_some_and(|name| {
                             let tr = crate::syntax::pretty::bin_op(op);

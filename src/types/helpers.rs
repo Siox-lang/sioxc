@@ -297,7 +297,7 @@ pub(super) fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
         return None;
     };
     match lhs {
-        Ty::Char | Ty::Named(_, ..) => Some(if text.chars().count() == 1 {
+        Ty::Char | Ty::Named(..) => Some(if text.chars().count() == 1 {
             format!("`\"{text}\"` is a string; for a single {} value use a character literal `'{text}'`", ty_name(lhs))
         } else {
             format!("`\"{text}\"` is a string (a `Char` array); a {} is one character, written `'c'`", ty_name(lhs))
@@ -320,7 +320,7 @@ pub(super) fn ty_name(t: &Ty) -> String {
         Ty::Integer => "integer".to_string(),
         Ty::Natural => "natural".to_string(),
         Ty::Char => "Char".to_string(),
-        Ty::Named(_, ..) => "a named type".to_string(),
+        Ty::Named(..) => "a named type".to_string(),
         Ty::Array {
             family: Some(name),
             len: 0,

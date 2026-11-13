@@ -8269,7 +8269,7 @@ fn lower_process_raw_resize(
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        } | crate::types::Ty::Named(_, ..)
+        } | crate::types::Ty::Named(..)
     ) {
         return None;
     }
@@ -8303,7 +8303,7 @@ fn lower_process_raw_resize(
         (argument, &target),
         (
             ast::Expr::Construct { ty: None, .. },
-            crate::types::Ty::Named(_, ..)
+            crate::types::Ty::Named(..)
         )
     );
     let operand_type = field_type
@@ -8320,7 +8320,7 @@ fn lower_process_raw_resize(
     // `Wrapper(Inner { .x = 42 })`, `Pair((1, 2))`: a newtype derives its
     // base's fields, so a constructed base is the newtype built from the same
     // fields. A raw resize of an aggregate construct did not lower (#176).
-    if let (crate::types::Ty::Named(_, ..), ProcessValueKind::Construct { fields, spread, .. }) =
+    if let (crate::types::Ty::Named(..), ProcessValueKind::Construct { fields, spread, .. }) =
         (&target, &context.process_ir.values[operand.0 as usize].kind)
     {
         let kind = ProcessValueKind::Construct {
@@ -8387,7 +8387,7 @@ fn push_converted(
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        } | crate::types::Ty::Named(_, ..)
+        } | crate::types::Ty::Named(..)
     )
     .then(|| process_aggregate_layout_for_type(&target, span, context))
     .flatten()
@@ -8457,7 +8457,7 @@ fn custom_index_value(
             let range_type = context
                 .typed
                 .expr_type(*span)
-                .filter(|ty| matches!(ty, crate::types::Ty::Named(_, ..)))
+                .filter(|ty| matches!(ty, crate::types::Ty::Named(..)))
                 .cloned()?;
             let integer = Some(crate::types::Ty::Integer);
             let left = value_ref_with_type(lo, process, context, integer.as_ref());
@@ -11153,7 +11153,7 @@ fn inline_process_binary_operator(
     // A character literal beside an enum is that enum's variant: `u and
     // '1'` found no `And<Char>` for `Logic` and fell back to raw
     // discriminant arithmetic, `'U' and '1'` giving `'0'` (#190).
-    let named = |ty: &Option<crate::types::Ty>| matches!(ty, Some(crate::types::Ty::Named(_, ..)));
+    let named = |ty: &Option<crate::types::Ty>| matches!(ty, Some(crate::types::Ty::Named(..)));
     let char_left = matches!(lhs, ast::Expr::CharLit { .. }) && named(&right_type);
     let left_type = match operand_type(lhs, process, context) {
         Some(crate::types::Ty::Integer) | None if literal_left => right_type.clone()?,
@@ -12407,7 +12407,7 @@ fn value_ref_with_type_inner(
     // the `Range { left, right }` value, as an `Index<Range, _>` argument
     // already was. As a bare range it had no width (#445). A slice index is
     // lowered with no expected type and stays a range.
-    if let (ast::Expr::Range { lo, hi, span }, Some(range_type @ crate::types::Ty::Named(_, ..))) =
+    if let (ast::Expr::Range { lo, hi, span }, Some(range_type @ crate::types::Ty::Named(..))) =
         (expression, contextual_type)
     {
         let range_type = range_type.clone();
@@ -13582,7 +13582,7 @@ fn value_ref_with_type_inner(
         // `wrap<T>`: `Boxed<T>` has no declared layout, so its field values
         // give it one. Without it the construct did not lower (#204).
         ProcessValueKind::Construct {
-            ty: Some(struct_type @ crate::types::Ty::Named(_, ..)),
+            ty: Some(struct_type @ crate::types::Ty::Named(..)),
             fields,
             spread: None,
         } if process_aggregate_layout_for_type(struct_type, span, context).is_none() => (|| {
