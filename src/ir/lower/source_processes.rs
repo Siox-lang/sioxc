@@ -11510,47 +11510,6 @@ fn inline_process_comparison(
     // second reference had no layout to read its companion through. A call
     // with a sized result (`-> unsigned[4]`) takes the rule (#629); giving
     // the unsized one its receiver's layout would retire this.
-    // A call with an unsized family result whose width is known (`s.
-    // saturating_sub(0)` of a `signed[4]`) is that sized family, laid out
-    // as one, so the rule can read its companion (#709).
-    for root in [left, right] {
-        let mut seen = std::collections::HashSet::new();
-        let mut pending = vec![root];
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            let Some(node) = context.process_ir.values.get(id.0 as usize).cloned() else {
-                continue;
-            };
-            if let (
-                ProcessValueKind::Call { .. },
-                Some(crate::types::Ty::Array {
-                    elem,
-                    len: 0,
-                    family: Some(family),
-                    low,
-                }),
-                Some(width),
-            ) = (&node.kind, &node.ty, node.bit_width)
-            {
-                let sized = crate::types::Ty::Array {
-                    elem: elem.clone(),
-                    len: width,
-                    family: Some(family.clone()),
-                    low: *low,
-                };
-                let layout = process_value_source_layout(id, context.process_ir)
-                    .cloned()
-                    .or_else(|| process_layout_for_type(&sized, node.span, context));
-                if let (true, Some(layout)) = (width > 0, layout) {
-                    context.process_ir.value_layouts[id.0 as usize] = Some(layout);
-                    context.process_ir.values[id.0 as usize].ty = Some(sized);
-                }
-            }
-            pending.extend(crate::ir::process_value_dependencies(&node.kind));
-        }
-    }
     let holds_unsized_call = |root: ProcessValueId| {
         let mut seen = std::collections::HashSet::new();
         let mut pending = vec![root];
