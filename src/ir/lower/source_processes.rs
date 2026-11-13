@@ -13422,9 +13422,17 @@ fn value_ref_with_type_inner(
                     .as_ref()
                     .and_then(|written| process_declared_type(written, context));
             }
+            // `Buffer<3> { .data = [10, 20, 30] }`: a generic struct's fields
+            // take their types from the written arguments, or `[10, 20, 30]`
+            // has no element type (#454).
             let layout_fields = ty
                 .as_ref()
                 .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))
+                .or_else(|| {
+                    written
+                        .as_ref()
+                        .and_then(|written| generic_struct_layout(written, span, context))
+                })
                 .and_then(|layout| match layout.kind {
                     LayoutKind::Struct { fields, .. } => Some(fields),
                     _ => None,
