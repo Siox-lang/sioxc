@@ -351,10 +351,9 @@ impl<'a> Checker<'a> {
                 ImplItem::Let(l) => {
                     if let Some(ty) = &l.ty {
                         self.check_entity_instantiation(ty);
+                        self.record_type_attr_reads_in(ty, &sym);
                         self.report_bare_generic(ty);
-                        if l.value.is_none() {
-                            self.report_unsized_vector(ty, &l.name);
-                        }
+                        self.report_unsized_vector(ty, &l.name, true);
                     }
                     // A signal named like one of the entity's ports: reads
                     // went to the port, the `let` was ignored, and the

@@ -309,7 +309,7 @@ impl<'a> Checker<'a> {
                 self.report_bare_generic(written);
             }
             if let (Some(written), None) = (&declaration.ty, &declaration.value) {
-                self.report_unsized_vector(written, &declaration.name);
+                self.report_unsized_vector(written, &declaration.name, false);
             }
             names.insert(declaration.name.text.clone(), ty);
             if let Some(range) = declaration
@@ -422,6 +422,7 @@ impl<'a> Checker<'a> {
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
                     self.check_type_layout(ty);
+                    self.record_type_attr_reads_in(ty, sym);
                     if !self.in_fn_body.get() {
                         self.check_storable(ty);
                     }
@@ -935,10 +936,15 @@ pub(super) fn tuple_target_leaves(target: &Expr) -> Vec<&Expr> {
 impl Checker<'_> {
     /// `let u: unsigned;`: a vector family with no width and no initializer
     /// to take one from has no storage; it failed in native lowering (#570).
+    /// A `signal` (an entity's `let`) needs its width written even with an
+    /// initializer: a process local takes its initializer's, but a signal
+    /// with one failed in native lowering and was "not a constant" in
+    /// hardware (#581).
     pub(super) fn report_unsized_vector(
         &mut self,
         written: &crate::syntax::ast::Type,
         name: &crate::syntax::ast::Ident,
+        signal: bool,
     ) {
         // Only a bare name: a width written as a constant or a generic
         // argument (`unsigned[N]`, `Word<8>`) is settled later.
@@ -982,13 +988,19 @@ impl Checker<'_> {
                 codes::TYPE_MISMATCH,
                 name.span,
                 format!(
-                    "unconstrained vector type for `{}`: its width must be set",
-                    name.text
+                    "unconstrained vector type for `{}`: its width must be set{}",
+                    name.text,
+                    if signal {
+                        " in a signal's declaration"
+                    } else {
+                        ""
+                    }
                 ),
                 format!(
-                    "give it a width, e.g. `{}: {}[8]`, or an initializer",
+                    "give it a width, e.g. `{}: {}[8]`{}",
                     name.text,
-                    ty_name(ty)
+                    ty_name(ty),
+                    if signal { "" } else { ", or an initializer" }
                 ),
             );
         }

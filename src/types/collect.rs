@@ -707,6 +707,14 @@ impl<'a> Checker<'a> {
                                         _ => None,
                                     })
                                 });
+                            // A tuple output has no key, and dropping it
+                            // dropped its written type too: the result typed
+                            // as the operand (#639). It keeps a head no type
+                            // names; the written type gives the result.
+                            let output = output.or_else(|| {
+                                matches!(written, Some(Type::Tuple { .. }))
+                                    .then(|| "(..)".to_string())
+                            });
                             self.operator_sigs
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
