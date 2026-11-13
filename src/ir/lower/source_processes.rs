@@ -7054,10 +7054,14 @@ fn process_local_layout(
     ty: Option<&crate::types::Ty>,
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
-    if let Some(layout) = declaration
-        .ty
-        .as_ref()
-        .and_then(|declared| generic_struct_layout(declared, declaration.span, context))
+    // A view over a generic struct (`let s: Stream<unsigned[8]> Source;`)
+    // is laid out as the struct it views (#413).
+    let generic = match declaration.ty.as_ref() {
+        Some(ast::Type::View { target, .. }) => Some(target.as_ref()),
+        other => other,
+    };
+    if let Some(layout) =
+        generic.and_then(|declared| generic_struct_layout(declared, declaration.span, context))
     {
         return Some(layout);
     }
