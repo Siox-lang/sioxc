@@ -10836,7 +10836,21 @@ fn expand_process_function(
     let node = &context.process_ir.values[result.0 as usize];
     let ty = node.ty.clone();
     let width = node.bit_width;
-    let layout = process_value_source_layout(result, context.process_ir).cloned();
+    let construct = matches!(node.kind, ProcessValueKind::Construct { .. });
+    let mut layout = process_value_source_layout(result, context.process_ir).cloned();
+    // A returned literal of a generic struct (`return Packet { .. }` from
+    // `-> Packet<8>`) has no field types of its own; it is laid out as the
+    // declared result, as a `let` of that type is (#414).
+    if layout.is_none() && construct {
+        layout = function
+            .ret
+            .as_ref()
+            .and_then(|ty| generic_struct_layout(ty, function.span, context))
+            .filter(|layout| layout.packed_width() == width);
+        if layout.is_some() {
+            context.process_ir.value_layouts[result.0 as usize] = layout.clone();
+        }
+    }
     let id = push_value(
         call,
         ty,
