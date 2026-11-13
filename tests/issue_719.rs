@@ -63,6 +63,31 @@ fn a_two_dimensional_element_connection_is_checked() {
     assert!(!text.contains("ok[1][0]"), "{text}");
 }
 
+#[cfg(feature = "llvm")]
+#[test]
+fn a_struct_field_connection_is_checked() {
+    let dir = std::env::temp_dir().join(format!("siox_i719_field_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("field.siox");
+    std::fs::write(&file, FIELD).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args([
+            "--std",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+            "--top",
+            "Hw",
+        ])
+        .arg(&file)
+        .arg("-o")
+        .arg(dir.join("t.o"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("`pkt.a` is `unsigned[16]`"), "{text}");
+    assert!(!text.contains("pkt.b"), "{text}");
+}
+
 const SOURCE: &str = r#"module test_elab_conn_bugs;
 
 struct Pt {
@@ -149,5 +174,27 @@ impl Hw {
     let ok: unsigned[8][2][2];
     let u: Sub = { .x = mat[0][1], .y = o };
     let v: Sub = { .x = ok[1][0], .y = p };
+}
+"#;
+
+const FIELD: &str = r#"module f719;
+use std::bits::unsigned;
+struct Pkt {
+    pub a: unsigned[16],
+    pub b: unsigned[8],
+}
+entity Sub {
+    x: unsigned[8] in,
+    y: unsigned[8] out,
+}
+impl Sub { y = x; }
+entity Hw {
+    o: unsigned[8] out,
+    p: unsigned[8] out,
+}
+impl Hw {
+    let pkt: Pkt;
+    let u: Sub = { .x = pkt.a, .y = o };
+    let v: Sub = { .x = pkt.b, .y = p };
 }
 "#;
