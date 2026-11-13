@@ -319,7 +319,11 @@ type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<
 /// than its head (`unsigned[3]`, an alias), which the result keeps (#143).
 type OperatorOutput = (String, Option<Type>);
 /// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
-type IndexSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
+/// Each `Index`/`IndexAssign` impl by (trait, owner): its index and value
+/// type keys, and the value type as written, whose width, elements or
+/// tuple shape a key drops (#630, #637, #640).
+type IndexSignatures =
+    HashMap<(String, String), Vec<(Option<String>, Option<String>, Option<Type>)>>;
 /// A generic function's declared parameters and their written types.
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 /// A method's declared non-`self` parameter types, `None` where the
@@ -427,6 +431,9 @@ struct Checker<'a> {
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
     trait_required: HashMap<String, Vec<String>>,
+    /// Each trait's parameter names and declared methods, to hold an impl's
+    /// methods to their signatures (#615).
+    trait_signatures: HashMap<String, (Vec<String>, Vec<FnDecl>)>,
     /// Trait name -> exported flag, owning module, and declaration span.
     /// Methods in a trait impl inherit this visibility.
     trait_visibility: HashMap<String, (bool, String, Span)>,

@@ -294,7 +294,7 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        let Some(head) = self.ty_head(&recv) else {
+        let Some(head) = self.method_head(&recv) else {
             return;
         };
         let key = (head.clone(), field.text.clone());

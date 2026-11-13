@@ -71,7 +71,10 @@ pub fn lower_in(
     // name as unknown.
     l.enum_variants = enum_discriminants(modules, &l.free_fns);
     l.enum_first_disc = enum_first_discriminants(modules, &l.free_fns);
-    l.collect(modules);
+    // The type tables that read only the source come before `collect` too:
+    // a module constant's aggregate is laid out by them, and folded with
+    // them empty an enum field was opaque and its `'1'` never resolved,
+    // where the same constant in an impl, folded later, worked (#702).
     {
         let enums = enum_index(modules, &l.free_fns);
         for (name, e) in &enums {
@@ -81,6 +84,9 @@ pub fn lower_in(
         }
         l.out.enum_bases = l.enum_bases.clone();
     }
+    l.enum_reprs = enum_reprs(modules, &l.free_fns);
+    l.array_families = array_families(modules, &l.free_fns);
+    l.collect(modules);
     l.logic_encodings = l.compute_logic_encodings();
     l.out.logic_encodings = l.logic_encodings.clone();
     l.new_defaults = l.enum_first_disc.clone();
@@ -98,8 +104,6 @@ pub fn lower_in(
             )
         })
         .collect();
-    l.enum_reprs = enum_reprs(modules, &l.free_fns);
-    l.array_families = array_families(modules, &l.free_fns);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a
     // packed vector the same way lowering does.

@@ -249,14 +249,40 @@ fn module_constant_integers(
     modules: &[Module],
     functions: &crate::ir::FunctionIndex<'_>,
 ) -> std::collections::HashMap<String, i64> {
+    // Impl constants too (#705), as collection registers them (#657).
     let constants = modules
         .iter()
         .flat_map(|module| &module.items)
-        .filter_map(|item| match item {
-            ast::Item::Const(constant) => Some(constant),
-            _ => None,
+        .flat_map(|item| match item {
+            ast::Item::Const(constant) => vec![constant],
+            ast::Item::Impl(implementation) => implementation
+                .items
+                .iter()
+                .filter_map(|member| match member {
+                    ast::ImplItem::Const(constant) => Some(constant),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
         })
         .collect::<Vec<_>>();
+    // Each struct's field names in declaration order, for a positional
+    // constant (`const P: Pair = { 4, 5 };`, #705).
+    let struct_fields: std::collections::HashMap<&str, Vec<&str>> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Struct(declaration) => Some((
+                declaration.name.text.as_str(),
+                declaration
+                    .fields
+                    .iter()
+                    .map(|field| field.name.text.as_str())
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
     let mut values = std::collections::HashMap::new();
     loop {
         let previous = values.len();
@@ -273,34 +299,43 @@ fn module_constant_integers(
             // `CFG.width` read them (#459).
             let parts: Vec<(String, &ast::Expr)> = match &constant.value {
                 ast::Expr::Array { elems, .. } => {
-                    let low = match &constant.ty {
+                    // The elements run from `'left`, as collection labels
+                    // them (#619): `integer[1..0]` holds `[1]` first, and
+                    // labelled from the low end they were reversed (#705).
+                    let (left, step) = match &constant.ty {
                         ast::Type::Indexed {
                             index: Some(index), ..
                         } => match index.as_ref() {
                             ast::Expr::Range { lo, hi, .. } => {
                                 crate::ir::eval_const_fns(lo, &values, functions, 0)
                                     .zip(crate::ir::eval_const_fns(hi, &values, functions, 0))
-                                    .map(|(lo, hi)| lo.min(hi))
-                                    .unwrap_or(0)
+                                    .map(|(lo, hi)| (lo, if lo <= hi { 1 } else { -1 }))
+                                    .unwrap_or((0, 1))
                             }
-                            _ => 0,
+                            _ => (0, 1),
                         },
-                        _ => 0,
+                        _ => (0, 1),
                     };
                     (0i64..)
                         .zip(elems)
-                        .map(|(offset, element)| (format!("{key}[{}]", low + offset), element))
+                        .map(|(offset, element)| {
+                            (format!("{key}[{}]", left + step * offset), element)
+                        })
                         .collect()
                 }
-                ast::Expr::Construct { args, .. } => args
-                    .iter()
-                    .filter_map(|arg| {
-                        Some((
-                            format!("{key}.{}", arg.field.as_ref()?.text),
-                            arg.value.as_ref()?,
-                        ))
-                    })
-                    .collect(),
+                ast::Expr::Construct { args, .. } => {
+                    let declared = type_leaf(&constant.ty).and_then(|name| struct_fields.get(name));
+                    args.iter()
+                        .enumerate()
+                        .filter_map(|(position, arg)| {
+                            let field = match &arg.field {
+                                Some(field) => field.text.as_str(),
+                                None => declared?.get(position)?,
+                            };
+                            Some((format!("{key}.{field}"), arg.value.as_ref()?))
+                        })
+                        .collect()
+                }
                 _ => Vec::new(),
             };
             for (part, value) in parts {
@@ -1101,6 +1136,32 @@ fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: u64) ->
         }
     }
     None
+}
+
+/// A `real` suffix literal (`2.0scale10`) folded through its impl's body,
+/// the evaluator a testbench folds it with, so a hardware constant reads
+/// the same value (#716). `None` for a body it cannot fold.
+pub(super) fn fold_real_suffix(function: &ast::FnDecl, text: &str) -> Option<f64> {
+    let parameter = function
+        .params
+        .iter()
+        .find(|parameter| !parameter.is_self)?;
+    if parameter.ty.as_ref().and_then(type_leaf) != Some("real") {
+        return None;
+    }
+    let suffix = ConstantSuffix {
+        target: function
+            .ret
+            .as_ref()
+            .and_then(type_leaf)
+            .unwrap_or("real")
+            .to_string(),
+        parameter: parameter.name.as_ref()?.text.clone(),
+        domain: SuffixDomain::Real,
+        body: function.body.clone()?,
+        function: function.clone(),
+    };
+    eval_real_suffix_block(&suffix.body, &suffix, real_literal(text)?)
 }
 
 fn real_literal(text: &str) -> Option<f64> {

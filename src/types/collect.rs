@@ -132,6 +132,7 @@ impl<'a> Checker<'a> {
             trait_impl_sites: HashSet::new(),
             trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
+            trait_signatures: HashMap::new(),
             trait_visibility,
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
@@ -265,7 +266,7 @@ impl<'a> Checker<'a> {
         // when it is an array of plain elements (#493).
         let families = self.array_families.clone();
         for signatures in self.index_sigs.values_mut() {
-            for (index, value) in signatures.iter_mut() {
+            for (index, value, _) in signatures.iter_mut() {
                 for key in [index, value] {
                     if let Some(sized) = key.as_ref().and_then(|k| k.strip_suffix("[]")) {
                         *key = families.contains(sized).then(|| sized.to_string());
@@ -751,10 +752,11 @@ impl<'a> Checker<'a> {
                             };
                             let index_type = arg_name(0);
                             let value_type = arg_name(1);
+                            let written = im.trait_args.get(1).and_then(GenericArg::as_type);
                             self.index_sigs
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
-                                .push((index_type, value_type));
+                                .push((index_type, value_type, written));
                         }
                         if is_blanket_array_impl(im) {
                             let requirement =
@@ -811,6 +813,27 @@ impl<'a> Checker<'a> {
                     .map(|f| f.name.text.clone())
                     .collect();
                 self.trait_required.insert(trait_key.clone(), required);
+                // core's traits are the compiler's hooks, read by the compiler
+                // and not by their written signatures (`From`'s `from(v:
+                // Self)`, `Suffix`'s `suffix`): only the rest are contracts.
+                let hook = self
+                    .resolved
+                    .declared(t.name.span)
+                    .is_some_and(|id| is_compiler_trait(self.resolved, id))
+                    || trait_key.starts_with("core::");
+                if !hook {
+                    self.trait_signatures.insert(
+                        trait_key.clone(),
+                        (
+                            t.params
+                                .params
+                                .iter()
+                                .map(|p| p.name.text.clone())
+                                .collect(),
+                            t.items.clone(),
+                        ),
+                    );
+                }
                 if t.params.params.is_empty() {
                     self.trait_default_bodies.insert(
                         trait_key.clone(),

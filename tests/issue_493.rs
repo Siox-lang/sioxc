@@ -37,7 +37,7 @@ fn sized_index_contracts_are_checked() {
     );
     let (ok, text, _) = compile("read", READ);
     assert!(!ok, "{text}");
-    assert!(text.contains("cannot assign unsigned to real"), "{text}");
+    assert!(text.contains("cannot assign unsigned[8] to real"), "{text}");
 }
 
 #[cfg(feature = "llvm")]

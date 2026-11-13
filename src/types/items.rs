@@ -161,6 +161,7 @@ impl<'a> Checker<'a> {
                 self.check_applied_view(&im.target);
                 self.check_impl(im);
                 self.check_inherited_defaults(im);
+                self.check_display_fmt(im);
             }
             Item::Trait(t) => {
                 for f in &t.items {
@@ -1233,6 +1234,53 @@ impl Checker<'_> {
     /// generic, `self` types as nothing, so `self.id` on a type without an
     /// `id` field passed and crashed lowering (#574). A generic trait or
     /// impl is left to its generic check.
+    /// A `Display::fmt` body is expanded into the caller's format at compile
+    /// time, so it may only bind `let`s and `write!`: an `if`, a loop or an
+    /// assignment in it built a test that aborted when it printed ("direct
+    /// Process IR lowering is incomplete", #653). Report it here instead.
+    fn check_display_fmt(&mut self, im: &ImplDecl) {
+        let display = im
+            .trait_
+            .as_ref()
+            .and_then(|tr| self.trait_key(tr))
+            .is_some_and(|key| key == "Display" || key.ends_with("::Display"));
+        if !display {
+            return;
+        }
+        for item in &im.items {
+            let ImplItem::Fn(function) = item else {
+                continue;
+            };
+            let Some(body) = &function.body else {
+                continue;
+            };
+            if function.name.text != "fmt" {
+                continue;
+            }
+            let allowed = |statement: &&Stmt| match statement {
+                Stmt::Let(_) => true,
+                Stmt::Expr(Expr::Call {
+                    bang: true, callee, ..
+                }) => matches!(callee.as_ref(), Expr::Path(path)
+                    if path.segments.last().is_some_and(|s| s.text == "write")),
+                _ => false,
+            };
+            let unsupported = body.stmts.iter().find(|statement| !allowed(statement));
+            if let Some(statement) = unsupported {
+                self.error_with_help(
+                    codes::UNSUPPORTED_EXPR,
+                    crate::syntax::ast::stmt_span(statement),
+                    "a `Display::fmt` body is formatted at compile time and may only \
+                     hold `let`s and `write!` calls"
+                        .to_string(),
+                    "branches, loops and assignments in `fmt` are not supported yet; \
+                     print the varying part from the caller"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     fn check_inherited_defaults(&mut self, im: &ImplDecl) {
         if !im.params.params.is_empty() {
             return;

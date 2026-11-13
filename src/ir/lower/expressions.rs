@@ -767,14 +767,6 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Inline the operator-trait impl body for `lhs OP rhs` when the left
-    /// operand is an enum- or struct-typed local with a matching impl. The
-    /// body must be a pure expression tree: `return e;` or `if c { .. } else
-    /// { .. }` chains ending in returns (which become [`Expr::Select`], per
-    /// field for struct values). `None` falls back to built-in lowering.
-    // ponytail: operand types come from the outer locals, so `self + rhs`
-    // nested *inside* an impl body doesn't re-inline; loops/match in bodies
-    // unsupported until needed.
     /// Lower a derived logical operator on a *packed* vector natively, as
     /// `and`/`or` already are, instead of inlining std's body.
     ///
@@ -984,13 +976,25 @@ impl<'a> Lowering<'a> {
             .as_ref()
             .and_then(crate::ir::lower_helpers::type_head_name)
             .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head));
+        // A `real`-backed type (`frequency`) has no wider product to unwrap,
+        // and sliced it no longer read as a real: a store into a `frequency`
+        // converted its bits again (#593).
+        let real_backed = family == "real"
+            || struct_derives_kernel(
+                family.rsplit("::").next().unwrap_or(&family),
+                "real",
+                &self.structs,
+                &self.free_fns,
+            );
         match inlined {
-            Val::Scalar(value) if own && width > 1 => Some(Val::Scalar(self.source_slice(
-                &value,
-                width - 1,
-                0,
-                ast::expr_span(lhs).to(ast::expr_span(rhs)),
-            ))),
+            Val::Scalar(value) if own && width > 1 && !real_backed => {
+                Some(Val::Scalar(self.source_slice(
+                    &value,
+                    width - 1,
+                    0,
+                    ast::expr_span(lhs).to(ast::expr_span(rhs)),
+                )))
+            }
             other => Some(other),
         }
     }

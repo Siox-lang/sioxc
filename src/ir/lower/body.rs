@@ -52,6 +52,9 @@ impl<'a> Lowering<'a> {
                 break;
             }
         }
+        for constant in &body_consts {
+            self.report_unfolded_constant(&constant.name.text, constant);
+        }
     }
 
     /// Lower an entity's impl body: declarations, processes and concurrent
