@@ -8040,17 +8040,19 @@ fn lower_process_named_conversion(
         return Some(push_value(*span, Some(target_type), width, kind, context));
     }
 
-    // A newtype unwrapped to its base (`Mode(im)` of `struct InnerMode(Mode)`)
-    // is the base's own value (#712).
-    let unwraps = matches!(&source_type, crate::types::Ty::Named(source_definition, _)
-    if context.modules.iter().flat_map(|module| &module.items).any(|item| matches!(
-        item,
-        ast::Item::Struct(declaration)
-            if declaration.fields.is_empty()
-                && context.resolved.declared(declaration.name.span) == Some(*source_definition)
-                && matches!(&declaration.base, Some(ast::Type::Path(base))
-                    if context.resolved.resolved(base.span) == Some(definition))
-    )));
+    // A newtype unwrapped to its base enum (`Mode(im)` of `struct
+    // InnerMode(Mode)`) is the enum's own value (#712). A struct base
+    // converts field by field elsewhere.
+    let unwraps = context.resolved.kind_of(definition) == Some(crate::resolve::DefKind::Enum)
+        && matches!(&source_type, crate::types::Ty::Named(source_definition, _)
+        if context.modules.iter().flat_map(|module| &module.items).any(|item| matches!(
+            item,
+            ast::Item::Struct(declaration)
+                if declaration.fields.is_empty()
+                    && context.resolved.declared(declaration.name.span) == Some(*source_definition)
+                    && matches!(&declaration.base, Some(ast::Type::Path(base))
+                        if context.resolved.resolved(base.span) == Some(definition))
+        )));
     if target == source
         || unwraps
         || process_enum_conversion_is_total(context.design, &target, &source)
