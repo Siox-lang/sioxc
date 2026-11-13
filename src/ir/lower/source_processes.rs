@@ -11740,10 +11740,23 @@ fn inline_value_statements(
             value: Some(value), ..
         } => {
             let return_type = context.inline_return_types.last().cloned().flatten();
-            Some((
-                value_ref_with_type(value, process, context, return_type.as_ref()),
-                ast::expr_span(value),
-            ))
+            let span = ast::expr_span(value);
+            let value = value_ref_with_type(value, process, context, return_type.as_ref());
+            // `return "0UX1";` from a vector function: as a `let` of one, the
+            // CFG form gives the literal its companion (#629, #709).
+            if matches!(
+                &context.process_ir.values[value.0 as usize].kind,
+                ProcessValueKind::String(text) if !text.is_empty()
+            ) && matches!(
+                return_type,
+                Some(crate::types::Ty::Array {
+                    family: Some(_),
+                    ..
+                })
+            ) {
+                return None;
+            }
+            Some((value, span))
         }
         Stmt::Let(declaration) => {
             let declared = declaration
