@@ -786,7 +786,8 @@ fn inline_call_once(
             frame_parameters.push(copy);
             copy
         } else {
-            capture_call_argument(argument, context, process, *block)
+            let written = function_writes_parameter(function, Some(parameter));
+            capture_parameter_argument(argument, written, context, process, *block)
         };
         bindings.insert(definition, argument);
     }
