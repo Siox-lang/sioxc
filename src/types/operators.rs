@@ -170,6 +170,12 @@ impl<'a> Checker<'a> {
             .and_then(|signatures| {
                 signatures.iter().find(|(declared, _)| {
                     declared.as_deref() == Some(input.as_str())
+                        || declared
+                            .as_deref()
+                            .and_then(|declared| self.param_argument(left, declared))
+                            .is_some_and(|argument| {
+                                self.ty_head(&argument).as_deref() == Some(input.as_str())
+                            })
                         || (declared.as_deref() == Some("Self") && input == owner)
                         || (coerces_to_owner
                             && (declared.as_deref() == Some("Self")

@@ -275,11 +275,27 @@ impl<'a> FunctionIndex<'a> {
         let Some(owner) = self.type_head_key(&implementation.target) else {
             return;
         };
-        // `Not<Out>` and `Neg<Out>` have no `Rhs`.
+        // `Not<Out>` and `Neg<Out>` have no `Rhs`. A right operand that is
+        // the impl's own type parameter (`impl<T> Add<T, ..> for Box<T>`)
+        // takes whatever the checker bound it to: `*`, matched after the
+        // exact inputs (#608).
+        let type_parameter = |path: &ast::Path| {
+            matches!(path.segments.as_slice(), [only] if implementation
+                .params
+                .params
+                .iter()
+                .any(|parameter| parameter.name.text == only.text && !parameter.is_value()))
+        };
         let input = (!matches!(trait_key.as_str(), "Not" | "Neg"))
             .then(|| implementation.trait_args.get(usize::from(custom)))
             .flatten()
             .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path)) if type_parameter(path) => {
+                    Some("*".to_string())
+                }
+                ast::GenericArg::PositionalType(ast::Type::Path(path)) if type_parameter(path) => {
+                    Some("*".to_string())
+                }
                 ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
                 ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
                 _ => None,
@@ -388,6 +404,11 @@ impl<'a> FunctionIndex<'a> {
             Some(input) => candidates
                 .iter()
                 .find(|(function, declared)| matches(function, declared, input))
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|(_, declared)| declared.as_deref() == Some("*"))
+                })
                 .or_else(|| {
                     if input == "integer" {
                         candidates

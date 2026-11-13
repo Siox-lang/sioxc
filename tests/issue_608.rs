@@ -62,6 +62,33 @@ fn signature_type_parameters_read_as_arguments() {
     );
 }
 
+#[cfg(feature = "llvm")]
+#[test]
+fn type_parameter_operators_dispatch_in_testbenches() {
+    let dir = std::env::temp_dir().join(format!("siox_i608_op_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("op.bin");
+    let built = sioxc(
+        &dir,
+        "op",
+        OPERATOR,
+        &["--test", "-o", binary.to_str().unwrap()],
+    );
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `b + n` calls the impl (`Box { .val = n }`), not a raw add of the bits.
+    assert!(
+        output.status.success() && stdout.contains("7 9"),
+        "{stdout}"
+    );
+}
+
 const INDEX_ASSIGN: &str = r#"module repro_index_assign;
 
 struct MyVec<T> { pub elem: T }
@@ -124,6 +151,32 @@ impl Tb {
         let b: Box<unsigned[8]> = Box(x);
         print!("{} {} {}\n", v.elem, y, b.val);
         assert!(y == 42 and b.val == 42);
+    }
+}
+"#;
+
+const OPERATOR: &str = r#"module o608;
+
+struct Box<T> { pub val: T }
+
+impl<T> Add<T, Box<T>> for Box<T> {
+    fn add(rhs: T) -> Box<T> { return Box<T> { .val = rhs }; }
+}
+
+impl<T> From<T> for Box<T> {
+    static fn from(value: T) -> Box<T> { return Box<T> { .val = value }; }
+}
+
+#[test]
+entity Tb {}
+impl Tb {
+    process {
+        let a: unsigned[8] = 7;
+        let b: Box<unsigned[8]> = Box { .val = a };
+        let n: unsigned[8] = 9;
+        let c: Box<unsigned[8]> = b + n;
+        print!("{} {}\n", b.val, c.val);
+        assert!(b.val == 7 and c.val == 9);
     }
 }
 "#;
