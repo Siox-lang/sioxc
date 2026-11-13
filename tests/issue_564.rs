@@ -1,7 +1,8 @@
 //! Regression for sioxc #564: a value parameter bound only by a function's
 //! result (`fn slice_lo<W: integer>(v) -> unsigned[W]`, called as
 //! `let lo: unsigned[16] = slice_lo(v)`) takes the result's width inside
-//! the body, `unsigned[W](v)` included. Hardware said "no value named W"
+//! the body, `unsigned[W](v)` included (and #590: bound from an argument).
+//! Hardware said "no value named W"
 //! and a testbench did not lower.
 
 use std::process::Command;
@@ -50,6 +51,23 @@ fn result_bound_width_parameters_lower() {
     let run = Command::new(binary).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(run.status.success() && stdout.contains(" ok"), "{stdout}");
+
+    // #590: the same conversion with `W` bound from an argument.
+    let binary = dir.join("same.bin");
+    let tb = sioxc(
+        &dir,
+        "same",
+        ARGUMENT_BOUND,
+        &["--test", "-o", binary.to_str().unwrap()],
+    );
+    assert!(
+        tb.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tb.stderr)
+    );
+    let run = Command::new(binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success() && stdout.contains("171"), "{stdout}");
 }
 
 const HARDWARE: &str = r#"module test_generic_ret_hw;
@@ -83,4 +101,17 @@ impl Tb {
         assert!(lo == 0xDEF0);
     }
 }
+"#;
+
+const ARGUMENT_BOUND: &str = r#"module h_same;
+use std::bits::unsigned;
+fn same<W: integer>(v: unsigned[W]) -> unsigned[W] {
+    return unsigned[W](v);
+}
+#[test] entity TB {}
+impl TB { process {
+    let v: unsigned[8] = 0xAB;
+    let a: unsigned[8] = same(v);
+    print!("{}\n", a);
+} }
 "#;
