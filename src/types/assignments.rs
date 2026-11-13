@@ -651,7 +651,7 @@ impl<'a> Checker<'a> {
             let mut inferred = inferred_expr.map(|argument| self.type_of(argument, sym));
             // `T` inside an argument (`p: (T, T)`, `xs: T[4]`): each position
             // it takes, with its argument (#386).
-            let mut nested: Vec<(Ty, &Expr)> = Vec::new();
+            let mut nested: Vec<(Ty, &Expr, Option<&Expr>)> = Vec::new();
             for (declared, argument) in params.iter().zip(args) {
                 let Some(declared) = declared.as_ref() else {
                     continue;
@@ -663,26 +663,38 @@ impl<'a> Checker<'a> {
                 Self::type_param_occurrences(
                     declared,
                     &self.type_of(argument, sym),
+                    Some(argument),
                     &gp.name.text,
                     &mut found,
                 );
-                nested.extend(found.into_iter().map(|ty| (ty, argument)));
+                nested.extend(
+                    found
+                        .into_iter()
+                        .map(|(ty, position)| (ty, argument, position)),
+                );
             }
-            // ponytail: a nested position typed `integer` may be an untyped
-            // literal (`(x, 1)`), which adopts `T`, so it neither infers `T`
-            // nor conflicts; an `integer` `T` from a nested position alone
-            // goes unchecked.
-            let typed_nested = |ty: &Ty| !matches!(ty, Ty::Error | Ty::Integer);
+            // A nested position spelled as a literal (`(42, true)`'s `42`)
+            // adopts `T`, as a direct literal argument does; any other
+            // position, `integer` included, is a typed `T` (#622).
+            let literal = |position: &Option<&Expr>| {
+                position.is_some_and(|position| Self::is_contextual_literal(position))
+            };
             if inferred.is_none() {
                 inferred = nested
                     .iter()
-                    .map(|(ty, _)| ty)
-                    .find(|ty| typed_nested(ty))
-                    .cloned();
+                    .find(|(ty, _, position)| !matches!(ty, Ty::Error) && !literal(position))
+                    .or_else(|| nested.iter().find(|(ty, _, _)| !matches!(ty, Ty::Error)))
+                    .map(|(ty, _, _)| ty.clone());
             }
             if let Some(expected) = inferred.as_ref().filter(|ty| !matches!(ty, Ty::Error)) {
-                for (actual, argument) in &nested {
-                    if typed_nested(actual) && actual != expected {
+                for (actual, argument, position) in &nested {
+                    let fits = match position {
+                        Some(position) if literal(&Some(*position)) => {
+                            self.assignable(expected, position, sym)
+                        }
+                        _ => matches!(actual, Ty::Error) || actual == expected,
+                    };
+                    if !fits {
                         self.error_with_help(
                             codes::TYPE_MISMATCH,
                             expr_span(argument),
