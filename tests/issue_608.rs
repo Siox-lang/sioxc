@@ -1,4 +1,4 @@
-//! Regression for sioxc #608 (part): a trait signature's type parameter
+//! Regression for sioxc #608: a trait signature's type parameter
 //! (`impl<T> Index<integer, T> for MyVec<T>`) reads as the owner's type
 //! argument. Recorded as the bare name `T`, `IndexAssign` was refused for
 //! `MyVec<Bit>`, `From<T>` refused every source, and `Index` typed as an
@@ -85,6 +85,34 @@ fn type_parameter_operators_dispatch_in_testbenches() {
     // `b + n` calls the impl (`Box { .val = n }`), not a raw add of the bits.
     assert!(
         output.status.success() && stdout.contains("7 9"),
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn type_parameter_impls_lower_in_hardware() {
+    let dir = std::env::temp_dir().join(format!("siox_i608_hw_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("hw.bin");
+    let built = sioxc(
+        &dir,
+        "hw",
+        HARDWARE,
+        &["--test", "-o", binary.to_str().unwrap()],
+    );
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `Box(a)` through `From<T>`, and `b + n` through `Add<T, Box<T>>`, whose
+    // body returns `Box { .val = rhs }`.
+    assert!(
+        output.status.success() && stdout.contains("from=7 add=9"),
         "{stdout}"
     );
 }
@@ -177,6 +205,49 @@ impl Tb {
         let c: Box<unsigned[8]> = b + n;
         print!("{} {}\n", b.val, c.val);
         assert!(b.val == 7 and c.val == 9);
+    }
+}
+"#;
+
+const HARDWARE: &str = r#"module h608;
+
+struct Box<T> { pub val: T }
+
+impl<T> Add<T, Box<T>> for Box<T> {
+    fn add(rhs: T) -> Box<T> { return Box<T> { .val = rhs }; }
+}
+
+impl<T> From<T> for Box<T> {
+    static fn from(value: T) -> Box<T> { return Box<T> { .val = value }; }
+}
+
+entity Top {
+    a: unsigned[8] in,
+    n: unsigned[8] in,
+    from_out: unsigned[8] out,
+    add_out: unsigned[8] out,
+}
+impl Top {
+    let b: Box<unsigned[8]>;
+    let res: Box<unsigned[8]>;
+    b = Box(a);
+    res = b + n;
+    from_out = b.val;
+    add_out = res.val;
+}
+
+#[test]
+entity Tb {}
+impl Tb {
+    let a: unsigned[8] = 7;
+    let n: unsigned[8] = 9;
+    let from_out: unsigned[8];
+    let add_out: unsigned[8];
+    let dut: Top = { .a = a, .n = n, .from_out = from_out, .add_out = add_out };
+    process {
+        await 1ns;
+        print!("from={} add={}\n", from_out, add_out);
+        assert!(from_out == 7 and add_out == 9);
     }
 }
 "#;

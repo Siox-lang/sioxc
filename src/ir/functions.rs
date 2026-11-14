@@ -87,10 +87,21 @@ impl<'a> FunctionIndex<'a> {
         let Some(target) = self.type_head_key(&implementation.target) else {
             return;
         };
+        // `impl<T> From<T> for Box<T>` converts any source (#608).
         let Some(source) = implementation
             .trait_args
             .first()
             .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path))
+                    if impl_type_parameter(implementation, path) =>
+                {
+                    Some("*".to_string())
+                }
+                ast::GenericArg::PositionalType(ast::Type::Path(path))
+                    if impl_type_parameter(implementation, path) =>
+                {
+                    Some("*".to_string())
+                }
                 ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
                 ast::GenericArg::PositionalType(ty) => self.trait_arg_key(ty),
                 _ => None,
@@ -151,6 +162,7 @@ impl<'a> FunctionIndex<'a> {
     pub fn get_conversion(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
         self.conversions
             .get(&(target.to_string(), source.to_string()))
+            .or_else(|| self.conversions.get(&(target.to_string(), "*".to_string())))
             .copied()
     }
 
@@ -279,13 +291,7 @@ impl<'a> FunctionIndex<'a> {
         // the impl's own type parameter (`impl<T> Add<T, ..> for Box<T>`)
         // takes whatever the checker bound it to: `*`, matched after the
         // exact inputs (#608).
-        let type_parameter = |path: &ast::Path| {
-            matches!(path.segments.as_slice(), [only] if implementation
-                .params
-                .params
-                .iter()
-                .any(|parameter| parameter.name.text == only.text && !parameter.is_value()))
-        };
+        let type_parameter = |path: &ast::Path| impl_type_parameter(implementation, path);
         let input = (!matches!(trait_key.as_str(), "Not" | "Neg"))
             .then(|| implementation.trait_args.get(usize::from(custom)))
             .flatten()
@@ -961,4 +967,15 @@ fn comparison_symbol(method: &str) -> Option<&'static str> {
 /// `"owner::name"` split at its last `::`; an owner path keeps its own.
 fn split_associated_key(key: &str) -> (&str, &str) {
     key.rsplit_once("::").unwrap_or(("", key))
+}
+
+/// Whether `path` names one of `implementation`'s own type parameters
+/// (`T` of `impl<T> Add<T, Box<T>> for Box<T>`): an operator input keyed
+/// as `*`, matched after the exact ones, in both lowering paths (#608).
+pub(crate) fn impl_type_parameter(implementation: &ast::ImplDecl, path: &ast::Path) -> bool {
+    matches!(path.segments.as_slice(), [only] if implementation
+        .params
+        .params
+        .iter()
+        .any(|parameter| parameter.name.text == only.text && !parameter.is_value()))
 }
