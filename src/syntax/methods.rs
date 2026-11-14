@@ -482,13 +482,11 @@ pub fn struct_defaults(modules: &mut [Module]) {
         // A generated default spans its whole `let`, as no written
         // initializer does: lowering tells it apart for the undriven-signal
         // lint, which a written value silences (#708).
-        match declaration.value.as_mut() {
-            Some(
-                Expr::Call { span, .. } | Expr::Array { span, .. } | Expr::Construct { span, .. },
-            ) => {
-                *span = declaration.span;
-            }
-            _ => {}
+        if let Some(
+            Expr::Call { span, .. } | Expr::Array { span, .. } | Expr::Construct { span, .. },
+        ) = declaration.value.as_mut()
+        {
+            *span = declaration.span;
         }
     };
     for module in modules.iter_mut() {
