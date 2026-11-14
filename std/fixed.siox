@@ -34,14 +34,27 @@ impl Sub<ufixed, ufixed> for ufixed {
     fn sub(rhs: ufixed) -> ufixed { return self - rhs; }
 }
 
+// Past the kernel word (`ufixed<48, 24>`'s 96-bit product) the words
+// multiply over `unsigned[128]`; the product wrapped at 64 bits (#420).
 impl Mul<ufixed, ufixed> for ufixed {
-    fn mul(rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
+    fn mul(rhs: ufixed) -> ufixed {
+        if self'length + rhs'length > 62 {
+            let product: unsigned[128] = unsigned[128](word(self)) * unsigned[128](word(rhs));
+            return low_word(product >> (0 - self'low), self'length);
+        }
+        return (self * rhs) >> (0 - self'low);
+    }
 }
 
 // The dividend is scaled by the fraction width first, so the quotient of the
 // words is in the format.
 impl Div<ufixed, ufixed> for ufixed {
     fn div(rhs: ufixed) -> ufixed {
+        if self'length - self'low > 62 {
+            if word(rhs) == 0 { return 0; }
+            let scaled: unsigned[128] = unsigned[128](word(self)) << (0 - self'low);
+            return low_word(scaled / unsigned[128](word(rhs)), self'length);
+        }
         return floor_div(word(self) << (0 - self'low), word(rhs));
     }
 }
@@ -87,11 +100,12 @@ impl From<ufixed> for real {
 // `W + F + 2` bits of the 64-bit kernel word.
 impl Sqrt for ufixed {
     fn sqrt() -> ufixed {
-        return clamp(
-            (isqrt(word(self) << (2 - self'low), self) + 1) >> 1,
-            0,
-            largest(self'high, self'low, false)
-        );
+        let root: integer = if self'length - self'low + 2 > 62 {
+            wide_isqrt(unsigned[128](word(self)) << (2 - self'low), self)
+        } else {
+            isqrt(word(self) << (2 - self'low), self)
+        };
+        return clamp((root + 1) >> 1, 0, largest(self'high, self'low, false));
     }
 }
 
@@ -111,6 +125,13 @@ impl Sub<sfixed, sfixed> for sfixed {
 // and the shift by the fraction width selects the result's bits.
 impl Mul<sfixed, sfixed> for sfixed {
     fn mul(rhs: sfixed) -> sfixed {
+        // Past the kernel word, the signed values multiply over
+        // `signed[128]` (#420).
+        if self'length + rhs'length > 62 {
+            let product: signed[128] = signed[128](sext_word(word(self), self'length))
+                * signed[128](sext_word(word(rhs), rhs'length));
+            return low_word(unsigned[128](product >> (0 - self'low)), self'length);
+        }
         return ((self * rhs)
             - (((self >> (self'length - 1)) * rhs) << self'length)
             - (((rhs >> (rhs'length - 1)) * self) << rhs'length))
@@ -120,6 +141,19 @@ impl Mul<sfixed, sfixed> for sfixed {
 
 impl Div<sfixed, sfixed> for sfixed {
     fn div(rhs: sfixed) -> sfixed {
+        if self'length - self'low > 62 {
+            let d: integer = sext_word(word(rhs), rhs'length);
+            if d == 0 { return 0; }
+            let n: signed[128] = signed[128](sext_word(word(self), self'length)) << (0 - self'low);
+            let q: signed[128] = n / signed[128](d);
+            // Toward minus infinity, as `floor_div`.
+            let floor: signed[128] = if (n - q * signed[128](d)) != 0 and (n < 0) != (0 > d) {
+                q - 1
+            } else {
+                q
+            };
+            return low_word(unsigned[128](floor), self'length);
+        }
         return floor_div(
             sext_word(word(self), self'length) << (0 - self'low),
             sext_word(word(rhs), rhs'length)
@@ -162,9 +196,12 @@ impl Sqrt for sfixed {
     fn sqrt() -> sfixed {
         let n: integer = sext_word(word(self), self'length);
         if n <= 0 { return 0; }
-        return clamp(
-            (isqrt(n << (2 - self'low), self) + 1) >> 1, 0, largest(self'high, self'low, true)
-        );
+        let root: integer = if self'length - self'low + 2 > 62 {
+            wide_isqrt(unsigned[128](n) << (2 - self'low), self)
+        } else {
+            isqrt(n << (2 - self'low), self)
+        };
+        return clamp((root + 1) >> 1, 0, largest(self'high, self'low, true));
     }
 }
 
@@ -369,12 +406,19 @@ fn scale(n: integer, fraction: integer, right: integer) -> integer {
     return round_shift(n, fraction + right);
 }
 
+// The format's extremes as words. A word is an `integer`, so a format of 64
+// bits or more reaches only what that holds: `(1 << 64) - 1` was -1, and
+// every `ufixed<64, F>` saturated to it (#420).
+// ponytail: a 64-bit `ufixed` word above 2^63 has no `integer` form; words
+// as `unsigned[W]` would lift that.
 fn largest(left: integer, right: integer, is_signed: Bool) -> integer {
-    if is_signed { return (1 << (left - right)) - 1; }
-    return (1 << (left - right + 1)) - 1;
+    let bits: integer = if is_signed { left - right } else { left - right + 1 };
+    if bits >= 63 { return 9223372036854775807; }
+    return (1 << bits) - 1;
 }
 
 fn smallest(left: integer, right: integer, is_signed: Bool) -> integer {
+    if is_signed and left - right >= 63 { return 0 - 9223372036854775807 - 1; }
     if is_signed { return 0 - (1 << (left - right)); }
     return 0;
 }
@@ -406,6 +450,30 @@ fn isqrt<T>(r: integer, format: T) -> integer {
     return root;
 }
 
+// `isqrt` over a radicand past the kernel word (#420).
+fn wide_isqrt<T>(r: unsigned[128], format: T) -> integer {
+    let rest: unsigned[128] = r;
+    let root: unsigned[128] = 0;
+    let one: unsigned[128] = unsigned[128](1) << (2 * ((format'length - format'low + 1) / 2));
+    for k in 0..(format'length - format'low + 1) / 2 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return integer(root);
+}
+
+// The low `width` bits of a wide result, as the word a store keeps; a
+// 64-bit word keeps 63, what an `integer` holds.
+fn low_word(value: unsigned[128], width: integer) -> integer {
+    let bits: integer = if width >= 63 { 63 } else { width };
+    return integer(value - ((value >> bits) << bits));
+}
+
 // `n / 2^k` rounded to the nearest integer, ties away from zero.
 fn round_shift(n: integer, k: integer) -> integer {
     if n < 0 { return 0 - ((0 - n + (1 << (k - 1))) >> k); }
@@ -434,18 +502,18 @@ fn sext_word(word: integer, width: integer) -> integer {
 // The words of `value` in the format `[left..right]`.
 fn ufixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
-    let largest: integer = (1 << (left - right + 1)) - 1;
+    let most: integer = largest(left, right, false);
     if steps <= 0.0 { return 0; }
-    if steps >= real(largest) { return largest; }
+    if steps >= real(most) { return most; }
     return integer(steps + 0.5);
 }
 
 fn sfixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
-    let largest: integer = (1 << (left - right)) - 1;
-    let smallest: integer = 0 - (1 << (left - right));
-    if steps >= real(largest) { return largest; }
-    if steps <= real(smallest) { return smallest; }
+    let most: integer = largest(left, right, true);
+    let least: integer = smallest(left, right, true);
+    if steps >= real(most) { return most; }
+    if steps <= real(least) { return least; }
     if steps < 0.0 { return 0 - integer(0.5 - steps); }
     return integer(steps + 0.5);
 }
