@@ -571,7 +571,15 @@ impl<'a> Lowering<'a> {
                         .and_then(|p| self.locals.get(&p))
                         .is_some_and(|&id| self.out.signals[id.0 as usize].width > 1)
                 {
-                    return Some(4);
+                    // The element enum's own width: a plain enum packed by a
+                    // synthesized encoding (`State`, 2 bits) is narrower
+                    // than `Logic`'s 4 (#561).
+                    let element = expr_path(base)
+                        .and_then(|p| self.locals.get(&p))
+                        .and_then(|id| self.out.array_element_enums.get(&id.0))
+                        .and_then(|element| self.enum_reprs.get(element))
+                        .copied();
+                    return Some(element.unwrap_or(4));
                 }
                 Some((a.max(b) - a.min(b) + 1) as u32)
             }

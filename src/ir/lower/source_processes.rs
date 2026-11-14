@@ -2759,6 +2759,68 @@ fn lower_statement(
             assign_construct_fields(base, fields, args, context, process, block)?;
             Some(block)
         }
+        // `let s: States = States([State::Idle, State::Run]);` over a plain
+        // enum: the vector is declared, then written element by element, as
+        // `s[0] = ..` lowers; the array had no packed form to convert from
+        // (#561). Element `k` is the vector's lowest label plus `k`.
+        Stmt::Let(declaration)
+            if declaration
+                .value
+                .as_ref()
+                .is_some_and(|value| packed_enum_elements(value, context).is_some()) =>
+        {
+            let elements = packed_enum_elements(declaration.value.as_ref()?, context)?;
+            let bare = Stmt::Let(ast::LetDecl {
+                value: None,
+                ..declaration.clone()
+            });
+            let block = lower_statement(&bare, context, process, block)?;
+            let local = ProcessLocalId(process.locals.len().checked_sub(1)? as u32);
+            let low = match process.locals[local.0 as usize]
+                .layout
+                .as_ref()
+                .map(|l| &l.kind)
+            {
+                Some(LayoutKind::Packed {
+                    range: Some(range), ..
+                }) => range.left.min(range.right),
+                _ => 0,
+            };
+            for (position, element) in elements.iter().enumerate() {
+                let span = ast::expr_span(element);
+                let element_type = context.typed.expr_type(span).cloned();
+                let base = cfg_calls::local_value(local, process, context);
+                let index = push_value(
+                    span,
+                    Some(crate::types::Ty::Integer),
+                    Some(64),
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![
+                        (low + position as i64) as u64,
+                    ])),
+                    context,
+                );
+                let value = value_ref_with_type(element, process, context, element_type.as_ref());
+                let width = context.process_ir.values[value.0 as usize].bit_width;
+                let place = push_value(
+                    span,
+                    element_type,
+                    width,
+                    ProcessValueKind::Index { base, index },
+                    context,
+                );
+                let semantics = process_place_assignment(place, context.process_ir)?;
+                process.blocks[block.0 as usize]
+                    .instructions
+                    .push(ProcessInstruction::Assign {
+                        semantics,
+                        driver_context: None,
+                        target: place,
+                        value,
+                        span,
+                    });
+            }
+            Some(block)
+        }
         Stmt::Let(declaration) => {
             let sized = sized_by_value(declaration, process, context);
             let declaration = sized.as_ref().unwrap_or(declaration);
@@ -2882,6 +2944,42 @@ fn lower_statement(
                     initializer,
                     span: declaration.span,
                 });
+            Some(block)
+        }
+        // `s = States([..])`: element by element, as the `let` form (#561).
+        Stmt::Assign {
+            label,
+            target,
+            value,
+            after: None,
+            span,
+        } if !matches!(target, ast::Expr::Tuple { .. })
+            && packed_enum_elements(value, context).is_some() =>
+        {
+            let elements = packed_enum_elements(value, context)?;
+            let low = match context.typed.expr_type(ast::expr_span(target)) {
+                Some(crate::types::Ty::Array { low, .. }) => *low,
+                _ => 0,
+            };
+            let mut block = block;
+            for (position, element) in elements.iter().enumerate() {
+                let at = ast::expr_span(element);
+                let write = Stmt::Assign {
+                    label: label.clone(),
+                    target: ast::Expr::Index {
+                        base: Box::new(target.clone()),
+                        index: Box::new(ast::Expr::Int {
+                            text: (low + position as i64).to_string(),
+                            span: at,
+                        }),
+                        span: *span,
+                    },
+                    value: element.clone(),
+                    after: None,
+                    span: *span,
+                };
+                block = lower_statement(&write, context, process, block)?;
+            }
             Some(block)
         }
         Stmt::Assign {
@@ -4249,6 +4347,42 @@ fn function_writes_parameter(function: &ast::FnDecl, parameter: Option<&ast::FnP
 /// Write a struct literal into `base` field by field, as `layout_fields`
 /// lays it out: a generic struct's construct has no field types of its own
 /// (#196, #412), and a nested literal is written the same way (#408).
+/// The elements of `let s: F = F([e0, e1, ..])` when `F` is a packed vector
+/// over an encoded enum, a plain one's encoding synthesized (#561); a
+/// bit-character array keeps its spelled-string path.
+fn packed_enum_elements<'d>(
+    value: &'d ast::Expr,
+    context: &LoweringContext<'_>,
+) -> Option<&'d [ast::Expr]> {
+    let ast::Expr::Call { callee, args, .. } = value else {
+        return None;
+    };
+    let ast::Expr::Path(path) = callee.as_ref() else {
+        return None;
+    };
+    let [ast::Expr::Array { elems, .. }] = args.as_slice() else {
+        return None;
+    };
+    if elems.is_empty() || elems.iter().any(|e| matches!(e, ast::Expr::CharLit { .. })) {
+        return None;
+    }
+    let definition = context.resolved.resolved(path.span)?;
+    let family = context.resolved.qualified_name(definition)?;
+    let element = context
+        .design
+        .array_element_of_family
+        .get(&family)
+        .or_else(|| {
+            let leaf = family.rsplit("::").next()?;
+            context.design.array_element_of_family.get(leaf)
+        })?;
+    context
+        .design
+        .logic_encodings
+        .contains_key(element)
+        .then_some(elems.as_slice())
+}
+
 fn assign_construct_fields(
     base: ProcessValueId,
     fields: &[crate::ir::LayoutField],

@@ -183,6 +183,36 @@ impl<'a> Lowering<'a> {
                 current = base;
             }
         }
+        // A packed vector over a plain enum (`struct States(State[2])`, no
+        // `impl LogicEncoding`) packs as `Logic` does: the first two variants
+        // are the value bit's 0 and 1, every other one is carried whole by
+        // the companion plane (4 bits, so up to 16 variants). A plain enum
+        // has no metavalues, so nothing is unknown (#561).
+        let families: Vec<String> = self.array_families.iter().cloned().collect();
+        for family in families {
+            let Some(element) = self.array_element_enum(&family) else {
+                continue;
+            };
+            if out.contains_key(&element) {
+                continue;
+            }
+            let Some(variants) = self.enum_variants.get(&element) else {
+                continue;
+            };
+            let mut discriminants: Vec<u64> = variants.values().copied().collect();
+            discriminants.sort_unstable();
+            if discriminants.len() < 2 || discriminants.len() > 16 {
+                continue;
+            }
+            let mut encoding = LogicEncoding::default();
+            for &disc in &discriminants {
+                encoding.value_bits.insert(disc, disc == discriminants[1]);
+                encoding.x01.insert(disc, disc);
+            }
+            encoding.binary.insert(discriminants[0]);
+            encoding.binary.insert(discriminants[1]);
+            out.insert(element, encoding);
+        }
         out
     }
 
@@ -336,7 +366,12 @@ impl<'a> Lowering<'a> {
                             .is_some_and(|element| {
                                 self.logic_encodings
                                     .get(element)
-                                    .is_some_and(|encoding| !encoding.unknown.is_empty())
+                                    // Any value the value bit alone does
+                                    // not hold: a metavalue, or a plain
+                                    // enum's third variant (#561).
+                                    .is_some_and(|encoding| {
+                                        encoding.value_bits.len() > encoding.binary.len()
+                                    })
                             })
                         {
                             inputs.insert(binding.signal.0);
