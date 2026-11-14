@@ -56,6 +56,19 @@ fn round_shift(m: integer, shift: integer) -> integer {
     return if rest > half or (rest == half and low_bits(q, 1) == 1) { q + 1 } else { q };
 }
 
+// `a * b >> shift` with every bit shifted out folded into the lowest bit
+// kept (a sticky bit), so rounding the result is as rounding the whole
+// product: binary64's 106-bit significand product overflowed `integer`,
+// and `*` read 0 (#417).
+fn product_shifted(a: integer, b: integer, shift: integer) -> integer {
+    if 0 >= shift { return a * b; }
+    let wide: unsigned[128] = unsigned[128](a) * unsigned[128](b);
+    let kept: unsigned[128] = wide >> shift;
+    let q: integer = integer(kept);
+    let inexact: Bool = (kept << shift) != wide;
+    return if inexact and low_bits(q, 1) == 0 { q + 1 } else { q };
+}
+
 // The word of the format with `e` exponent and `f` fraction bits.
 fn pack(sign: integer, exponent: integer, fraction: integer, e: integer, f: integer) -> integer {
     return (sign << (e + f)) + (exponent << f) + fraction;
@@ -144,8 +157,12 @@ impl Mul<float, float> for float {
         if infinite { return infinity_word(sign, e, f); }
         if zero { return pack(sign, 0, 0, e, f); }
         let bias: integer = (1 << (e - 1)) - 1;
-        let m: integer = ((1 << f) + fa) * ((1 << f) + fb);
-        return encode(sign, ea + eb - bias, m, f + f, e, f);
+        // Up to 62 product bits fit `integer`; beyond, keep 62 and a sticky
+        // bit, enough for `encode` to round to `f + 1` bits.
+        let over: integer = (f + f + 2) - 62;
+        let shift: integer = if over > 0 { over } else { 0 };
+        let m: integer = product_shifted((1 << f) + fa, (1 << f) + fb, shift);
+        return encode(sign, ea + eb - bias, m, f + f - shift, e, f);
     }
 }
 
@@ -192,9 +209,18 @@ impl Div<float, float> for float {
         // product needs `2f + 2`, so both stop short of binary64.
         let ma: integer = (1 << f) + fa;
         let mb: integer = (1 << f) + fb;
+        let bias: integer = (1 << (e - 1)) - 1;
+        // Past the kernel word (binary64's 107-bit dividend), the quotient
+        // is taken over `unsigned[128]`; it read 0 (#417).
+        if f + f + 3 > 62 {
+            let num: unsigned[128] = unsigned[128](ma) << (f + 2);
+            let wide: unsigned[128] = num / unsigned[128](mb);
+            let q: integer = integer(wide);
+            let sticky: integer = if num != wide * unsigned[128](mb) { 1 } else { 0 };
+            return encode(sign, ea - eb + bias, (q << 1) + sticky, f + 3, e, f);
+        }
         let q: integer = (ma << (f + 2)) / mb;
         let sticky: integer = if (ma << (f + 2)) != q * mb { 1 } else { 0 };
-        let bias: integer = (1 << (e - 1)) - 1;
         return encode(sign, ea - eb + bias, (q << 1) + sticky, f + 3, e, f);
     }
 }
@@ -217,6 +243,23 @@ fn root_with_sticky<T>(r: integer, format: T) -> integer {
         one = one >> 2;
     }
     return (root << 1) + (if rest != 0 { 1 } else { 0 });
+}
+
+// `root_with_sticky` over a radicand past the kernel word (#417).
+fn wide_root_with_sticky<T>(r: unsigned[128], format: T) -> integer {
+    let rest: unsigned[128] = r;
+    let root: unsigned[128] = 0;
+    let one: unsigned[128] = unsigned[128](1) << (2 * (0 - format'low) + 4);
+    for k in 0..(0 - format'low) + 2 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return (integer(root) << 1) + (if rest != 0 { 1 } else { 0 });
 }
 
 // The sum of two words of the format: the smaller magnitude is aligned to the
@@ -363,6 +406,14 @@ impl Sqrt for float {
         let bias: integer = (1 << (e - 1)) - 1;
         let k: integer = exponent - bias;
         let odd: integer = low_bits(k, 1);
+        // Past the kernel word (binary64's 110-bit radicand), the root is
+        // taken over `unsigned[128]`; it read 0 (#417).
+        if f + f + 6 > 62 {
+            let wide: unsigned[128] = unsigned[128]((1 << f) + fraction) << (f + 4 + odd);
+            return encode(
+                0, (k - odd) / 2 + bias, wide_root_with_sticky(wide, self), f + 3, e, f
+            );
+        }
         let radicand: integer = ((1 << f) + fraction) << (f + 4 + odd);
         return encode(
             0, (k - odd) / 2 + bias, root_with_sticky(radicand, self), f + 3, e, f
