@@ -469,7 +469,14 @@ impl<'a> Lowering<'a> {
                     if is_instance_array {
                         self.instance_arrays.insert(l.name.text.clone());
                     }
-                    if l.value.is_none() && !is_instance_array && !is_root {
+                    // A default the syntax pass wrote (spanning the `let`)
+                    // is no assignment: never driven, it is still reported,
+                    // as an enum's default is (#708).
+                    let generated_default = l
+                        .value
+                        .as_ref()
+                        .is_some_and(|value| ast::expr_span(value) == l.span);
+                    if (l.value.is_none() || generated_default) && !is_instance_array && !is_root {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
                         let mut leaves: Vec<SignalId> = self

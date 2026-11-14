@@ -1,7 +1,8 @@
 //! Regression for sioxc #708: an `impl Default` reaches every place its type
 //! is declared without a value. A hardware newtype signal (`let sc: Score;`)
 //! powered on at 0; a defaulted struct inside an array (`Pt[2]`) or an outer
-//! struct (`let o: Outer;`, `Outer()`) was zeroed in hardware and testbench.
+//! struct (`let o: Outer;`, `Outer()`) was zeroed in hardware and testbench;
+//! and a struct signal left at its default was not reported as undriven.
 
 use std::process::Command;
 
@@ -117,6 +118,37 @@ impl Tb {
 }
 "#;
 
+#[cfg(feature = "llvm")]
+#[test]
+fn an_undriven_defaulted_struct_is_reported() {
+    let dir = std::env::temp_dir().join(format!("siox_i708_lint_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("lint.siox");
+    std::fs::write(&file, UNDRIVEN).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args([
+            "--std",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+            "--test",
+        ])
+        .arg(&file)
+        .arg("-o")
+        .arg(dir.join("t.bin"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    // `p` keeps its default and is never assigned; `q` is assigned.
+    assert!(
+        stderr.contains("signal `Tb.dut.p.x` is never driven"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Tb.dut.q.x"), "{stderr}");
+    let run = Command::new(dir.join("t.bin")).output().unwrap();
+    // 7 + 3: the undriven `p` still holds its default.
+    assert!(String::from_utf8_lossy(&run.stdout).contains("o=10"));
+}
+
 const NESTED: &str = r#"module repro;
 
 struct Pt {
@@ -184,6 +216,43 @@ impl Tb {
             hw_arr0_x, hw_outer_px, unsigned[8](hw_score));
         print!("tb: ps[0].x={} o.p.x={} o2.p.x={} sc={}\n",
             tb_ps[0].x, tb_o.p.x, tb_o2.p.x, unsigned[8](tb_sc));
+    }
+}
+"#;
+
+const UNDRIVEN: &str = r#"module w708;
+
+struct Pt {
+    pub x: unsigned[8],
+    pub y: unsigned[8],
+}
+
+impl Default for Pt {
+    static fn default() -> Pt {
+        return Pt { .x = 7, .y = 9 };
+    }
+}
+
+entity Hw {
+    o: unsigned[8] out,
+}
+
+impl Hw {
+    let p: Pt;
+    let q: Pt;
+    q.x = 3;
+    q.y = 4;
+    o = p.x + q.x;
+}
+
+#[test]
+entity Tb {}
+impl Tb {
+    let o: unsigned[8];
+    let dut: Hw = { .o = o };
+    process {
+        await 1ns;
+        print!("o={}\n", o);
     }
 }
 "#;
