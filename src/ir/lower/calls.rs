@@ -8,7 +8,7 @@ impl<'a> Lowering<'a> {
     /// anonymous array's key); a type-parameter source (`impl<T> From<T>`,
     /// keyed `*`) after every exact one (#608). The one rule six copies
     /// spelled out.
-    pub(super) fn from_impl(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
+    pub(super) fn conversion_impl(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
         let candidates = self.op_impls.get("From", target)?;
         let declared = |function: &ast::FnDecl, argument: &Option<String>| {
             argument.clone().or_else(|| {
@@ -97,7 +97,7 @@ impl<'a> Lowering<'a> {
                 _ => None,
             }
         })?;
-        let f = self.from_impl(target, &key)?;
+        let f = self.conversion_impl(target, &key)?;
         self.inline_function(f, "from".to_string(), callee, args, env)
     }
 
@@ -188,7 +188,7 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
-        let f = self.from_impl(&target, &source)?;
+        let f = self.conversion_impl(&target, &source)?;
         // A vector built from an anonymous array's elements is an ordinary
         // call: the format inliner binds only packed arguments.
         if source.ends_with("[]") {
@@ -588,7 +588,7 @@ impl<'a> Lowering<'a> {
             return self.derived_conversion(target, src.as_deref(), arg, env);
         };
         let chosen = match &src {
-            Some(sty) => self.from_impl(target, sty),
+            Some(sty) => self.conversion_impl(target, sty),
             None => (fns.len() == 1).then(|| fns[0].0),
         };
         let Some(f) = chosen else {
@@ -741,7 +741,7 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
         let family = self.operand_type_name(arg)?;
-        let function = self.from_impl(target, &family)?;
+        let function = self.conversion_impl(target, &family)?;
         match self.inline_function(
             function,
             format!("{target}({family})"),
@@ -1487,7 +1487,7 @@ impl<'a> Lowering<'a> {
                 let family = self.operand_type_name(operand);
                 let function = family
                     .as_ref()
-                    .and_then(|family| self.from_impl(family, family));
+                    .and_then(|family| self.conversion_impl(family, family));
                 if let Some(value) = function.and_then(|function| {
                     self.inline_in_format(
                         function,

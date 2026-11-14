@@ -323,7 +323,7 @@ impl<'a> Lowering<'a> {
         let result = (|| {
             let target = self.free_fns.canonical_type_key(&family);
             let source = self.operand_type_name(e)?;
-            let function = self.from_impl(&target, &source)?;
+            let function = self.conversion_impl(&target, &source)?;
             let number = |value: i64| {
                 let literal = ast::Expr::Int {
                     text: value.unsigned_abs().to_string(),
