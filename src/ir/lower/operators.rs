@@ -323,16 +323,7 @@ impl<'a> Lowering<'a> {
         let result = (|| {
             let target = self.free_fns.canonical_type_key(&family);
             let source = self.operand_type_name(e)?;
-            let impls = self.op_impls.get("From", &target)?;
-            let (function, _) = impls.iter().find(|(f, declared)| {
-                declared.clone().or_else(|| {
-                    f.params
-                        .iter()
-                        .find(|p| !p.is_self)
-                        .and_then(|p| p.ty.as_ref())
-                        .and_then(|ty| self.free_fns.type_head_key(ty))
-                }) == Some(source.clone())
-            })?;
+            let function = self.from_impl(&target, &source)?;
             let number = |value: i64| {
                 let literal = ast::Expr::Int {
                     text: value.unsigned_abs().to_string(),

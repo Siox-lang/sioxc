@@ -3,6 +3,39 @@
 use super::*;
 
 impl<'a> Lowering<'a> {
+    /// The `impl From<source> for target` body: the impl's declared source,
+    /// else its parameter's written type (`Logic[]` kept whole for an
+    /// anonymous array's key); a type-parameter source (`impl<T> From<T>`,
+    /// keyed `*`) after every exact one (#608). The one rule six copies
+    /// spelled out.
+    pub(super) fn from_impl(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
+        let candidates = self.op_impls.get("From", target)?;
+        let declared = |function: &ast::FnDecl, argument: &Option<String>| {
+            argument.clone().or_else(|| {
+                let ty = function
+                    .params
+                    .iter()
+                    .find(|parameter| !parameter.is_self)?
+                    .ty
+                    .as_ref()?;
+                if source.ends_with("[]") {
+                    self.free_fns.trait_arg_key(ty)
+                } else {
+                    self.free_fns.type_head_key(ty)
+                }
+            })
+        };
+        candidates
+            .iter()
+            .find(|(function, argument)| declared(function, argument).as_deref() == Some(source))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|(_, argument)| argument.as_deref() == Some("*"))
+            })
+            .map(|(function, _)| *function)
+    }
+
     /// `T(x)` on a named type: dispatch to `impl From<Source> for T`,
     /// selected by the argument's type (sole impl accepted for an unknown
     /// source). Struct-valued results come back as per-field values.
@@ -64,19 +97,7 @@ impl<'a> Lowering<'a> {
                 _ => None,
             }
         })?;
-        let (f, _) = self
-            .op_impls
-            .get("From", target)?
-            .iter()
-            .find(|(f, declared)| {
-                declared.clone().or_else(|| {
-                    f.params
-                        .iter()
-                        .find(|p| !p.is_self)
-                        .and_then(|p| p.ty.as_ref())
-                        .and_then(|ty| self.free_fns.trait_arg_key(ty))
-                }) == Some(key.clone())
-            })?;
+        let f = self.from_impl(target, &key)?;
         self.inline_function(f, "from".to_string(), callee, args, env)
     }
 
@@ -120,7 +141,7 @@ impl<'a> Lowering<'a> {
             .free_fns
             .struct_path_key(path)
             .or_else(|| expr_path(base))?;
-        let fns = self.op_impls.get("From", &target)?;
+        self.op_impls.get("From", &target)?;
         // The operand's own family first (`sfixed<16, 8>` resizing): the
         // checker records this conversion form's argument as a kernel integer.
         let source = match self.anonymous_array_key(arg).or_else(|| {
@@ -167,15 +188,7 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
-        let (f, _) = fns.iter().find(|(f, declared)| {
-            declared.clone().or_else(|| {
-                f.params
-                    .iter()
-                    .find(|p| !p.is_self)
-                    .and_then(|p| p.ty.as_ref())
-                    .and_then(|ty| self.free_fns.type_head_key(ty))
-            }) == Some(source.clone())
-        })?;
+        let f = self.from_impl(&target, &source)?;
         // A vector built from an anonymous array's elements is an ordinary
         // call: the format inliner binds only packed arguments.
         if source.ends_with("[]") {
@@ -574,27 +587,12 @@ impl<'a> Lowering<'a> {
         let Some(fns) = self.op_impls.get("From", target) else {
             return self.derived_conversion(target, src.as_deref(), arg, env);
         };
-        let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
-            a.clone().or_else(|| {
-                f.params
-                    .iter()
-                    .find(|p| !p.is_self)
-                    .and_then(|p| p.ty.as_ref())
-                    .and_then(|ty| self.free_fns.type_head_key(ty))
-            })
-        };
-        // `impl<T> From<T> for Box<T>` (`*`) takes a source no exact impl
-        // names (#608).
         let chosen = match &src {
-            Some(sty) => fns
-                .iter()
-                .find(|(f, a)| declared(f, a).as_deref() == Some(sty))
-                .or_else(|| fns.iter().find(|(_, a)| a.as_deref() == Some("*"))),
-            None => (fns.len() == 1).then(|| &fns[0]),
+            Some(sty) => self.from_impl(target, sty),
+            None => (fns.len() == 1).then(|| fns[0].0),
         };
-        let (f, _) = match chosen {
-            Some(c) => c,
-            None => return self.derived_conversion(target, src.as_deref(), arg, env),
+        let Some(f) = chosen else {
+            return self.derived_conversion(target, src.as_deref(), arg, env);
         };
         f.body.as_ref()?;
         let mut inspection = super::source_bindings::SourceCallInspection {
@@ -743,18 +741,7 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
         let family = self.operand_type_name(arg)?;
-        let function = self.op_impls.get("From", target).and_then(|impls| {
-            impls.iter().find_map(|(f, source)| {
-                (source.clone().or_else(|| {
-                    f.params
-                        .iter()
-                        .find(|p| !p.is_self)
-                        .and_then(|p| p.ty.as_ref())
-                        .and_then(|ty| self.free_fns.type_head_key(ty))
-                }) == Some(family.clone()))
-                .then_some(*f)
-            })
-        })?;
+        let function = self.from_impl(target, &family)?;
         match self.inline_function(
             function,
             format!("{target}({family})"),
@@ -1498,19 +1485,9 @@ impl<'a> Lowering<'a> {
                 .is_some_and(|width| width > i64::from(self.ast_width(operand)));
             if widening && p.segments.len() == 1 && p.segments[0].text == "resize" {
                 let family = self.operand_type_name(operand);
-                let function = family.as_ref().and_then(|family| {
-                    let fns = self.op_impls.get("From", family)?;
-                    fns.iter().find_map(|(f, declared)| {
-                        let source = declared.clone().or_else(|| {
-                            f.params
-                                .iter()
-                                .find(|p| !p.is_self)
-                                .and_then(|p| p.ty.as_ref())
-                                .and_then(|ty| self.free_fns.type_head_key(ty))
-                        });
-                        (source.as_ref() == Some(family)).then_some(f)
-                    })
-                });
+                let function = family
+                    .as_ref()
+                    .and_then(|family| self.from_impl(family, family));
                 if let Some(value) = function.and_then(|function| {
                     self.inline_in_format(
                         function,
