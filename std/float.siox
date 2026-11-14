@@ -142,6 +142,9 @@ impl Mul<float, float> for float {
     fn mul(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](wmul(unsigned[256](self), unsigned[256](rhs), e, f));
+        }
         let a: integer = integer(self);
         let b: integer = integer(rhs);
         let sign: integer = low_bits((a >> (e + f)) + (b >> (e + f)), 1);
@@ -168,7 +171,14 @@ impl Mul<float, float> for float {
 
 impl Add<float, float> for float {
     fn add(rhs: float) -> float {
-        return add_words(integer(self), integer(rhs), self'high, 0 - self'low);
+        // Statements first, as `sub`: a lone choice between the wide and
+        // the narrow word read as one value of two widths.
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](wadd(unsigned[256](self), unsigned[256](rhs), e, f));
+        }
+        return add_words(integer(self), integer(rhs), e, f);
     }
 }
 
@@ -176,6 +186,11 @@ impl Sub<float, float> for float {
     fn sub(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](
+                wadd(unsigned[256](self), unsigned[256](wneg(unsigned[256](rhs), e, f)), e, f)
+            );
+        }
         let b: integer = integer(rhs);
         // a - b is a + (-b): flip the sign bit.
         let flipped: integer = b + ((1 - 2 * low_bits(b >> (e + f), 1)) << (e + f));
@@ -189,6 +204,9 @@ impl Div<float, float> for float {
     fn div(rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](wdiv(unsigned[256](self), unsigned[256](rhs), e, f));
+        }
         let a: integer = integer(self);
         let b: integer = integer(rhs);
         let sign: integer = low_bits((a >> (e + f)) + (b >> (e + f)), 1);
@@ -313,6 +331,7 @@ impl Eq<float> for float {
     fn eq(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 { return weq(unsigned[256](self), unsigned[256](rhs), e, f); }
         let a: integer = integer(self);
         let b: integer = integer(rhs);
         if is_nan_word(a, e, f) or is_nan_word(b, e, f) { return false; }
@@ -325,6 +344,7 @@ impl Ord<float> for float {
     fn lt(rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 { return wlt(unsigned[256](self), unsigned[256](rhs), e, f); }
         let a: integer = integer(self);
         let b: integer = integer(rhs);
         if is_nan_word(a, e, f) or is_nan_word(b, e, f) { return false; }
@@ -343,6 +363,9 @@ impl Ord<float> for float {
 // every value including zero, infinity and NaN).
 impl Neg<float> for float {
     fn neg() -> float {
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](wneg(unsigned[256](self), self'high, 0 - self'low));
+        }
         let w: integer = self'high - self'low;
         let a: integer = integer(self);
         return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
@@ -392,6 +415,9 @@ impl Sqrt for float {
     fn sqrt() -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
+        if self'high - self'low + 1 > 64 {
+            return unsigned[self'length](wsqrt(unsigned[256](self), e, f, self));
+        }
         let a: integer = integer(self);
         let sign: integer = low_bits(a >> (e + f), 1);
         let exponent: integer = low_bits(a >> f, e);
@@ -461,6 +487,11 @@ impl From<float> for real {
     static fn from(value: float) -> real {
         let e: integer = value'high;
         let f: integer = 0 - value'low;
+        // A word past the kernel's 64 bits (`float<80, 64>`) is read over
+        // `unsigned[128]` (#538).
+        if e + f + 1 > 64 {
+            return wide_float_real(unsigned[128](value), e, f);
+        }
         let a: integer = integer(value);
         let sign: real = if low_bits(a >> (e + f), 1) == 1 { 0.0 - 1.0 } else { 1.0 };
         let exponent: integer = low_bits(a >> f, e);
@@ -470,7 +501,10 @@ impl From<float> for real {
         }
         if exponent == 0 { return sign * 0.0; }
         let bias: integer = (1 << (e - 1)) - 1;
-        return sign * real((1 << f) + fraction) * pow2(exponent - bias - f);
+        // In two halves, as `wide_float_real`: a binary64 near its smallest
+        // normal read 0.
+        let k: integer = exponent - bias - f;
+        return sign * real((1 << f) + fraction) * pow2(k / 2) * pow2(k - k / 2);
     }
 }
 
@@ -479,6 +513,9 @@ impl From<float> for real {
 // the range it is infinite, below it zero.
 impl From<real> for float {
     static fn from(value: real) -> float {
+        if Self'high + (0 - Self'low) + 1 > 64 {
+            return unsigned[Self'length](wide_float_word(value, Self'high, 0 - Self'low));
+        }
         return float_word(value, Self'high, 0 - Self'low);
     }
 }
@@ -620,6 +657,47 @@ fn float_to_fixed(
     return signed_steps;
 }
 
+// `float_word` for a format past the kernel's 64 bits, which holds every
+// binary64 exactly (at least 11 exponent and 52 fraction bits): the
+// fraction moves up, the exponent is rebiased (#538).
+fn wide_float_word(value: real, e: integer, f: integer) -> unsigned[128] {
+    let sign: unsigned[128] = if 0.0 > value { 1 } else { 0 };
+    let magnitude: real = if 0.0 > value { 0.0 - value } else { value };
+    let full: unsigned[128] = (unsigned[128](1) << e) - 1;
+    if magnitude != magnitude {
+        return (full << f) + (unsigned[128](1) << (f - 1));
+    }
+    let bits: integer = integer(intrinsics::to_bits(magnitude));
+    let e64: integer = bits >> 52;
+    let fraction: integer = low_bits(bits, 52);
+    if e64 == 2047 { return (sign << (e + f)) + (full << f); }
+    if e64 == 0 { return sign << (e + f); }
+    let biased: integer = e64 - 1023 + ((1 << (e - 1)) - 1);
+    return (sign << (e + f))
+        + (unsigned[128](biased) << f)
+        + (unsigned[128](fraction) << (f - 52));
+}
+
+// `real(x)` of a word past the kernel's 64 bits: its sign, exponent and top
+// 53 significand bits, rounded to nearest (#538).
+fn wide_float_real(a: unsigned[128], e: integer, f: integer) -> real {
+    let one: unsigned[128] = 1;
+    let sign: real = if ((a >> (e + f)) - ((a >> (e + f + 1)) << 1)) == one { 0.0 - 1.0 } else { 1.0 };
+    let exponent: integer = integer((a >> f) - ((a >> (e + f)) << e));
+    let fraction: unsigned[128] = a - ((a >> f) << f);
+    if exponent == (1 << e) - 1 {
+        return if fraction == 0 { sign / 0.0 } else { 0.0 / 0.0 };
+    }
+    if exponent == 0 { return sign * 0.0; }
+    // The top 52 fraction bits, rounded on the next one.
+    let top: unsigned[128] = (fraction + (one << (f - 53))) >> (f - 52);
+    let bias: integer = (1 << (e - 1)) - 1;
+    // In two halves: `2^-1039` for the smallest binary64 overflows as one
+    // power before it divides.
+    let k: integer = exponent - bias - 52;
+    return sign * real((1 << 52) + integer(top)) * pow2(k / 2) * pow2(k - k / 2);
+}
+
 // The word of `value` with `e` exponent and `f` fraction bits.
 fn float_word(value: real, e: integer, f: integer) -> integer {
     let sign: integer = if 0.0 > value { 1 } else { 0 };
@@ -633,4 +711,203 @@ fn float_word(value: real, e: integer, f: integer) -> integer {
     if e64 == 0 { return pack(sign, 0, 0, e, f); }
     let bias: integer = (1 << (e - 1)) - 1;
     return encode(sign, e64 - 1023 + bias, (1 << 52) + fraction, 52, e, f);
+}
+
+// --- formats past the 64-bit kernel word (#538) ----------------------------------
+//
+// `float<80, 64>`, `float<128, 112>`: the word is held in `unsigned[128]`
+// and worked in `unsigned[256]`, which holds a 113-bit significand's
+// product (226 bits) and scaled quotient. Each helper mirrors the narrow
+// one above it; the operators send such a format here.
+
+// Bits `lo .. lo + n - 1` of `x`.
+fn wbits(x: unsigned[256], lo: integer, n: integer) -> unsigned[256] {
+    let s: unsigned[256] = x >> lo;
+    return s - ((s >> n) << n);
+}
+
+// The position of the highest set bit (0 for 0), by halving: eight steps.
+fn wmsb(x: unsigned[256]) -> integer {
+    let one: unsigned[256] = 1;
+    let v: unsigned[256] = x;
+    let n: integer = 0;
+    if v >= (one << 128) { v = v >> 128; n = n + 128; }
+    if v >= (one << 64) { v = v >> 64; n = n + 64; }
+    if v >= (one << 32) { v = v >> 32; n = n + 32; }
+    if v >= (one << 16) { v = v >> 16; n = n + 16; }
+    if v >= (one << 8) { v = v >> 8; n = n + 8; }
+    if v >= (one << 4) { v = v >> 4; n = n + 4; }
+    if v >= (one << 2) { v = v >> 2; n = n + 2; }
+    if v >= (one << 1) { n = n + 1; }
+    return n;
+}
+
+fn wround_shift(m: unsigned[256], shift: integer) -> unsigned[256] {
+    let q: unsigned[256] = m >> shift;
+    let rest: unsigned[256] = m - (q << shift);
+    let half: unsigned[256] = unsigned[256](1) << (shift - 1);
+    return if rest > half or (rest == half and wbits(q, 0, 1) == 1) { q + 1 } else { q };
+}
+
+fn wpack(sign: integer, exponent: integer, fraction: unsigned[256], e: integer, f: integer) -> unsigned[128] {
+    return unsigned[128](
+        (unsigned[256](sign) << (e + f)) + (unsigned[256](exponent) << f) + fraction
+    );
+}
+
+fn winfinity(sign: integer, e: integer, f: integer) -> unsigned[128] {
+    return wpack(sign, (1 << e) - 1, 0, e, f);
+}
+
+fn wnan(e: integer, f: integer) -> unsigned[128] {
+    return wpack(0, (1 << e) - 1, unsigned[256](1) << (f - 1), e, f);
+}
+
+// `encode` over a wide significand.
+fn wencode(sign: integer, exponent: integer, m: unsigned[256], point: integer, e: integer, f: integer) -> unsigned[128] {
+    if m == 0 { return wpack(sign, 0, 0, e, f); }
+    let top: integer = wmsb(m);
+    let scaled: unsigned[256] = if top <= f { m << (f - top) } else { wround_shift(m, top - f) };
+    let carry: integer = integer(scaled >> (f + 1));
+    let significand: unsigned[256] = scaled >> carry;
+    let biased: integer = exponent + (top - point) + carry;
+    if biased >= (1 << e) - 1 { return winfinity(sign, e, f); }
+    if biased <= 0 { return wpack(sign, 0, 0, e, f); }
+    return wpack(sign, biased, significand - (unsigned[256](1) << f), e, f);
+}
+
+fn wis_nan(a: unsigned[256], e: integer, f: integer) -> Bool {
+    return integer(wbits(a, f, e)) == (1 << e) - 1 and wbits(a, 0, f) != 0;
+}
+
+fn wmul(a: unsigned[256], b: unsigned[256], e: integer, f: integer) -> unsigned[128] {
+    let sign: integer = integer(wbits(a, e + f, 1) + wbits(b, e + f, 1)) - 2 * integer(wbits(a, e + f, 1) * wbits(b, e + f, 1));
+    let ea: integer = integer(wbits(a, f, e));
+    let eb: integer = integer(wbits(b, f, e));
+    let fa: unsigned[256] = wbits(a, 0, f);
+    let fb: unsigned[256] = wbits(b, 0, f);
+    let full: integer = (1 << e) - 1;
+    let nan: Bool = (ea == full and fa != 0) or (eb == full and fb != 0);
+    let infinite: Bool = ea == full or eb == full;
+    let zero: Bool = ea == 0 or eb == 0;
+    if nan or (infinite and zero) { return wnan(e, f); }
+    if infinite { return winfinity(sign, e, f); }
+    if zero { return wpack(sign, 0, 0, e, f); }
+    let one: unsigned[256] = unsigned[256](1) << f;
+    let bias: integer = (1 << (e - 1)) - 1;
+    return wencode(sign, ea + eb - bias, (one + fa) * (one + fb), f + f, e, f);
+}
+
+fn wdiv(a: unsigned[256], b: unsigned[256], e: integer, f: integer) -> unsigned[128] {
+    let sign: integer = integer(wbits(a, e + f, 1) + wbits(b, e + f, 1)) - 2 * integer(wbits(a, e + f, 1) * wbits(b, e + f, 1));
+    let ea: integer = integer(wbits(a, f, e));
+    let eb: integer = integer(wbits(b, f, e));
+    let fa: unsigned[256] = wbits(a, 0, f);
+    let fb: unsigned[256] = wbits(b, 0, f);
+    let full: integer = (1 << e) - 1;
+    let nan: Bool = (ea == full and fa != 0) or (eb == full and fb != 0);
+    if nan or (ea == full and eb == full) or (ea == 0 and eb == 0) { return wnan(e, f); }
+    if ea == full or eb == 0 { return winfinity(sign, e, f); }
+    if ea == 0 or eb == full { return wpack(sign, 0, 0, e, f); }
+    let one: unsigned[256] = unsigned[256](1) << f;
+    let scaled: unsigned[256] = (one + fa) << (f + 2);
+    let mb: unsigned[256] = one + fb;
+    let q: unsigned[256] = scaled / mb;
+    let sticky: unsigned[256] = if scaled != q * mb { 1 } else { 0 };
+    let bias: integer = (1 << (e - 1)) - 1;
+    return wencode(sign, ea - eb + bias, (q << 1) + sticky, f + 3, e, f);
+}
+
+fn wadd(a: unsigned[256], b: unsigned[256], e: integer, f: integer) -> unsigned[128] {
+    let sa: integer = integer(wbits(a, e + f, 1));
+    let sb: integer = integer(wbits(b, e + f, 1));
+    let ea: integer = integer(wbits(a, f, e));
+    let eb: integer = integer(wbits(b, f, e));
+    let fa: unsigned[256] = wbits(a, 0, f);
+    let fb: unsigned[256] = wbits(b, 0, f);
+    let full: integer = (1 << e) - 1;
+    if (ea == full and fa != 0) or (eb == full and fb != 0) { return wnan(e, f); }
+    if ea == full and eb == full {
+        return if sa == sb { winfinity(sa, e, f) } else { wnan(e, f) };
+    }
+    if ea == full { return winfinity(sa, e, f); }
+    if eb == full { return winfinity(sb, e, f); }
+    let one: unsigned[256] = unsigned[256](1) << f;
+    let ma: unsigned[256] = if ea == 0 { 0 } else { one + fa };
+    let mb: unsigned[256] = if eb == 0 { 0 } else { one + fb };
+    if ma == 0 and mb == 0 { return wpack(sa * sb, 0, 0, e, f); }
+    if mb == 0 { return unsigned[128](a); }
+    if ma == 0 { return unsigned[128](b); }
+    let a_larger: Bool = ea > eb or (ea == eb and ma >= mb);
+    let sx: integer = if a_larger { sa } else { sb };
+    let sy: integer = if a_larger { sb } else { sa };
+    let ex: integer = if a_larger { ea } else { eb };
+    let ey: integer = if a_larger { eb } else { ea };
+    let mx: unsigned[256] = (if a_larger { ma } else { mb }) << 3;
+    let my: unsigned[256] = (if a_larger { mb } else { ma }) << 3;
+    let d: integer = ex - ey;
+    let aligned: unsigned[256] = if d > f + 3 { 0 } else { my >> d };
+    let lost: Bool = if d > f + 3 { true } else { my - (aligned << d) != 0 };
+    let sticky: unsigned[256] = if lost and wbits(aligned, 0, 1) == 0 { aligned + 1 } else { aligned };
+    let m: unsigned[256] = if sx == sy { mx + sticky } else { mx - sticky };
+    if m == 0 { return 0; }
+    return wencode(sx, ex, m, f + 3, e, f);
+}
+
+// `-x`: the sign bit flipped.
+fn wneg(a: unsigned[256], e: integer, f: integer) -> unsigned[128] {
+    let w: integer = e + f;
+    let flipped: unsigned[256] = if wbits(a, w, 1) == 1 { a - (unsigned[256](1) << w) } else { a + (unsigned[256](1) << w) };
+    return unsigned[128](flipped);
+}
+
+fn weq(a: unsigned[256], b: unsigned[256], e: integer, f: integer) -> Bool {
+    if wis_nan(a, e, f) or wis_nan(b, e, f) { return false; }
+    if wbits(a, 0, e + f) == 0 and wbits(b, 0, e + f) == 0 { return true; }
+    return a == b;
+}
+
+fn wlt(a: unsigned[256], b: unsigned[256], e: integer, f: integer) -> Bool {
+    if wis_nan(a, e, f) or wis_nan(b, e, f) { return false; }
+    let sa: unsigned[256] = wbits(a, e + f, 1);
+    let sb: unsigned[256] = wbits(b, e + f, 1);
+    let ma: unsigned[256] = wbits(a, 0, e + f);
+    let mb: unsigned[256] = wbits(b, 0, e + f);
+    if ma == 0 and mb == 0 { return false; }
+    if sa != sb { return sa == 1; }
+    return if sa == 0 { ma < mb } else { ma > mb };
+}
+
+// The digit-by-digit root over a wide radicand, `f + 3` steps as the narrow
+// one, then a sticky bit.
+fn wroot_with_sticky<T>(r: unsigned[256], format: T) -> unsigned[256] {
+    let rest: unsigned[256] = r;
+    let root: unsigned[256] = 0;
+    let one: unsigned[256] = unsigned[256](1) << (2 * (0 - format'low) + 4);
+    for k in 0..(0 - format'low) + 2 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return (root << 1) + (if rest != 0 { 1 } else { 0 });
+}
+
+fn wsqrt<T>(a: unsigned[256], e: integer, f: integer, format: T) -> unsigned[128] {
+    let sign: integer = integer(wbits(a, e + f, 1));
+    let exponent: integer = integer(wbits(a, f, e));
+    let fraction: unsigned[256] = wbits(a, 0, f);
+    let full: integer = (1 << e) - 1;
+    if exponent == full and fraction != 0 { return wnan(e, f); }
+    if exponent == 0 { return wpack(sign, 0, 0, e, f); }
+    if sign == 1 { return wnan(e, f); }
+    if exponent == full { return winfinity(0, e, f); }
+    let bias: integer = (1 << (e - 1)) - 1;
+    let k: integer = exponent - bias;
+    let odd: integer = low_bits(k, 1);
+    let radicand: unsigned[256] = ((unsigned[256](1) << f) + fraction) << (f + 4 + odd);
+    return wencode(0, (k - odd) / 2 + bias, wroot_with_sticky(radicand, format), f + 3, e, f);
 }
