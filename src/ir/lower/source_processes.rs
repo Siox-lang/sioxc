@@ -4569,6 +4569,26 @@ fn lower_format_display(
                     .ty
                     .as_ref()
                     .and_then(|ty| process_declared_type(ty, context));
+                // `let s: string = if .. { "pos" } else { "neg" }` is the
+                // `Char[3]` the checker binds `s` to: as a runtime string
+                // its conversion had no block here to run in and printed
+                // empty (#729).
+                let fixed = context
+                    .typed
+                    .expr_type(ast::expr_span(declaration.value.as_ref()?))
+                    .filter(|ty| {
+                        matches!(ty, crate::types::Ty::Array { elem, len, family: None, .. }
+                            if *len > 0 && matches!(elem.as_ref(), crate::types::Ty::Char))
+                    })
+                    .cloned();
+                let runtime_string = matches!(&declared,
+                    Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
+                        if matches!(elem.as_ref(), crate::types::Ty::Char));
+                let declared = if runtime_string {
+                    fixed.or(declared)
+                } else {
+                    declared
+                };
                 let bound = value_ref_with_type(
                     declaration.value.as_ref()?,
                     process,
