@@ -2118,9 +2118,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i128>) -> EType {
 fn index_width(index: &Expr, env: &HashMap<String, i128>) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
         if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
-            return u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
-                .ok()?
-                .checked_add(1);
+            return u32::try_from((a - b).unsigned_abs()).ok()?.checked_add(1);
         }
         return None;
     }
