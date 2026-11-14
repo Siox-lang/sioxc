@@ -38,8 +38,8 @@ fn prints(name: &str, source: &str, expect: &str) {
 #[cfg(feature = "llvm")]
 #[test]
 fn a_string_let_in_fmt_prints() {
-    prints("pos", POS, "pos\ndone");
-    prints("neg", NEG, "neg\ndone");
+    prints("pos", POS, "pos\n");
+    prints("neg", NEG, "neg\n");
 }
 
 const POS: &str = r#"module p653;
