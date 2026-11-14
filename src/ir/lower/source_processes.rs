@@ -10795,6 +10795,17 @@ fn shared_process_function(
     .filter(|result| standalone_body(function, first_value, *result, context));
     let shared = match result {
         Some(result) => {
+            // A shared function its body called was pushed while it expanded
+            // and took `id`'s slot: this one is the next, and its parameters
+            // name it so (a wide float helper calling `wencode`, #538).
+            let id = crate::ir::ProcessFunctionId(context.process_ir.functions.len() as u32);
+            for parameter in &parameters {
+                if let ProcessValueKind::Parameter { function, .. } =
+                    &mut context.process_ir.values[parameter.0 as usize].kind
+                {
+                    *function = id;
+                }
+            }
             context
                 .process_ir
                 .functions

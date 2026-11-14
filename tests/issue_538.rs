@@ -1,8 +1,9 @@
-//! Regression for sioxc #538 (part): fixed and float formats past the 64-bit
-//! kernel word convert from and to `real`. `float<80, 64>(1.5)` read NaN and
-//! `float<128, 112>(1.5)` read 0; the wide words are now built and read
-//! over `unsigned[128]`, and every binary64 round-trips exactly. A binary64
-//! near its smallest normal also read 0 back.
+//! Regression for sioxc #538: fixed and float formats past the 64-bit kernel
+//! word. `float<80, 64>(1.5)` read NaN and `float<128, 112>(1.5)` read 0;
+//! the wide words are now built, read and computed over `unsigned[128]` and
+//! `unsigned[256]`, every binary64 round-trips exactly, and arithmetic runs
+//! at the format's own precision. A binary64 near its smallest normal also
+//! read 0 back.
 
 use std::process::Command;
 
@@ -50,6 +51,24 @@ fn wide_formats_convert_with_real() {
     );
     prints("wide", WIDE, &["inf=inf nan=true"], &["false"]);
     prints("binary64", BINARY64, &["inf=inf nan=true"], &["false"]);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn wide_formats_compute() {
+    // `float<128, 112>`: + - * / sqrt; `float<80, 64>`: * + neg /; order and
+    // equality; and quad precision itself: `(1/3) * 3` rounds back to 1.
+    prints(
+        "arithmetic",
+        ARITHMETIC,
+        &[
+            "3.75 -0.75 3.375 1.5 1.5",
+            "-1.5 -2.5 3 -6",
+            "true false true",
+            "true true",
+        ],
+        &[],
+    );
 }
 
 const ISSUE: &str = r#"module test_wide_numeric;
@@ -132,6 +151,25 @@ impl Tb {
         let inf: float<64, 52> = float<64, 52>(1.0 / 0.0);
         let nan: float<64, 52> = float<64, 52>(0.0 / 0.0);
         print!("inf={} nan={}\n", real(inf), real(nan) != real(nan));
+    }
+}
+"#;
+
+const ARITHMETIC: &str = r#"module q538;
+use std::float::float;
+#[test]
+entity Tb {}
+impl Tb {
+    process {
+        let a: float<128, 112> = float<128, 112>(1.5);
+        let b: float<128, 112> = float<128, 112>(2.25);
+        let c: float<80, 64> = float<80, 64>(0.0 - 3.0);
+        let d: float<80, 64> = float<80, 64>(0.5);
+        print!("{} {} {} {} {}\n", real(a + b), real(a - b), real(a * b), real(b / a), real(b.sqrt()));
+        print!("{} {} {} {}\n", real(c * d), real(c + d), real(-c), real(c / d));
+        print!("{} {} {}\n", a < b, b < a, a == float<128, 112>(1.5));
+        let third: float<128, 112> = float<128, 112>(1.0) / float<128, 112>(3.0);
+        print!("{} {}\n", real(third * float<128, 112>(3.0)) == 1.0, real(third) == 1.0 / 3.0);
     }
 }
 "#;
