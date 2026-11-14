@@ -583,10 +583,13 @@ impl<'a> Lowering<'a> {
                     .and_then(|ty| self.free_fns.type_head_key(ty))
             })
         };
+        // `impl<T> From<T> for Box<T>` (`*`) takes a source no exact impl
+        // names (#608).
         let chosen = match &src {
             Some(sty) => fns
                 .iter()
-                .find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
+                .find(|(f, a)| declared(f, a).as_deref() == Some(sty))
+                .or_else(|| fns.iter().find(|(_, a)| a.as_deref() == Some("*"))),
             None => (fns.len() == 1).then(|| &fns[0]),
         };
         let (f, _) = match chosen {

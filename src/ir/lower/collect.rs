@@ -253,6 +253,16 @@ impl<'a> Lowering<'a> {
                                 let input_index = usize::from(custom);
                                 let rhs_arg =
                                     im.trait_args.get(input_index).and_then(|a| match a {
+                                        ast::GenericArg::Positional(ast::Expr::Path(p))
+                                            if crate::ir::functions::impl_type_parameter(im, p) =>
+                                        {
+                                            Some("*".to_string())
+                                        }
+                                        ast::GenericArg::PositionalType(ast::Type::Path(p))
+                                            if crate::ir::functions::impl_type_parameter(im, p) =>
+                                        {
+                                            Some("*".to_string())
+                                        }
                                         ast::GenericArg::Positional(ast::Expr::Path(p)) => {
                                             self.free_fns.type_path_key(p)
                                         }

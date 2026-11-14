@@ -60,6 +60,11 @@ impl Lowering<'_> {
                 .iter()
                 .find(|(function, argument)| declared(function, argument).as_deref() == Some(rhs))
                 .or_else(|| {
+                    functions
+                        .iter()
+                        .find(|(_, argument)| argument.as_deref() == Some("*"))
+                })
+                .or_else(|| {
                     (rhs == "integer")
                         .then(|| {
                             functions.iter().find(|(function, argument)| {
