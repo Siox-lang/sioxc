@@ -1,7 +1,8 @@
-//! Regression for sioxc #709 (part): a metavalue vector literal returned
-//! directly (`return "0UX1";`) lowers as one bound by a `let` does; it did
-//! not lower. (`s.saturating_sub(0) == c`, an unsized call, still compares
-//! value planes only: #629's exception.)
+//! Regression for sioxc #709: a metavalue vector literal returned directly
+//! (`return "0UX1";`) lowers as one bound by a `let` does, and a call with
+//! an unsized family result of known width (`s.saturating_sub(0)`) takes
+//! the metavalue comparison rule (#629). The first did not lower; the
+//! second compared value planes only and said `true`.
 
 use std::process::Command;
 
@@ -32,7 +33,7 @@ fn metavalue_calls_compare_as_hardware_marks_them() {
     let run = Command::new(dir.join("t.bin")).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(
-        run.status.success() && stdout.contains("false true true"),
+        run.status.success() && stdout.contains("false false false true true"),
         "{stdout}"
     );
 }
@@ -40,6 +41,7 @@ fn metavalue_calls_compare_as_hardware_marks_them() {
 const SOURCE: &str = r#"module p709;
 
 use std::bits::unsigned;
+use std::bits::signed;
 
 fn get_direct() -> unsigned[4] {
     return "0UX1";
@@ -54,12 +56,18 @@ entity Tb {}
 
 impl Tb {
     process {
+        let s: signed[4] = "0UX1";
+        let c: signed[4] = "0001";
+        let t: signed[4] = "0011";
+        let two: signed[4] = "0010";
         let u: unsigned[4] = "0101";
-        print!("{} {} {}\n",
+        print!("{} {} {} {} {}\n",
+            s.saturating_sub(0) == c,
+            s.saturating_sub(0) == s,
             get_direct() == u,
-            get_clean() == u,
-            get_clean() == get_clean());
-        assert!(not (get_direct() == u) and get_clean() == u);
+            t.saturating_sub(1) == two,
+            get_clean() == u);
+        assert!(not (s.saturating_sub(0) == c) and t.saturating_sub(1) == two and get_clean() == u);
     }
 }
 "#;
