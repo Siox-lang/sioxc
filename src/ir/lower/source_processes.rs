@@ -2763,10 +2763,80 @@ fn lower_statement(
             let sized = sized_by_value(declaration, process, context);
             let declaration = sized.as_ref().unwrap_or(declaration);
             let local = push_local(process, declaration, context);
+            // `let s: string = "hello";` is the `Char[5]` the checker binds
+            // `s` to: a string is a fixed `Char` array (2026-11-13 ruling),
+            // here where its length is known, not a runtime handle.
+            if let (
+                Some(crate::types::Ty::Array {
+                    elem,
+                    len: 0,
+                    family: None,
+                    ..
+                }),
+                Some(value),
+            ) = (
+                &process.locals[local.0 as usize].ty,
+                declaration.value.as_ref(),
+            ) {
+                if matches!(elem.as_ref(), crate::types::Ty::Char) {
+                    if let Some(sized @ crate::types::Ty::Array { len, .. }) =
+                        context.typed.expr_type(ast::expr_span(value)).cloned()
+                    {
+                        if len > 0
+                            && matches!(&sized, crate::types::Ty::Array { elem, family: None, .. }
+                                if matches!(elem.as_ref(), crate::types::Ty::Char))
+                        {
+                            let layout = process_layout_for_type(&sized, declaration.span, context);
+                            if layout.is_some() {
+                                process.locals[local.0 as usize].layout = layout;
+                                process.locals[local.0 as usize].ty = Some(sized);
+                            }
+                        }
+                    }
+                }
+            }
             let target = process.locals[local.0 as usize].ty.clone();
             let initializer = match declaration.value.as_ref() {
                 Some(value) => {
                     let value = value_ref_with_type(value, process, context, target.as_ref());
+                    // A local of this process shaped as a fixed string (a call's
+                    // result local that adopted what its body returned) is
+                    // converted as one; its own type still reads `string`
+                    // (#737).
+                    let runtime_string = matches!(&target,
+                        Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
+                            if matches!(elem.as_ref(), crate::types::Ty::Char));
+                    if runtime_string {
+                        if let Some(SourceLayout {
+                            kind:
+                                LayoutKind::Array {
+                                    range: Some(range),
+                                    element,
+                                },
+                            ..
+                        }) = operand_source_layout(value, process, context)
+                        {
+                            if matches!(
+                                element.kind,
+                                LayoutKind::Scalar {
+                                    domain: crate::ir::ScalarDomain::Character,
+                                    ..
+                                }
+                            ) {
+                                if let Some(len) =
+                                    range.len().and_then(|len| u32::try_from(len).ok())
+                                {
+                                    context.process_ir.values[value.0 as usize].ty =
+                                        Some(crate::types::Ty::Array {
+                                            elem: Box::new(crate::types::Ty::Char),
+                                            len,
+                                            family: None,
+                                            low: 0,
+                                        });
+                                }
+                            }
+                        }
+                    }
                     Some(runtime_array_copy(value, target.as_ref(), context))
                 }
                 // An unset runtime array or string is the empty one, handle
@@ -5626,6 +5696,23 @@ fn assign_process_value(
     let target_type = target_type
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .or_else(|| process_value_type(target, context));
+    // A `string` parameter bound to a fixed `Char[N]` argument writes that
+    // argument's storage: `s = "world"` is a `Char[5]`, not a runtime handle
+    // written over it (#737).
+    let fixed_string = |ty: &crate::types::Ty| {
+        matches!(ty, crate::types::Ty::Array { elem, len, family: None, .. }
+            if *len > 0 && matches!(elem.as_ref(), crate::types::Ty::Char))
+    };
+    let runtime_string = |ty: &crate::types::Ty| {
+        matches!(ty, crate::types::Ty::Array { elem, len: 0, family: None, .. }
+            if matches!(elem.as_ref(), crate::types::Ty::Char))
+    };
+    let target_type = match (target_type, process_value_type(target, context)) {
+        (Some(declared), Some(place)) if runtime_string(&declared) && fixed_string(&place) => {
+            Some(place)
+        }
+        (declared, _) => declared,
+    };
     let semantics =
         process_place_assignment(target, context.process_ir).unwrap_or(source_semantics);
     let settle = after.is_none()
@@ -9910,7 +9997,33 @@ fn runtime_array_copy(
                 _ => None,
             },
         };
-        if let (true, Some(len)) = (inner != value, fixed) {
+        // A result shaped by what its body returned (`return s` of a
+        // `Char[5]` argument: `adopt_returned_layout`) is that fixed string,
+        // though typed as the unsized `string` result (#737).
+        let fixed =
+            fixed.or_else(
+                || match process_value_source_layout(inner, context.process_ir) {
+                    Some(SourceLayout {
+                        kind:
+                            LayoutKind::Array {
+                                range: Some(range),
+                                element,
+                            },
+                        ..
+                    }) if matches!(
+                        element.kind,
+                        LayoutKind::Scalar {
+                            domain: crate::ir::ScalarDomain::Character,
+                            ..
+                        }
+                    ) =>
+                    {
+                        u32::try_from(range.len()?).ok()
+                    }
+                    _ => None,
+                },
+            );
+        if let (true, Some(len)) = (inner != value || fixed.is_some(), fixed) {
             context.process_ir.values[value.0 as usize].ty = Some(crate::types::Ty::Array {
                 elem: Box::new(crate::types::Ty::Char),
                 len,
@@ -13836,7 +13949,23 @@ fn unsized_call_layout(
                 let index = parameters.clone().position(|parameter| {
                     parameter.name.as_ref().is_some_and(|n| n.text == name)
                 })?;
-                operand_source_layout(*arguments.get(index)?, process, context)
+                let argument = *arguments.get(index)?;
+                // A string literal argument is its `Char[N]`, whatever the
+                // `string` parameter typed it as (#737).
+                if let ProcessValueKind::String(text) =
+                    &context.process_ir.values[argument.0 as usize].kind
+                {
+                    let sized = crate::types::Ty::Array {
+                        elem: Box::new(crate::types::Ty::Char),
+                        len: u32::try_from(text.chars().count())
+                            .ok()
+                            .filter(|n| *n > 0)?,
+                        family: None,
+                        low: 0,
+                    };
+                    return process_layout_for_type(&sized, span, context);
+                }
+                operand_source_layout(argument, process, context)
             }
         })
 }
