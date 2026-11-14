@@ -134,7 +134,7 @@ pub(in crate::ir) fn gather_generate(
                 for i in loop_range(a, b) {
                     let mut e = env.clone();
                     e.insert(var.text.clone(), i);
-                    let at = at.iteration(label.as_ref(), i);
+                    let at = at.iteration(label.as_ref(), i128::from(i));
                     for st in &body.stmts {
                         // Substitute the loop index throughout the statement so
                         // `Sub<W=i>` and `wires[i]` become concrete before the
@@ -175,6 +175,28 @@ pub(in crate::ir) fn gather_generate(
                         }
                         None => {}
                     }
+                }
+            } else {
+                // A condition lowering cannot fold (an unsigned constant past
+                // `i64`, #624) was still decided by elaboration, which owns
+                // generate results: both branches' instances are candidates,
+                // and the caller keeps the ones elaboration built.
+                for st in iff.then.stmts.iter().chain(match iff.else_.as_deref() {
+                    Some(ast::ElseBranch::Block(b)) => b.stmts.iter(),
+                    _ => [].iter(),
+                }) {
+                    gather_generate(st, env, at, entities, resolved, fns, out);
+                }
+                if let Some(ast::ElseBranch::If(inner)) = iff.else_.as_deref() {
+                    gather_generate(
+                        &ast::Stmt::If(inner.clone()),
+                        env,
+                        at,
+                        entities,
+                        resolved,
+                        fns,
+                        out,
+                    );
                 }
             }
         }

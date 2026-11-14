@@ -1725,7 +1725,7 @@ pub fn lower(
         let mut instance_integers = constant_integers.clone();
         for (name, value) in &hierarchy.instance(owner).params {
             if let crate::elab::ParamValue::Int(value) = value {
-                instance_integers.insert(name.clone(), *value);
+                instance_integers.insert(name.clone(), *value as i64);
             }
         }
         let mut process = {

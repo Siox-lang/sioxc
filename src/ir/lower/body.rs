@@ -217,6 +217,11 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        // Generated instances are the ones elaboration built: a generate
+        // `if` lowering could not fold gathered both branches (#624).
+        if let Some(built) = self.built_children.get(path) {
+            subinsts.retain(|(name, _, _)| built.contains(name));
+        }
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {

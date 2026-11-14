@@ -154,7 +154,8 @@ pub fn lower_in(
                 inst.params
                     .iter()
                     .filter_map(|(n, v)| match v {
-                        crate::elab::ParamValue::Int(i) => Some((n.clone(), *i)),
+                        // The 64-bit pattern, as lowering's words hold it.
+                        crate::elab::ParamValue::Int(i) => Some((n.clone(), *i as i64)),
                         crate::elab::ParamValue::Unknown => None,
                     })
                     .collect()
@@ -393,6 +394,9 @@ struct Lowering<'a> {
     /// Concrete instance-array shapes from hierarchy elaboration, keyed by
     /// the owning instance's dotted IR path.
     instance_array_facts: HashMap<String, Vec<crate::elab::InstanceArrayFact>>,
+    /// Each instance's children as elaboration built them, keyed by the same
+    /// dotted path: a generate `if` lowering cannot fold follows these (#624).
+    built_children: HashMap<String, std::collections::HashSet<String>>,
     /// Dotted path of the body currently being lowered.
     cur_instance_path: String,
     /// Reads of declared slots omitted by the active generate conditions.

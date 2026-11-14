@@ -33,7 +33,7 @@ pub struct InstanceId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamValue {
     /// A parameter folded to a concrete integer.
-    Int(i64),
+    Int(i128),
     /// Could not be evaluated to a constant (e.g. an unbound top-level param).
     Unknown,
 }
@@ -623,7 +623,7 @@ struct Elaborator<'a> {
     /// environment, which its parameters shadow, with its own module's by
     /// bare name. A generate `if USE_FEATURE` or `for i in 0..N` on one read
     /// unknown (#584); keyed by bare name, two modules' `N` collided (#648).
-    module_consts: HashMap<String, i64>,
+    module_consts: HashMap<String, i128>,
     /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
 }
@@ -852,8 +852,8 @@ impl<'a> Elaborator<'a> {
     fn with_impl_binders(
         &self,
         entity_id: DefId,
-        mut env: HashMap<String, i64>,
-    ) -> HashMap<String, i64> {
+        mut env: HashMap<String, i128>,
+    ) -> HashMap<String, i128> {
         let (Some(edecl), Some(impls)) = (
             self.entities.get(&entity_id).copied(),
             self.impls.get(&entity_id),
@@ -890,7 +890,7 @@ impl<'a> Elaborator<'a> {
         &self,
         entity_id: DefId,
         is_extern: bool,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
     ) -> Vec<InstanceSpec<'a>> {
         let mut specs = Vec::new();
         if is_extern {
@@ -965,7 +965,7 @@ impl<'a> Elaborator<'a> {
     fn instance_array_facts(
         &self,
         entity_id: DefId,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
         specs: &[InstanceSpec<'a>],
     ) -> Vec<InstanceArrayFact> {
         let mut out = Vec::new();
@@ -1001,7 +1001,7 @@ impl<'a> Elaborator<'a> {
                 {
                     continue;
                 }
-                let declared = match index.as_ref() {
+                let declared: Vec<i128> = match index.as_ref() {
                     Expr::Range { lo, hi, .. } => {
                         let (ParamValue::Int(left), ParamValue::Int(right)) =
                             (eval(lo, env), eval(hi, env))
@@ -1028,10 +1028,17 @@ impl<'a> Elaborator<'a> {
                         specs.iter().any(|spec| spec.name == slot)
                     })
                     .collect();
+                // Instance labels are small: the facts keep `i64`.
+                let narrow = |labels: Vec<i128>| -> Vec<i64> {
+                    labels
+                        .into_iter()
+                        .filter_map(|i| i64::try_from(i).ok())
+                        .collect()
+                };
                 out.push(InstanceArrayFact {
                     name: l.name.text.clone(),
-                    declared,
-                    built,
+                    declared: narrow(declared),
+                    built: narrow(built),
                     span: l.span,
                 });
             }
@@ -1105,7 +1112,7 @@ impl<'a> Elaborator<'a> {
     fn gather_let(
         &self,
         l: &'a LetDecl,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
         at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
@@ -1114,7 +1121,7 @@ impl<'a> Elaborator<'a> {
         // `Cell[R][C]` its C * R (#300); ports are wired afterwards,
         // `stage[i].din = ..`.
         if let (None, Some(ty)) = (&l.value, &l.ty) {
-            if let Some((base, slots)) = instance_array_slots(ty, env) {
+            if let Some((base, slots)) = array_slots(ty, env) {
                 let entity = !type_head_name(base).is_some_and(|n| tparams.contains(n))
                     && type_def_id(base, self.resolved)
                         .is_some_and(|id| self.entities.contains_key(&id));
@@ -1151,7 +1158,7 @@ impl<'a> Elaborator<'a> {
     fn gather_stmt(
         &self,
         s: &'a Stmt,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
         at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
@@ -1327,7 +1334,7 @@ impl<'a> Elaborator<'a> {
     fn gather_if(
         &self,
         iff: &'a IfStmt,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
         at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
@@ -1467,8 +1474,8 @@ impl<'a> Elaborator<'a> {
         instance: &str,
         args: &[ConnectArg],
         site: Span,
-        env: &HashMap<String, i64>,
-        render_env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
+        render_env: &HashMap<String, i128>,
         driven: &HashSet<String>,
     ) -> Vec<Connection> {
         let ports: HashMap<&str, &Type> = edecl
@@ -1593,7 +1600,7 @@ impl<'a> Elaborator<'a> {
     fn entity_signals(
         &self,
         entity_id: DefId,
-        env: &HashMap<String, i64>,
+        env: &HashMap<String, i128>,
     ) -> HashMap<String, EType> {
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.entities.get(&entity_id) {
@@ -1741,7 +1748,7 @@ struct InstanceSpec<'a> {
     site: Span,
     /// Loop-variable bindings for a generated instance (`for i in 0..N`),
     /// substituted into the connection signal names (`wires[i]`).
-    loop_env: HashMap<String, i64>,
+    loop_env: HashMap<String, i128>,
     /// A slot of an instance array made by its declaration; an element
     /// construction of the same slot replaces it.
     declared_slot: bool,
@@ -1750,7 +1757,7 @@ struct InstanceSpec<'a> {
 /// The `Int`-valued subset of a param list, as a substitution environment.
 /// Every module-level constant that folds to an integer, in as many passes
 /// as one constant takes to name another.
-fn module_constants(modules: &[Module]) -> HashMap<String, i64> {
+fn module_constants(modules: &[Module]) -> HashMap<String, i128> {
     // Each constant with its module's path, evaluated with its own module's
     // constants by bare name and every module's by qualified name.
     let constants: Vec<(String, &ConstDecl)> = modules
@@ -1769,7 +1776,7 @@ fn module_constants(modules: &[Module]) -> HashMap<String, i64> {
             })
         })
         .collect();
-    let mut out: HashMap<String, i64> = HashMap::new();
+    let mut out: HashMap<String, i128> = HashMap::new();
     loop {
         let before = out.len();
         for (module, constant) in &constants {
@@ -1797,7 +1804,7 @@ fn module_constants(modules: &[Module]) -> HashMap<String, i64> {
     }
 }
 
-fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
+fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i128> {
     params
         .iter()
         .filter_map(|(n, v)| match v {
@@ -1812,7 +1819,7 @@ fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
 fn eval_params(
     edecl: &EntityDecl,
     ty: &Type,
-    env: &HashMap<String, i64>,
+    env: &HashMap<String, i128>,
 ) -> Vec<(String, ParamValue)> {
     let args: &[GenericArg] = match ty {
         Type::Generic { args, .. } => args,
@@ -1880,7 +1887,7 @@ impl GenPath {
     }
 
     /// The position inside iteration `index` of a loop labelled `label`.
-    pub fn iteration(&self, label: Option<&Ident>, index: i64) -> GenPath {
+    pub fn iteration(&self, label: Option<&Ident>, index: i128) -> GenPath {
         match label {
             Some(label) => GenPath {
                 scope: format!("{}[{index}].", self.name(&label.text)),
@@ -1888,7 +1895,7 @@ impl GenPath {
             },
             None => {
                 let mut at = self.clone();
-                at.loop_path.push(index);
+                at.loop_path.push(index as i64);
                 at
             }
         }
@@ -1906,7 +1913,7 @@ impl GenPath {
     }
 }
 
-fn loop_range(a: i64, b: i64) -> Vec<i64> {
+fn loop_range(a: i128, b: i128) -> Vec<i128> {
     if a <= b {
         (a..=b).collect()
     } else {
@@ -1916,7 +1923,7 @@ fn loop_range(a: i64, b: i64) -> Vec<i64> {
 
 /// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving
 /// bare identifiers against `env`.
-fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
+fn eval(e: &Expr, env: &HashMap<String, i128>) -> ParamValue {
     use ParamValue::{Int, Unknown};
     match e {
         Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
@@ -1927,7 +1934,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
                 .is_some_and(|s| s.text == "true" || s.text == "false")
                 && !env.contains_key(&p.segments[0].text) =>
         {
-            Int(i64::from(
+            Int(i128::from(
                 p.segments.last().is_some_and(|s| s.text == "true"),
             ))
         }
@@ -1962,7 +1969,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
             // `not` is boolean negation, as lowering folds it: bitwise, `not
             // true` was -2, nonzero, and a generate `if not c` took the
             // wrong branch (#611).
-            (UnOp::Not, Int(v)) => Int(i64::from(v == 0)),
+            (UnOp::Not, Int(v)) => Int(i128::from(v == 0)),
             _ => Unknown,
         },
         Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs, env), eval(rhs, env)) {
@@ -1985,12 +1992,12 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
                 BinOp::And => Int(a & b),
                 BinOp::Or => Int(a | b),
                 // Comparisons yield 1/0, for `if`-generate conditions.
-                BinOp::Eq => Int((a == b) as i64),
-                BinOp::Ne => Int((a != b) as i64),
-                BinOp::Lt => Int((a < b) as i64),
-                BinOp::Le => Int((a <= b) as i64),
-                BinOp::Gt => Int((a > b) as i64),
-                BinOp::Ge => Int((a >= b) as i64),
+                BinOp::Eq => Int(i128::from(a == b)),
+                BinOp::Ne => Int(i128::from(a != b)),
+                BinOp::Lt => Int(i128::from(a < b)),
+                BinOp::Le => Int(i128::from(a <= b)),
+                BinOp::Gt => Int(i128::from(a > b)),
+                BinOp::Ge => Int(i128::from(a >= b)),
                 _ => Unknown,
             },
             _ => Unknown,
@@ -2082,7 +2089,7 @@ fn project_once(ty: &EType, inner: &str, nominal: &dyn Fn(&str) -> bool) -> Opti
     }
 }
 
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
+fn concrete_ty(t: &Type, env: &HashMap<String, i128>) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
@@ -2108,12 +2115,10 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
 
 /// The bit width implied by a type index: a single value is the width itself
 /// (`unsigned[8]` -> 8); a descending/ascending range is its span (`[31..0]` -> 32).
-fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
+fn index_width(index: &Expr, env: &HashMap<String, i128>) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
         if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
-            return u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
-                .ok()?
-                .checked_add(1);
+            return u32::try_from((a - b).unsigned_abs()).ok()?.checked_add(1);
         }
         return None;
     }
@@ -2125,7 +2130,7 @@ fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
 
 /// Render a port type with parameter widths substituted (`unsigned[W]` with `W=8`
 /// becomes `unsigned[8]`; unresolved widths keep their symbolic form).
-fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
+fn render_concrete(t: &Type, env: &HashMap<String, i128>) -> String {
     match t {
         Type::Path(p) => p
             .segments
@@ -2181,7 +2186,7 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
 }
 
 /// Render a type-index expression, substituting a constant value when known.
-fn render_index(e: &Expr, env: &HashMap<String, i64>) -> String {
+fn render_index(e: &Expr, env: &HashMap<String, i128>) -> String {
     match eval(e, env) {
         ParamValue::Int(v) => v.to_string(),
         ParamValue::Unknown => render_expr(e),
@@ -2214,7 +2219,9 @@ fn render_expr(e: &Expr) -> String {
 // ponytail: such a value is negative as an `i64`, so an ordered comparison
 // of it during elaboration (`MASK > 5`) reads it below zero; widen the
 // elaborator's values to `i128` if that is ever needed.
-fn parse_int(text: &str) -> Option<i64> {
+/// An unsigned 64-bit literal is its value: `0x8000_0000_0000_0000` is
+/// above zero, as lowering compares it, not `i64::MIN` (#624).
+fn parse_int(text: &str) -> Option<i128> {
     let normalized = text.trim().replace('_', "");
     let t = normalized.as_str();
     let wide = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
@@ -2224,7 +2231,7 @@ fn parse_int(text: &str) -> Option<i64> {
     } else {
         t.parse::<u64>().ok()
     };
-    wide.map(|value| value as i64)
+    wide.map(i128::from)
 }
 
 /// Render the local signal a port connects to. Bare paths render as their name;
@@ -2325,7 +2332,7 @@ fn is_connection_target(e: &Expr) -> bool {
 
 /// Render the signal path an expression names, substituting any elaboration
 /// parameters it indexes with.
-fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
+fn render_signal(e: &Expr, env: &HashMap<String, i128>) -> String {
     match e {
         Expr::Path(p) => p
             .segments
@@ -2375,6 +2382,15 @@ pub(crate) fn instance_array_slots<'t>(
     ty: &'t Type,
     env: &HashMap<String, i64>,
 ) -> Option<(&'t Type, Vec<String>)> {
+    let env: HashMap<String, i128> = env
+        .iter()
+        .map(|(name, value)| (name.clone(), i128::from(*value)))
+        .collect();
+    array_slots(ty, &env)
+}
+
+/// [`instance_array_slots`] over elaboration's own constants.
+fn array_slots<'t>(ty: &'t Type, env: &HashMap<String, i128>) -> Option<(&'t Type, Vec<String>)> {
     let Type::Indexed {
         base,
         index: Some(index),
@@ -2394,7 +2410,7 @@ pub(crate) fn instance_array_slots<'t>(
         },
     };
     let (element, inner) = match base.as_ref() {
-        Type::Indexed { .. } => instance_array_slots(base, env)?,
+        Type::Indexed { .. } => array_slots(base, env)?,
         element => (element, vec![String::new()]),
     };
     let slots = labels

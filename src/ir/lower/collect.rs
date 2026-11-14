@@ -14,6 +14,14 @@ impl<'a> Lowering<'a> {
         path: &str,
     ) {
         let instance = hierarchy.instance(id);
+        self.built_children.insert(
+            path.to_string(),
+            instance
+                .children
+                .iter()
+                .map(|&child| hierarchy.instance(child).name.clone())
+                .collect(),
+        );
         if !instance.instance_arrays.is_empty() {
             self.instance_array_facts
                 .insert(path.to_string(), instance.instance_arrays.clone());
@@ -76,6 +84,7 @@ impl<'a> Lowering<'a> {
             block_scopes: std::cell::RefCell::new(Vec::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             instance_array_facts: HashMap::new(),
+            built_children: HashMap::new(),
             cur_instance_path: String::new(),
             unelaborated_instance_uses: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
