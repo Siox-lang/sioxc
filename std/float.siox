@@ -461,6 +461,11 @@ impl From<float> for real {
     static fn from(value: float) -> real {
         let e: integer = value'high;
         let f: integer = 0 - value'low;
+        // A word past the kernel's 64 bits (`float<80, 64>`) is read over
+        // `unsigned[128]` (#538).
+        if e + f + 1 > 64 {
+            return wide_float_real(unsigned[128](value), e, f);
+        }
         let a: integer = integer(value);
         let sign: real = if low_bits(a >> (e + f), 1) == 1 { 0.0 - 1.0 } else { 1.0 };
         let exponent: integer = low_bits(a >> f, e);
@@ -470,7 +475,10 @@ impl From<float> for real {
         }
         if exponent == 0 { return sign * 0.0; }
         let bias: integer = (1 << (e - 1)) - 1;
-        return sign * real((1 << f) + fraction) * pow2(exponent - bias - f);
+        // In two halves, as `wide_float_real`: a binary64 near its smallest
+        // normal read 0.
+        let k: integer = exponent - bias - f;
+        return sign * real((1 << f) + fraction) * pow2(k / 2) * pow2(k - k / 2);
     }
 }
 
@@ -479,6 +487,9 @@ impl From<float> for real {
 // the range it is infinite, below it zero.
 impl From<real> for float {
     static fn from(value: real) -> float {
+        if Self'high + (0 - Self'low) + 1 > 64 {
+            return wide_float_word(value, Self'high, 0 - Self'low);
+        }
         return float_word(value, Self'high, 0 - Self'low);
     }
 }
@@ -618,6 +629,47 @@ fn float_to_fixed(
     if signed_steps > top { return top; }
     if signed_steps < bottom { return bottom; }
     return signed_steps;
+}
+
+// `float_word` for a format past the kernel's 64 bits, which holds every
+// binary64 exactly (at least 11 exponent and 52 fraction bits): the
+// fraction moves up, the exponent is rebiased (#538).
+fn wide_float_word(value: real, e: integer, f: integer) -> unsigned[128] {
+    let sign: unsigned[128] = if 0.0 > value { 1 } else { 0 };
+    let magnitude: real = if 0.0 > value { 0.0 - value } else { value };
+    let full: unsigned[128] = (unsigned[128](1) << e) - 1;
+    if magnitude != magnitude {
+        return (full << f) + (unsigned[128](1) << (f - 1));
+    }
+    let bits: integer = integer(intrinsics::to_bits(magnitude));
+    let e64: integer = bits >> 52;
+    let fraction: integer = low_bits(bits, 52);
+    if e64 == 2047 { return (sign << (e + f)) + (full << f); }
+    if e64 == 0 { return sign << (e + f); }
+    let biased: integer = e64 - 1023 + ((1 << (e - 1)) - 1);
+    return (sign << (e + f))
+        + (unsigned[128](biased) << f)
+        + (unsigned[128](fraction) << (f - 52));
+}
+
+// `real(x)` of a word past the kernel's 64 bits: its sign, exponent and top
+// 53 significand bits, rounded to nearest (#538).
+fn wide_float_real(a: unsigned[128], e: integer, f: integer) -> real {
+    let one: unsigned[128] = 1;
+    let sign: real = if ((a >> (e + f)) - ((a >> (e + f + 1)) << 1)) == one { 0.0 - 1.0 } else { 1.0 };
+    let exponent: integer = integer((a >> f) - ((a >> (e + f)) << e));
+    let fraction: unsigned[128] = a - ((a >> f) << f);
+    if exponent == (1 << e) - 1 {
+        return if fraction == 0 { sign / 0.0 } else { 0.0 / 0.0 };
+    }
+    if exponent == 0 { return sign * 0.0; }
+    // The top 52 fraction bits, rounded on the next one.
+    let top: unsigned[128] = (fraction + (one << (f - 53))) >> (f - 52);
+    let bias: integer = (1 << (e - 1)) - 1;
+    // In two halves: `2^-1039` for the smallest binary64 overflows as one
+    // power before it divides.
+    let k: integer = exponent - bias - 52;
+    return sign * real((1 << 52) + integer(top)) * pow2(k / 2) * pow2(k - k / 2);
 }
 
 // The word of `value` with `e` exponent and `f` fraction bits.
