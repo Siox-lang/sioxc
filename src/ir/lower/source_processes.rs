@@ -8789,26 +8789,33 @@ fn rebase_place(
     push_value(node.span, node.ty, node.bit_width, node.kind, context)
 }
 
-/// The fixed type of an array literal given to an unconstrained `T[]`
-/// (`xs = [7, 8, 9]` is an `integer[3]`, converted to a runtime array).
+/// The fixed shape of a nonempty literal given to an unconstrained array.
 fn literal_type(value: &ast::Expr, ty: Option<&crate::types::Ty>) -> Option<crate::types::Ty> {
-    let ast::Expr::Array { elems, .. } = value else {
+    let crate::types::Ty::Array {
+        elem,
+        len: 0,
+        family: None,
+        low,
+    } = ty?
+    else {
         return None;
     };
-    match ty? {
-        crate::types::Ty::Array {
-            elem,
-            len: 0,
-            family: None,
-            low,
-        } if !elems.is_empty() => Some(crate::types::Ty::Array {
-            elem: elem.clone(),
-            len: u32::try_from(elems.len()).ok()?,
-            family: None,
-            low: *low,
-        }),
-        _ => None,
+    let len = match value {
+        ast::Expr::Array { elems, .. } => elems.len(),
+        ast::Expr::StrLit { text, .. } if matches!(elem.as_ref(), crate::types::Ty::Char) => {
+            text.chars().count()
+        }
+        _ => return None,
+    };
+    if len == 0 {
+        return None;
     }
+    Some(crate::types::Ty::Array {
+        elem: elem.clone(),
+        len: u32::try_from(len).ok()?,
+        family: None,
+        low: *low,
+    })
 }
 
 /// `value` assigned to a runtime array of type `ty`: its own copy, unless it
@@ -11404,6 +11411,8 @@ fn value_ref_with_type_inner(
                         .cloned()
                         .or(declared)
                         .or_else(|| ty.clone());
+                    let constant_type =
+                        literal_type(&declaration.value, constant_type.as_ref()).or(constant_type);
                     let mut value = value_ref_with_type(
                         &declaration.value,
                         process,
@@ -13624,17 +13633,25 @@ mod tests {
     fn constant_arrays_keep_declaration_ranges_and_nominal_scope() {
         let mut sources = [
             "module left; pub const VALUES: integer[6..4] = [11, 13, 17];
+             pub type Text = Char[];
+             pub const TEXT: Text = \"é🦀\";
+             pub const LABELLED: Char[6..4] = \"Aé🦀\";
+             pub const OPEN: integer[] = [41, 43];
              pub struct Config { pub width: integer, pub count: integer }
              pub const CFG: Config = match 0 {
                  0 => { .width = 6, .count = 2 },
                  _ => { .width = 1, .count = 1 },
              };",
-            "module right; pub const VALUES: integer[-1..-2] = [23, 29];",
+            "module right; pub const VALUES: integer[-1..-2] = [23, 29];
+             pub const TEXT: Char[] = \"xy\";",
             "module tests;
              #[test] entity Smoke {}
              impl Smoke {
                  const VALUES: integer[10..11] = [31, 37];
-                 process { print!(\"{} {} {} {}\", left::VALUES[6], right::VALUES[-2], VALUES[11], left::CFG.width); }
+                 process {
+                     print!(\"{} {} {} {}\", left::VALUES[6], right::VALUES[-2], VALUES[11], left::CFG.width);
+                     print!(\"{} {} {} {}\", left::TEXT[0], left::LABELLED[4], right::TEXT[1], left::OPEN[1]);
+                 }
              }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
             "module std::attrs; pub attr test: std::logic::Bool for entity; attr lang for test = \"test\";",
@@ -13707,11 +13724,44 @@ mod tests {
                     range
                 })
                 .collect::<Vec<_>>();
-            for (left, right) in [(6, 4), (-1, -2), (10, 11)] {
+            for (left, right) in [(6, 4), (-1, -2), (10, 11), (0, 1)] {
                 assert!(
                     ranges.contains(&crate::ir::LayoutRange { left, right }),
                     "missing {left}..{right}: {ranges:?}"
                 );
+            }
+            for (text, left, right) in [("é🦀", 0, 1), ("Aé🦀", 6, 4), ("xy", 0, 1)] {
+                let mut found = false;
+                for (value, layout) in design
+                    .process_ir
+                    .values
+                    .iter()
+                    .zip(&design.process_ir.value_layouts)
+                    .filter(|(value, _)| matches!(&value.kind, ProcessValueKind::String(value) if value == text))
+                {
+                    found = true;
+                    let Some(crate::types::Ty::Array {
+                        elem,
+                        len,
+                        family: None,
+                        low,
+                    }) = value.ty.as_ref()
+                    else {
+                        panic!("constant text retains its array type: {value:?}");
+                    };
+                    assert_eq!(elem.as_ref(), &crate::types::Ty::Char);
+                    assert_eq!(usize::try_from(*len).unwrap(), text.chars().count());
+                    assert_eq!(*low, left.min(right));
+                    assert_eq!(
+                        value.bit_width,
+                        len.checked_mul(crate::types::Ty::Char.bit_width().unwrap())
+                    );
+                    assert_eq!(
+                        layout.as_ref().and_then(SourceLayout::index_range),
+                        Some(crate::ir::LayoutRange { left, right })
+                    );
+                }
+                assert!(found, "missing constant text {text:?}");
             }
             sources.reverse();
         }

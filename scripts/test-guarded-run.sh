@@ -2,12 +2,19 @@
 # Linux-only integration check; the intentional OOM is confined to 64 MiB.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+bash "$root/scripts/test-guarded-run-args.sh"
 units=()
+# Probe workloads never compile or run designs. Keep their lock fixture apart
+# from the host's compiler queue while reaching the real user manager.
+runtime=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/siox-jobs/tmp/guard-runtime.XXXXXX")
+ln -s "$XDG_RUNTIME_DIR/systemd" "$runtime/systemd"
+export XDG_RUNTIME_DIR=$runtime
 cleanup() {
     for unit in "${units[@]}"; do
         systemctl --user stop "$unit" >/dev/null 2>&1 || true
         systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
     done
+    rm -rf "$runtime"
 }
 trap cleanup EXIT
 
@@ -56,12 +63,22 @@ for ((n=0; n<100; n++)); do
     sleep 0.05
 done
 test -s "$log"
+start --wait /usr/bin/sh -c 'echo queued-job-ran'
+queued=$unit
+queued_log=$log
+test "$(property SubState)" = running
+test ! -s "$queued_log"
 start /usr/bin/sh -c 'echo must-not-run'
 wait_done
 test "$(property ExecMainStatus)" = 75
 ! rg -F 'must-not-run' "$log" >/dev/null
 unit=$holder
 wait_done
+unit=$queued
+wait_done
+test "$(property Result)" = success
+test "$(property ExecMainStatus)" = 0
+rg -F -x 'queued-job-ran' "$queued_log" >/dev/null
 
 # Exercise the hard limit without spending the timeout in high-limit reclaim.
 export SIOX_JOB_MEMORY=64M SIOX_JOB_HIGH=64M
@@ -72,4 +89,4 @@ test "$(property Result)" = oom-kill
 test "$(property ExecMainCode)" = 2 # CLD_KILLED, not a swallowed success
 after=$(awk '$1 == "oom_kill" {print $2}' "/sys/fs/cgroup$scope/memory.events")
 test "$before" = "$after"
-printf 'guarded-run: success, literal arguments, failure status, serialization and isolated OOM passed\n'
+printf 'guarded-run: success, literal arguments, failure status, serialization, queued execution and isolated OOM passed\n'

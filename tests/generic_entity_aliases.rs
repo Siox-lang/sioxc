@@ -182,11 +182,29 @@ impl AliasData {
         )
         .with_output(&binary),
     );
+    let failure_ir = dir.join("failure-ir.txt");
+    if !compiled.succeeded() {
+        if let Some(design) = &compiled.design {
+            use std::fmt::Write;
+            let ir = &design.process_ir;
+            let mut details = format!("{:#?}\n", ir.processes);
+            for (index, value) in ir.values.iter().enumerate() {
+                writeln!(
+                    details,
+                    "value {index}: {value:?} layout: {:?}",
+                    ir.value_layouts[index]
+                )
+                .unwrap();
+            }
+            std::fs::write(&failure_ir, details).unwrap();
+        }
+    }
     assert!(
         compiled.succeeded(),
-        "{}{:?}",
+        "{}{:?}\nProcess IR: {}",
         compiled.render_diagnostics(),
-        compiled.failure
+        compiled.failure,
+        failure_ir.display(),
     );
     let ran = Command::new(binary)
         .arg("-o")

@@ -28,25 +28,19 @@ impl<'a> Checker<'a> {
 
     /// The visibility of a field, following nominal derivation to wherever it
     /// was declared.
-    pub(super) fn field_visibility_for(&self, head: &str, field: &str) -> Option<MemberVisibility> {
-        let mut current = head.to_string();
-        let mut seen = HashSet::new();
-        loop {
-            if !seen.insert(current.clone()) {
-                return None;
-            }
-            if let Some(visibility) = self
-                .field_visibility
-                .get(&(current.clone(), field.to_string()))
-            {
-                return Some(visibility.clone());
-            }
-            current = self
-                .structs
-                .get(&current)
-                .and_then(|(base, _)| base.as_ref())
-                .and_then(|base| self.type_key(base))?;
-        }
+    pub(super) fn field_visibility_for(
+        &self,
+        owner: DefId,
+        field: &str,
+    ) -> Option<MemberVisibility> {
+        let (owner, field) = self.field_declaration(owner, field)?;
+        Some(MemberVisibility {
+            is_pub: field.is_pub,
+            type_private: true,
+            owner: self.definition_key(owner)?,
+            module: self.module_of(field.span),
+            span: field.name.span,
+        })
     }
 
     /// The module a span belongs to. Files are not modules: several files may

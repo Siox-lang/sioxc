@@ -507,9 +507,10 @@ impl<'a> Interpreter<'a> {
                     .and_then(|source| source.range_value(left, right))
                     .ok_or_else(|| fail(Reason::Unsupported))?
             }
-            Expr::Array { .. } | Expr::Tuple { .. } | Expr::Construct { .. } => {
-                self.aggregate_expression(expression, None, None, depth)?
-            }
+            Expr::StrLit { .. }
+            | Expr::Array { .. }
+            | Expr::Tuple { .. }
+            | Expr::Construct { .. } => self.aggregate_expression(expression, None, None, depth)?,
             Expr::Field { base, field, .. } => {
                 let value = self.expression(base, None, depth + 1)?;
                 self.project_field(value, field)
@@ -543,9 +544,9 @@ impl<'a> Interpreter<'a> {
                     .cloned()
                     .ok_or_else(|| fail(Reason::Unsupported))?
             }
-            Expr::SysAttr { base, attr, .. } => match environment.attribute(base, attr) {
+            Expr::SysAttr { base, attr, span } => match environment.attribute(base, attr) {
                 Some(value) => Value::Integer(value),
-                None => self.aggregate_attribute(base, attr, depth + 1)?,
+                None => self.aggregate_attribute(base, attr, *span, depth + 1)?,
             },
             Expr::Unary { op, rhs, .. } => {
                 if matches!(op, UnOp::Neg)

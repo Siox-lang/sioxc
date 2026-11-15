@@ -616,12 +616,12 @@ impl<'a> Checker<'a> {
                         .and_then(|index| elems.get(index).cloned())
                         .unwrap_or(Ty::Error);
                 }
-                let head = self.ty_head(&recv);
-                match head
-                    .as_ref()
-                    .and_then(|head| self.field_decl_ty(head, &field.text))
-                {
-                    Some(ty) => self.ast_ty(&ty),
+                let declared = match &recv {
+                    Ty::Named(owner) => self.field_decl_ty(*owner, &field.text),
+                    _ => None,
+                };
+                match declared {
+                    Some(ty) => self.ast_ty(ty),
                     // An instance's port (`dut.z`): its declared type. As an
                     // error it read untyped, and `print!("{}", dut.z)` of an
                     // aggregate port found no way to print it.
@@ -646,5 +646,17 @@ impl<'a> Checker<'a> {
         let mut targets = self.views.keys().filter_map(|k| k.strip_prefix(&prefix));
         let first = targets.next()?;
         targets.next().is_none().then(|| first.to_string())
+    }
+
+    /// Retain the selected target's resolver spans instead of recovering a type
+    /// from the compatibility layout name. Ambiguous bare views stay unknown.
+    pub(super) fn view_backing_type(&self, name: &str) -> Option<&Type> {
+        let prefix = format!("{name}@");
+        let mut targets = self
+            .views
+            .iter()
+            .filter_map(|(key, target)| key.starts_with(&prefix).then_some(target));
+        let first = targets.next()?;
+        targets.next().is_none().then_some(first)
     }
 }

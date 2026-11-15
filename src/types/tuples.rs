@@ -9,66 +9,112 @@
 //! assignment target `(q, r) = e;`, which writes each position. A tuple
 //! comparison `l == r` becomes `l.0 == r.0 and l.1 == r.1`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diag::Span;
+use crate::diag::{FileId, SourceMap, Span};
+use crate::resolve::{DefInfo, DefKind, ParameterKind, Resolved};
 use crate::syntax::ast::*;
 
 /// Rewrite every tuple type and tuple value in `modules`, and append the
 /// module declaring the structs they now name. Nothing changes when the
-/// source has no tuples.
-pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
+/// source has no tuples. Generated declarations extend the existing resolver
+/// facts; checked source definitions and references keep their identities.
+pub fn lower_tuples(
+    modules: &mut Vec<Module>,
+    typed: &super::Typed,
+    resolved: &mut Resolved,
+    sources: &mut SourceMap,
+) {
     let mut lower = Lower {
         typed,
+        sources,
         arities: BTreeSet::new(),
-        span: None,
+        file: None,
+        text: String::new(),
+        references: Vec::new(),
     };
     for module in modules.iter_mut() {
         for item in &mut module.items {
             lower.item(item);
         }
     }
-    let Some(span) = lower.span else {
+    if lower.arities.is_empty() {
         return;
-    };
-    let ident = |text: String| Ident { text, span };
-    let items = lower
-        .arities
-        .iter()
-        .map(|&arity| {
-            let param = |index: usize| format!("T{index}");
-            Item::Struct(StructDecl {
-                derives: Vec::new(),
+    }
+    let mut owners = BTreeMap::new();
+    let mut items = Vec::new();
+    for arity in std::mem::take(&mut lower.arities) {
+        let name = lower.ident(tuple_struct_name(arity));
+        let span = name.span;
+        let owner = resolved.register_generated_definition(
+            DefInfo {
+                name: name.text.clone(),
+                module: Some("tuple".to_string()),
+                kind: DefKind::Struct,
                 is_pub: true,
-                name: ident(tuple_struct_name(arity)),
-                params: Params {
-                    params: (0..arity)
-                        .map(|index| Param {
-                            name: ident(param(index)),
-                            bound: None,
-                            span,
-                        })
-                        .collect(),
+                span: Some(span),
+                parent: None,
+            },
+            None,
+        );
+        owners.insert(arity, owner);
+        let mut params = Vec::new();
+        let mut fields = Vec::new();
+        for index in 0..arity {
+            let parameter = lower.ident(format!("T{index}"));
+            let id = resolved.register_generated_definition(
+                DefInfo {
+                    name: parameter.text.clone(),
+                    module: Some("tuple".to_string()),
+                    kind: DefKind::Param,
+                    is_pub: false,
+                    span: Some(parameter.span),
+                    parent: Some(owner),
                 },
-                base: None,
-                fields: (0..arity)
-                    .map(|index| Field {
-                        is_pub: true,
-                        name: ident(index.to_string()),
-                        ty: Type::Path(Path {
-                            segments: vec![ident(param(index))],
-                            span,
-                        }),
-                        span,
-                    })
-                    .collect(),
-                span,
-            })
-        })
-        .collect();
+                Some(ParameterKind::Type),
+            );
+            let reference = lower.ident(parameter.text.clone());
+            resolved.register_generated_use(reference.span, id);
+            let field = lower.ident(index.to_string());
+            fields.push(Field {
+                is_pub: true,
+                span: field.span,
+                name: field,
+                ty: Type::Path(Path {
+                    span: reference.span,
+                    segments: vec![reference],
+                }),
+            });
+            params.push(Param {
+                span: parameter.span,
+                name: parameter,
+                bound: None,
+            });
+        }
+        items.push(Item::Struct(StructDecl {
+            derives: Vec::new(),
+            is_pub: true,
+            name,
+            params: Params { params },
+            base: None,
+            fields,
+            span,
+        }));
+    }
+    for (span, arity) in &lower.references {
+        resolved.register_generated_use(*span, owners[arity]);
+    }
+    let name = lower.ident("tuple".to_string());
+    let span = name.span;
+    lower.sources.replace_text(
+        lower
+            .file
+            .expect("a tuple declaration allocated its source"),
+        std::mem::take(&mut lower.text),
+    );
     modules.push(Module {
         path: Path {
-            segments: vec![ident("tuple".to_string())],
+            segments: vec![name],
             span,
         },
         items,
@@ -93,19 +139,34 @@ pub fn tuple_struct_arity(name: &str) -> Option<usize> {
     commas.chars().all(|c| c == ',').then(|| commas.len() + 1)
 }
 
-struct Lower<'t> {
+struct Lower<'t, 's> {
     /// The checked types, which say which comparisons are of tuples.
     typed: &'t super::Typed,
+    sources: &'s mut SourceMap,
     /// Every tuple arity met.
     arities: BTreeSet<usize>,
-    /// A span to give the generated declarations: the first tuple's.
-    span: Option<Span>,
+    file: Option<FileId>,
+    text: String,
+    references: Vec<(Span, usize)>,
 }
 
-impl Lower<'_> {
-    fn note(&mut self, arity: usize, span: Span) {
+impl Lower<'_, '_> {
+    fn note(&mut self, arity: usize) {
         self.arities.insert(arity);
-        self.span.get_or_insert(span);
+    }
+
+    fn ident(&mut self, text: String) -> Ident {
+        let file = *self
+            .file
+            .get_or_insert_with(|| self.sources.add("<tuple types>", ""));
+        let start = self.text.len() as u32;
+        self.text.push_str(&text);
+        let end = self.text.len() as u32;
+        self.text.push('\n');
+        Ident {
+            text,
+            span: Span::new(file, start..end),
+        }
     }
 
     fn item(&mut self, item: &mut Item) {
@@ -270,8 +331,8 @@ impl Lower<'_> {
     /// its elements, nested tuples included, kept the same way.
     fn kept(&mut self, e: &mut Expr) {
         match e {
-            Expr::Tuple { elems, span } => {
-                self.note(elems.len(), *span);
+            Expr::Tuple { elems, .. } => {
+                self.note(elems.len());
                 for elem in elems {
                     self.kept(elem);
                 }
@@ -302,14 +363,13 @@ impl Lower<'_> {
                 for elem in &mut elems {
                     self.ty(elem);
                 }
-                self.note(elems.len(), span);
+                self.note(elems.len());
+                let name = self.ident(tuple_struct_name(elems.len()));
+                self.references.push((name.span, elems.len()));
                 *ty = Type::Generic {
                     base: Box::new(Type::Path(Path {
-                        segments: vec![Ident {
-                            text: tuple_struct_name(elems.len()),
-                            span,
-                        }],
-                        span,
+                        span: name.span,
+                        segments: vec![name],
                     })),
                     args: elems.into_iter().map(GenericArg::PositionalType).collect(),
                     span,
@@ -475,7 +535,7 @@ impl Lower<'_> {
                 for elem in &mut elems {
                     self.expr(elem);
                 }
-                self.note(elems.len(), span);
+                self.note(elems.len());
                 *e = Expr::Construct {
                     ty: None,
                     args: elems
@@ -565,5 +625,140 @@ mod tests {
         assert_eq!(tuple_struct_arity("(,)"), Some(2));
         assert_eq!(tuple_struct_arity("()"), Some(1));
         assert_eq!(tuple_struct_arity("Pair"), None);
+    }
+
+    #[test]
+    fn generated_tuple_facts_preserve_source_ids_and_bind_each_parameter() {
+        let mut input = [
+            "module tuples;
+             struct Record { pub value: integer }
+             type Pair<T> = (T, T);
+             entity Top {
+                 pair: Pair<integer> in,
+                 nested: ((integer,), other::Record) in,
+                 triple: (Record, integer, real) in
+             }
+             impl Top {}",
+            "module other; pub struct Record { pub value: real }",
+        ];
+        for _ in 0..2 {
+            let mut sources = SourceMap::new();
+            let mut sink = crate::diag::DiagnosticSink::new();
+            let mut modules = input
+                .iter()
+                .enumerate()
+                .map(|(index, text)| {
+                    let file = sources.add(format!("tuple-{index}.siox"), *text);
+                    crate::syntax::parse_module(file, text, &mut sink)
+                })
+                .collect::<Vec<_>>();
+            let mut resolved = crate::resolve::resolve(&modules, &mut sink);
+            crate::resolve::normalize_aliases(&mut modules, &resolved, &mut sink);
+            let typed = super::super::check(&modules, &resolved, &mut sink);
+            assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+            let original = resolved.defs().to_vec();
+            let original_qualified = original
+                .iter()
+                .enumerate()
+                .map(|(index, _)| resolved.qualified_name(crate::resolve::DefId(index as u32)))
+                .collect::<Vec<_>>();
+            lower_tuples(&mut modules, &typed, &mut resolved, &mut sources);
+            for (index, before) in original.iter().enumerate() {
+                let id = crate::resolve::DefId(index as u32);
+                let after = resolved.def(id).unwrap();
+                assert_eq!(after.name, before.name);
+                assert_eq!(after.module, before.module);
+                assert_eq!(after.kind, before.kind);
+                assert_eq!(after.span, before.span);
+                assert_eq!(after.parent, before.parent);
+                assert_eq!(resolved.qualified_name(id), original_qualified[index]);
+            }
+            assert!(sources.get(FileId(2)).is_some());
+            assert!(sources.get(FileId(3)).is_none());
+            let index =
+                crate::resolve::declarations::DeclarationIndex::collect(&resolved, &modules);
+            let generated = modules.last().unwrap();
+            let mut parameters = std::collections::HashSet::new();
+            for item in &generated.items {
+                let Item::Struct(structure) = item else {
+                    panic!("generated tuple declaration: {item:?}");
+                };
+                let owner = resolved.declared(structure.name.span).unwrap();
+                assert!(owner.0 as usize >= original.len());
+                assert_eq!(resolved.kind_of(owner), Some(DefKind::Struct));
+                for (parameter, field) in structure.params.params.iter().zip(&structure.fields) {
+                    let id = resolved.declared(parameter.name.span).unwrap();
+                    assert!(
+                        parameters.insert(id),
+                        "distinct generated binder identities"
+                    );
+                    assert_eq!(resolved.kind_of(id), Some(DefKind::Param));
+                    let Type::Path(path) = &field.ty else {
+                        panic!("{field:?}")
+                    };
+                    assert_eq!(resolved.resolved(path.span), Some(id));
+                    assert_eq!(
+                        sources.get(path.span.file).unwrap().text
+                            [path.span.start as usize..path.span.end as usize],
+                        parameter.name.text
+                    );
+                }
+            }
+            for port in modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .filter_map(|item| {
+                    if let Item::Entity(entity) = item {
+                        Some(&entity.ports)
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+            {
+                let normalized = index
+                    .normalize_type(&port.ty)
+                    .expect("generated applications have identities");
+                let Type::Generic { base, args, .. } = normalized.as_ref() else {
+                    panic!("{normalized:?}")
+                };
+                let Type::Path(path) = base.as_ref() else {
+                    panic!("{base:?}")
+                };
+                let owner = resolved.resolved(path.span).unwrap();
+                let structure = index.structure(owner).unwrap();
+                let bindings = index.arguments(&structure.params, args).unwrap();
+                for (field, argument) in structure.fields.iter().zip(args) {
+                    let actual = index.instantiate_type(&bindings, &field.ty).unwrap();
+                    let expected = argument.as_type().unwrap();
+                    assert_eq!(
+                        crate::syntax::pretty::type_str(&actual),
+                        crate::syntax::pretty::type_str(&expected)
+                    );
+                    assert_eq!(
+                        index.scalar_type_id(&actual),
+                        index.scalar_type_id(&expected)
+                    );
+                }
+            }
+            input.reverse();
+        }
+    }
+
+    #[test]
+    fn no_tuple_pass_adds_no_generated_source_or_definitions() {
+        let mut sources = SourceMap::new();
+        let text = "module plain; entity Top {} impl Top {}";
+        let file = sources.add("plain.siox", text);
+        let mut sink = crate::diag::DiagnosticSink::new();
+        let mut modules = vec![crate::syntax::parse_module(file, text, &mut sink)];
+        let mut resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = super::super::check(&modules, &resolved, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+        let definitions = resolved.defs().len();
+        lower_tuples(&mut modules, &typed, &mut resolved, &mut sources);
+        assert_eq!(resolved.defs().len(), definitions);
+        assert_eq!(modules.len(), 1);
+        assert!(sources.get(FileId(1)).is_none());
     }
 }

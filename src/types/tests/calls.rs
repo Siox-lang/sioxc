@@ -3,6 +3,243 @@
 use super::*;
 
 #[test]
+fn generic_error_types_do_not_invent_unsatisfied_bounds() {
+    for namespace in ["contract", "core::contract", "std::contract"] {
+        let provider = format!("module {namespace}; pub trait Required {{}}");
+        for argument in [
+            "value.missing",
+            "(value.missing, 1)",
+            "[value.missing]",
+            "(1, [value.missing])",
+        ] {
+            let caller = format!(
+                "module caller;
+                 fn require<T: {namespace}::Required>(argument: T) {{}}
+                 fn check(value: integer) {{ require({argument}); }}"
+            );
+            let mut sources = [(provider.as_str(), FileId(0)), (caller.as_str(), FileId(1))];
+            for _ in 0..2 {
+                let sink = check_modules(&sources);
+                let errors: Vec<_> = sink
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+                    .collect();
+                assert_eq!(
+                    errors.len(),
+                    1,
+                    "{namespace} / {argument}: {:?}",
+                    sink.diagnostics()
+                );
+                assert_eq!(errors[0].code, Some(codes::UNKNOWN_NAME));
+                assert!(errors[0].message.contains("missing"), "{:?}", errors[0]);
+                sources.reverse();
+            }
+        }
+    }
+}
+
+#[test]
+fn generic_error_types_preserve_known_argument_checks() {
+    for (arguments, count) in [
+        ("value.missing, known_integer, known_real", 2),
+        ("(value.missing, known_integer), (known_integer, known_integer), (known_integer, known_integer)", 1),
+        ("(value.missing, known_integer), (known_integer, known_real), (known_integer, known_real)", 2),
+        ("[value.missing], [known_integer], [known_integer]", 1),
+        ("([value.missing], known_integer), ([known_integer], known_real), ([known_integer], known_real)", 2),
+        ("value.missing, 0, known_real", 1),
+        ("value.missing, known_integer, 0", 1),
+    ] {
+        let source = format!(
+            "module caller;
+             fn consistent<T>(first: T, second: T, third: T) {{}}
+             fn check(value: integer, known_integer: integer, known_real: real) {{
+                 consistent({arguments});
+             }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        let errors: Vec<_> = sink.diagnostics().iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), count, "{arguments}: {:?}", sink.diagnostics());
+        assert_eq!(errors.iter().filter(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME)).count(), 1);
+        assert_eq!(errors.iter().filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+            && diagnostic.message.contains("generic parameter `T` was inferred as")).count(), count - 1);
+    }
+}
+
+#[test]
+fn generic_error_types_do_not_hide_other_parameter_bounds() {
+    let provider = "module contract;
+        pub trait Required {}
+        impl Required for integer {}";
+    let caller = "module caller;
+        fn require<T: contract::Required, U: contract::Required>(bad: T, good: T, other: U) {}
+        fn check(value: integer, known_integer: integer, known_real: real) {
+            require(value.missing, known_integer, known_real);
+        }";
+    let mut sources = [(provider, FileId(0)), (caller, FileId(1))];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME))
+                .count(),
+            1
+        );
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    && diagnostic
+                        .message
+                        .contains("`real` does not satisfy the bound `U: Required`"))
+                .count(),
+            1
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
+fn generic_error_types_preserve_known_body_and_return_checks() {
+    for (function, arguments) in [
+        (
+            "fn inspect<T>(value: T) -> integer { return value.1; }",
+            "(value.missing, known_real)",
+        ),
+        (
+            "fn inspect<T, U>(bad: T, other: U) -> integer { return other; }",
+            "value.missing, known_real",
+        ),
+    ] {
+        let source = format!(
+            "module caller; {function}
+             fn check(value: integer, known_real: real) {{ inspect({arguments}); }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 2, "{source}: {:?}", sink.diagnostics());
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME))
+                .count(),
+            1
+        );
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    && diagnostic.message.contains("real")
+                    && diagnostic.message.contains("integer"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn generic_error_types_without_bindings_still_check_concrete_body_errors() {
+    let source = "module caller;
+        fn inspect<T>(argument: T) -> integer {
+            let invalid: integer = 1.5;
+            return 0;
+        }
+        fn check(value: integer) {
+            inspect(value.missing);
+        }";
+    let sink = check_modules(&[(source, FileId(0))]);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME))
+            .count(),
+        1
+    );
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn generic_inference_shares_contextual_domain_for_returns_and_bodies() {
+    let source = "module caller;
+        fn choose<T>(first: T, second: T) -> T { return second; }
+        fn check(known_real: real) {
+            let valid: real = choose(0, known_real);
+            let invalid: integer = choose(0, known_real);
+        }";
+    let sink = check_modules(&[(source, FileId(0))]);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+    assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+    assert!(errors[0].message.contains("integer") && errors[0].message.contains("real"));
+    let span = errors[0].primary.unwrap();
+    assert!(
+        span.start as usize >= source.find("let invalid").unwrap(),
+        "{:?}",
+        errors[0]
+    );
+}
+
+#[test]
+fn generic_type_equality_keeps_nominal_and_array_metadata_with_error_parts() {
+    let array = |elem, len, family, low| Ty::Array {
+        elem: Box::new(elem),
+        len,
+        family,
+        low,
+    };
+    let unknown = array(Ty::Error, 3, Some("left::Bits".to_owned()), -2);
+    let known = array(Ty::Integer, 3, Some("left::Bits".to_owned()), -2);
+    assert!(unknown.contains_error());
+    assert!(!known.contains_error());
+    assert!(unknown.same_known_type(&known));
+    assert!(known.same_known_type(&unknown));
+    for other in [
+        array(Ty::Integer, 4, Some("left::Bits".to_owned()), -2),
+        array(Ty::Integer, 3, Some("right::Bits".to_owned()), -2),
+        array(Ty::Integer, 3, None, -2),
+        array(Ty::Integer, 3, Some("left::Bits".to_owned()), -1),
+    ] {
+        assert!(!unknown.same_known_type(&other), "{other:?}");
+        assert!(!other.same_known_type(&unknown), "{other:?}");
+    }
+    let partial = Ty::Tuple(vec![Ty::Error, Ty::Named(DefId(1))]);
+    assert!(partial.contains_error());
+    assert!(partial.same_known_type(&Ty::Tuple(vec![Ty::Real, Ty::Named(DefId(1))])));
+    assert!(!partial.same_known_type(&Ty::Tuple(vec![Ty::Real, Ty::Named(DefId(2))])));
+    assert!(!partial.same_known_type(&Ty::Tuple(vec![Ty::Real])));
+    assert!(!partial.same_known_type(&Ty::Void));
+}
+
+#[test]
 fn generic_type_bindings_select_parameter_identity_not_its_spelling() {
     for reversed in [false, true] {
         let mut sink = DiagnosticSink::default();

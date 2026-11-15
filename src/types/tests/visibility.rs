@@ -3,6 +3,146 @@
 use super::*;
 
 #[test]
+fn borrowed_field_checks_do_not_add_missing_members_to_derivation_cycles() {
+    let sink = check_modules(&[(
+        "module model;
+         struct Left(Right);
+         struct Right(Left);
+         fn inspect(value: Left) -> integer { return value.missing; }",
+        FileId(0),
+    )]);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+    assert!(
+        errors
+            .iter()
+            .all(|diagnostic| diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                && diagnostic.message.contains("defined in terms of itself")),
+        "{errors:?}"
+    );
+    assert!(
+        !sink
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("has no field")),
+        "{:?}",
+        sink.diagnostics()
+    );
+}
+
+#[test]
+fn kernel_scalar_field_checks_include_natural() {
+    for scalar in ["integer", "natural", "real", "Char"] {
+        let source = format!(
+            "module model; fn inspect(value: {scalar}) -> integer {{ return value.missing; }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{scalar}: {:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::UNKNOWN_NAME));
+        assert!(errors[0].message.contains("has no field `missing`"));
+    }
+}
+
+#[test]
+fn inherited_field_contracts_keep_aliases_and_original_privacy_owners() {
+    let left = "module left;
+        pub struct Base { hidden: integer, pub visible: real }
+        pub type Alias = Base;
+        pub struct Derived(Alias);
+        pub view Source for Derived { hidden out, visible out }
+        pub entity Device { bus: Derived Source }
+        impl Device { bus.hidden = 7; bus.visible = 2.5; }";
+    let right = "module right;
+        pub struct Base { pub hidden: integer, visible: real }
+        pub type Alias = Base;
+        pub struct Derived(Alias);";
+    let client = "module client;
+        fn public_left(value: left::Derived) -> real { return value.visible; }
+        fn private_left(value: left::Derived) -> integer { return value.hidden; }
+        fn public_right(value: right::Derived) -> integer { return value.hidden; }
+        fn private_right(value: right::Derived) -> real { return value.visible; }
+        pub view Foreign for left::Derived { hidden in, visible in }";
+    let mut sources = [(left, FileId(0)), (right, FileId(1)), (client, FileId(2))];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 3, "{:?}", sink.diagnostics());
+        assert!(errors
+            .iter()
+            .all(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER)));
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("left::Base.hidden")));
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("right::Base.visible")));
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("cannot expose private field")));
+        assert!(errors.iter().all(|diagnostic| diagnostic.labels.len() == 1));
+        sources.reverse();
+    }
+}
+
+#[test]
+fn inherited_alias_literal_checks_keep_field_width_and_private_construction() {
+    let model = "module model;
+        pub struct Base { pub value: real, pub samples: integer[7..5] }
+        pub type Alias = Base;
+        pub struct Derived(Alias);
+        pub struct Secret { hidden: integer }
+        pub type SecretAlias = Secret;
+        pub struct Hidden(SecretAlias);";
+    let client = "module client;
+        fn check() {
+            let valid: model::Derived = { .value = 2.5, .samples = [1, 2, 3] };
+            let invalid: model::Derived = { .value = 'x', .samples = [1, 2] };
+            let hidden: model::Hidden = { .hidden = 7 };
+        }";
+    let mut sources = [(model, FileId(0)), (client, FileId(1))];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 3, "{:?}", sink.diagnostics());
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+                .count(),
+            1
+        );
+        for field in ["value", "samples"] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+                        && diagnostic.message.contains(&format!("Derived.{field}"))),
+                "{:?}",
+                errors
+            );
+        }
+        sources.reverse();
+    }
+}
+
+#[test]
 fn equal_enum_and_struct_leaves_keep_distinct_member_contracts() {
     let left = "module left; pub enum Mode { Low, High }";
     let right = "module right; pub struct Mode { pub data: integer }";

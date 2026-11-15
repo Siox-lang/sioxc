@@ -18,10 +18,11 @@ impl<'a> Interpreter<'a> {
         &mut self,
         base: &Expr,
         attr: &Ident,
+        span: Span,
         depth: u32,
     ) -> Result<Value, NotConstant> {
         let fail = || NotConstant {
-            span: expr_span(base).to(attr.span),
+            span,
             reason: Reason::Unsupported,
         };
         let value = self.expression(base, None, depth).map_err(|error| {
@@ -106,7 +107,10 @@ impl<'a> Interpreter<'a> {
                             None => value,
                         }
                     }
-                    Expr::Array { .. } | Expr::Tuple { .. } | Expr::Construct { .. } => {
+                    Expr::StrLit { .. }
+                    | Expr::Array { .. }
+                    | Expr::Tuple { .. }
+                    | Expr::Construct { .. } => {
                         self.aggregate_expression(expression, Some(ty), receiver, depth)?
                     }
                     Expr::IfExpr {
@@ -536,6 +540,45 @@ impl<'a> Interpreter<'a> {
         let source = self.environment.source();
         let normalized = declared.and_then(|ty| source?.normalized_type(ty));
         match expression {
+            Expr::StrLit { text, .. } => {
+                let (element, index) = match normalized.as_deref() {
+                    Some(Type::Indexed { base, index, .. }) => {
+                        let element = self.contract(base, receiver, depth + 1)?;
+                        if !matches!(element, Ty::Char)
+                            && !matches!(&element, Ty::Named(owner)
+                                if self.environment.enum_type(base, receiver) == Some(*owner))
+                        {
+                            return Err(fail());
+                        }
+                        (element, index.as_deref())
+                    }
+                    Some(_) => return Err(fail()),
+                    None => (Ty::Char, None),
+                };
+                let count = text.chars().count();
+                let (len, left, descending) =
+                    self.array_bounds(index, Some(count), depth + 1, expr_span(expression))?;
+                if usize::try_from(len).ok() != Some(count) {
+                    return Err(fail());
+                }
+                let mut values = Vec::with_capacity(count);
+                for character in text.chars() {
+                    values.push(match &element {
+                        Ty::Char => Value::Character(character),
+                        Ty::Named(owner) => self
+                            .environment
+                            .enum_literal(character, *owner)
+                            .ok_or_else(fail)?,
+                        _ => return Err(fail()),
+                    });
+                }
+                Ok(Value::Array {
+                    element: Arc::new(element),
+                    values: values.into(),
+                    left,
+                    descending,
+                })
+            }
             Expr::Array { elems, .. } => {
                 let (base, index) = match normalized.as_deref() {
                     Some(Type::Indexed { base, index, .. }) => {

@@ -235,7 +235,6 @@ mod tests {
         let mut checker = Checker::new(&mut sink, &resolved, &modules);
         checker.collect(&modules);
         checker.structs.clear();
-        checker.field_decl_types.clear();
         checker.check_struct_field_cycles();
         drop(checker);
         sink.diagnostics()

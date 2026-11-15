@@ -28,6 +28,116 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn field_contracts_borrow_resolved_source_without_legacy_struct_maps() {
+    let mut sources = [
+        "module left;
+         pub struct Base { pub value: integer[7..5], pub samples: real[2] }
+         pub type Alias = Base;
+         pub struct Derived(Alias);
+         pub struct Generic<T> { pub item: T }
+         pub struct GenericDerived(Generic<integer>);",
+        "module right;
+         pub struct Base { pub value: real }
+         pub struct Derived(Base);",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        checker.structs.clear();
+        for module in &modules {
+            let structure = |name: &str| {
+                module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Struct(structure) if structure.name.text == name => Some(structure),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let owner = |name| resolved.declared(structure(name).name.span).unwrap();
+            let base = structure("Base");
+            for name in ["Base", "Derived"] {
+                let declared = checker.field_decl_ty(owner(name), "value").unwrap();
+                assert!(std::ptr::eq(declared, &base.fields[0].ty));
+                let expected = match module.path.segments[0].text.as_str() {
+                    "left" => Ty::Array {
+                        elem: Box::new(Ty::Integer),
+                        len: 3,
+                        family: None,
+                        low: 5,
+                    },
+                    "right" => Ty::Real,
+                    other => panic!("unexpected module {other}"),
+                };
+                assert_eq!(checker.ast_ty(declared), expected);
+                assert_eq!(
+                    checker.struct_field_count(owner(name)),
+                    Some(base.fields.len())
+                );
+                assert_eq!(
+                    checker.base_struct_fields_of(owner(name)),
+                    base.fields
+                        .iter()
+                        .map(|field| field.name.text.clone())
+                        .collect::<Vec<_>>()
+                );
+                let visibility = checker.field_visibility_for(owner(name), "value").unwrap();
+                assert!(visibility.is_pub);
+                assert_eq!(visibility.span, base.fields[0].name.span);
+                assert_eq!(
+                    visibility.owner,
+                    checker.definition_key(owner("Base")).unwrap()
+                );
+                assert!(checker.field_decl_ty(owner(name), "missing").is_none());
+            }
+            if module.path.segments[0].text == "left" {
+                let generic = structure("Generic");
+                assert!(std::ptr::eq(
+                    checker
+                        .field_decl_ty(owner("GenericDerived"), "item")
+                        .unwrap(),
+                    &generic.fields[0].ty,
+                ));
+                assert!(std::ptr::eq(
+                    checker.field_decl_ty(owner("Derived"), "samples").unwrap(),
+                    &base.fields[1].ty,
+                ));
+            }
+        }
+        assert!(checker.field_decl_ty(DefId(u32::MAX), "value").is_none());
+        sources.reverse();
+    }
+}
+
+#[test]
+fn borrowed_field_contracts_stop_on_invalid_base_cycles() {
+    let mut sink = DiagnosticSink::default();
+    let modules = vec![crate::syntax::parse_module(
+        FileId(0),
+        "module model; struct Left(Right); struct Right(Left);",
+        &mut sink,
+    )];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(sink.has_errors());
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    checker.structs.clear();
+    for item in &modules[0].items {
+        let Item::Struct(structure) = item else {
+            continue;
+        };
+        let owner = resolved.declared(structure.name.span).unwrap();
+        assert!(checker.field_decl_ty(owner, "missing").is_none());
+        assert!(checker.field_visibility_for(owner, "missing").is_none());
+        assert!(checker.struct_field_count(owner).is_none());
+        assert!(checker.base_struct_fields_of(owner).is_empty());
+    }
+}
+
+#[test]
 fn const_context_pure_scalar_locals_and_assignments_follow_execution_order() {
     let (modules, resolved) = parse(&[
         "module model;
@@ -366,6 +476,93 @@ fn checker_enum_domains_share_inherited_members_even_when_values_are_unknown() {
             &Ty::Named(owners["right::Base"]),
             &Ty::Named(owners["left::Top"]),
         ));
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    }
+}
+
+#[test]
+fn checker_struct_conversion_ancestry_uses_normalized_borrowed_declarations() {
+    let sources = [
+        "module left;
+         pub struct Packet { pub value: integer }
+         pub type PacketAlias = Packet;
+         pub struct Wrapped(PacketAlias);
+         pub type WrappedAlias = Wrapped;
+         pub struct Top(WrappedAlias);
+         pub struct Extended { pub extra: integer }
+         pub struct Count(integer);
+         pub type CountAlias = Count;
+         pub struct DeepCount(CountAlias);",
+        "module right;
+         pub struct Packet { pub value: integer }
+         pub type PacketAlias = Packet;
+         pub struct Wrapped(PacketAlias);",
+    ];
+    for sources in [sources, [sources[1], sources[0]]] {
+        let (mut modules, resolved) = parse(&sources);
+        let parent = modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .find_map(|item| match item {
+                Item::Struct(structure)
+                    if resolved.qualified_name_str(resolved.declared(structure.name.span)?)
+                        == Some("left::Wrapped") =>
+                {
+                    structure.base.clone()
+                }
+                _ => None,
+            })
+            .unwrap();
+        // Source newtypes cannot add fields; exercise this defensive AST boundary directly.
+        let extended = modules
+            .iter_mut()
+            .flat_map(|module| &mut module.items)
+            .find_map(|item| match item {
+                Item::Struct(structure)
+                    if resolved.qualified_name_str(resolved.declared(structure.name.span)?)
+                        == Some("left::Extended") =>
+                {
+                    Some(structure)
+                }
+                _ => None,
+            })
+            .unwrap();
+        extended.base = Some(parent);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        let owners: HashMap<_, _> = modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .filter_map(|item| match item {
+                Item::Struct(structure) => {
+                    let owner = resolved.declared(structure.name.span).unwrap();
+                    Some((
+                        resolved.qualified_name_str(owner).unwrap(),
+                        Ty::Named(owner),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        // The conversion contract must not depend on the copied compatibility map.
+        checker.structs.clear();
+        let packet = &owners["left::Packet"];
+        for name in ["left::Wrapped", "left::Top"] {
+            assert!(checker.conversion_exists(&owners[name], packet), "{name}");
+            assert!(checker.conversion_exists(packet, &owners[name]), "{name}");
+            assert!(!checker.conversion_exists(&owners[name], &owners["right::Packet"]));
+            assert!(!checker.conversion_exists(&owners["right::Packet"], &owners[name]));
+        }
+        assert!(checker.conversion_exists(packet, &owners["left::Extended"]));
+        assert!(!checker.conversion_exists(&owners["left::Extended"], packet));
+        for name in ["left::Count", "left::DeepCount"] {
+            assert!(checker.conversion_exists(&owners[name], &Ty::Integer));
+            assert!(checker.conversion_exists(&Ty::Integer, &owners[name]));
+            assert!(!checker.conversion_exists(&owners[name], &Ty::Natural));
+            assert!(!checker.conversion_exists(&Ty::Real, &owners[name]));
+        }
+        assert!(!checker.conversion_exists(&owners["right::Wrapped"], packet));
         assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     }
 }

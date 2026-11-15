@@ -583,7 +583,7 @@ impl Compiler {
             result.diagnostics.emit(warning);
         }
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
-        let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
+        let mut resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         crate::resolve::rewrite_implicit_fields(&mut result.modules, &resolved);
         result.stats.definitions = Some(resolved.defs().len());
         crate::resolve::normalize_aliases(&mut result.modules, &resolved, &mut result.diagnostics);
@@ -602,7 +602,13 @@ impl Compiler {
         crate::types::fold_type_attributes(&mut result.modules, &resolved);
         crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
-        crate::types::lower_tuples(&mut result.modules, &typed);
+        crate::types::lower_tuples(
+            &mut result.modules,
+            &typed,
+            &mut resolved,
+            &mut result.sources,
+        );
+        result.stats.definitions = Some(resolved.defs().len());
         crate::types::refresh_enum_values(
             &result.modules,
             &resolved,

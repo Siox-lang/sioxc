@@ -33,6 +33,33 @@ fn typed_constants_materialize_nominal_fields_and_declared_labels() {
     assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
 }
 
+#[test]
+fn open_constant_arrays_materialize_checked_lengths_without_losing_declared_labels() {
+    let (_, sink) = lower_with_nonzero_false(
+        "module model;
+         type Text = Char[];
+         type Numbers = integer[];
+         const TEXT: Text = \"é🦀\";
+         const WORDS: Numbers = [11, 13, 17];
+         const LABELLED: Char[6..4] = \"Aé🦀\";
+         entity Top { index: integer in, glyph: Char out, word: integer out,
+                      descending: Char out, bounds: integer[5] out,
+                      ascending: core::primitive::Decision out }
+         impl Top {
+             glyph = TEXT[index];
+             word = WORDS[index];
+             descending = LABELLED[index + 4];
+             bounds[0] = TEXT'length;
+             bounds[1] = LABELLED'left;
+             bounds[2] = LABELLED'right;
+             bounds[3] = LABELLED'high;
+             bounds[4] = LABELLED'low;
+             ascending = TEXT'ascending;
+         }",
+    );
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+}
+
 fn lower_with_nonzero_false(source: &str) -> (Design, DiagnosticSink) {
     let mut sink = DiagnosticSink::default();
     let sources = [

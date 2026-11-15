@@ -22,8 +22,8 @@ impl Lowering<'_> {
             .and_then(|(left, right)| {
                 Some((i64::try_from(left).ok()?, i64::try_from(right).ok()?))
             });
-        let layout = self.source_layout(&declaration.ty, scope);
-        let Some(value) = self.materialize_constant(&value, &layout) else {
+        let mut layout = self.source_layout(&declaration.ty, scope);
+        let Some(value) = self.materialize_constant(&value, &mut layout) else {
             if let Some(range) = range {
                 self.const_ranges.insert(name.to_string(), range);
                 return true;
@@ -76,7 +76,7 @@ impl Lowering<'_> {
         }
     }
 
-    fn materialize_constant(&self, mut value: &Value, layout: &SourceLayout) -> Option<Val> {
+    fn materialize_constant(&self, mut value: &Value, layout: &mut SourceLayout) -> Option<Val> {
         // Newtype identity was checked by the interpreter. Its one base value
         // occupies the same physical layout, including record-backed newtypes.
         while let Value::Record { owner, fields } = value {
@@ -90,7 +90,7 @@ impl Lowering<'_> {
             let [base] = fields.as_ref() else { return None };
             value = base;
         }
-        match (value, &layout.kind) {
+        match (value, &mut layout.kind) {
             (
                 Value::Integer(value),
                 LayoutKind::Scalar {
@@ -148,7 +148,7 @@ impl Lowering<'_> {
                     }
                     Self::prefix_block_value(
                         &field.name,
-                        self.materialize_constant(value, &field.layout)?,
+                        self.materialize_constant(value, &mut field.layout)?,
                         &mut leaves,
                     );
                 }
@@ -165,7 +165,7 @@ impl Lowering<'_> {
                     }
                     Self::prefix_block_value(
                         &field.name,
-                        self.materialize_constant(value, &field.layout)?,
+                        self.materialize_constant(value, &mut field.layout)?,
                         &mut leaves,
                     );
                 }
@@ -178,11 +178,21 @@ impl Lowering<'_> {
                     descending,
                     ..
                 },
-                LayoutKind::Array {
-                    range: Some(range),
-                    element,
-                },
+                LayoutKind::Array { range, element },
             ) => {
+                // An open declaration inherits the interpreter's concrete shape, not new bounds.
+                if range.is_none() {
+                    let extent = i64::try_from(values.len().checked_sub(1)?).ok()?;
+                    *range = Some(LayoutRange {
+                        left: *left,
+                        right: if *descending {
+                            left.checked_sub(extent)?
+                        } else {
+                            left.checked_add(extent)?
+                        },
+                    });
+                }
+                let range = range.as_ref()?;
                 if range.left != *left
                     || range.ascending() == *descending
                     || range.len()? != u64::try_from(values.len()).ok()?
@@ -205,7 +215,7 @@ impl Lowering<'_> {
                 }
                 Some(Val::Fields(leaves))
             }
-            // Packed/open/generic representations still use their existing
+            // Packed/empty-open/generic representations still use their existing
             // consumers until their typed-value migrations are complete.
             _ => None,
         }

@@ -319,14 +319,23 @@ fn literal_magnitudes_above_a_word_remain_known_analysis_facts() {
 
 #[test]
 fn helper_lengths_report_collisions_once_before_or_after_normalization() {
-    for (operand, initially_known) in [("[10, 20]", true), ("\"ab\"", false)] {
+    for (operand, initially_known) in [
+        ("[10, 20]", true),
+        ("\"ab\"", true),
+        ("\"é🦀\"", true),
+        ("[10, 20][0..1]", false),
+    ] {
         let source = format!(
             "module model;
             fn first() -> integer {{ return {operand}'length; }}
             enum Palette {{ Low = first(), High = 2 }}"
         );
-        let (mut modules, resolved) =
-            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let (mut modules, resolved) = parse(&[
+            &source,
+            include_str!("../../../core/primitive.siox"),
+            "module core::range_fixture; pub struct Bounds { pub l: integer, pub r: integer }
+             attr lang for Bounds = \"range\";",
+        ]);
         let mut sink = DiagnosticSink::default();
         let mut typed = check(&modules, &resolved, &mut sink);
         let palette = owner(&modules, &resolved, "Palette");
@@ -334,7 +343,12 @@ fn helper_lengths_report_collisions_once_before_or_after_normalization() {
             numbers(&typed.enum_values, palette),
             [initially_known.then_some(2), Some(2)]
         );
-        assert_eq!(sink.diagnostics().len(), usize::from(initially_known));
+        assert_eq!(
+            sink.diagnostics().len(),
+            usize::from(initially_known),
+            "{operand}: {:?}",
+            sink.diagnostics()
+        );
         fold_value_lengths(&mut modules, &typed);
         refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
         assert_eq!(numbers(&typed.enum_values, palette), [Some(2), Some(2)]);
@@ -357,14 +371,23 @@ fn helper_lengths_report_collisions_once_before_or_after_normalization() {
 
 #[test]
 fn negative_discriminants_keep_initializer_spans_across_normalization() {
-    for (operand, initially_known) in [("[10]", true), ("\"a\"", false)] {
+    for (operand, initially_known) in [
+        ("[10]", true),
+        ("\"a\"", true),
+        ("\"🦀\"", true),
+        ("[10][0..0]", false),
+    ] {
         let source = format!(
             "module model;
             fn first() -> integer {{ return 0 - {operand}'length; }}
             enum Palette {{ Low = first(), High }}"
         );
-        let (mut modules, resolved) =
-            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let (mut modules, resolved) = parse(&[
+            &source,
+            include_str!("../../../core/primitive.siox"),
+            "module core::range_fixture; pub struct Bounds { pub l: integer, pub r: integer }
+             attr lang for Bounds = \"range\";",
+        ]);
         let mut sink = DiagnosticSink::default();
         let mut typed = check(&modules, &resolved, &mut sink);
         let palette = owner(&modules, &resolved, "Palette");
@@ -372,7 +395,12 @@ fn negative_discriminants_keep_initializer_spans_across_normalization() {
             numbers(&typed.enum_values, palette),
             [initially_known.then_some(-1), initially_known.then_some(0)]
         );
-        assert_eq!(sink.diagnostics().len(), usize::from(initially_known));
+        assert_eq!(
+            sink.diagnostics().len(),
+            usize::from(initially_known),
+            "{operand}: {:?}",
+            sink.diagnostics()
+        );
         fold_value_lengths(&mut modules, &typed);
         refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);
         assert_eq!(numbers(&typed.enum_values, palette), [Some(-1), Some(0)]);
@@ -399,15 +427,24 @@ fn negative_discriminants_keep_initializer_spans_across_normalization() {
 
 #[test]
 fn normalized_enum_diagnostics_keep_source_order() {
-    for (operand, initially_known) in [("[10, 20]", true), ("\"ab\"", false)] {
+    for (operand, initially_known) in [
+        ("[10, 20]", true),
+        ("\"ab\"", true),
+        ("\"é🦀\"", true),
+        ("[10, 20][0..1]", false),
+    ] {
         let source = format!(
             "module model;
             fn count() -> integer {{ return {operand}'length; }}
             enum Duplicate {{ First = count(), Second = 2 }}
             enum Negative {{ First = 0 - count() }}"
         );
-        let (mut modules, resolved) =
-            parse(&[&source, include_str!("../../../core/primitive.siox")]);
+        let (mut modules, resolved) = parse(&[
+            &source,
+            include_str!("../../../core/primitive.siox"),
+            "module core::range_fixture; pub struct Bounds { pub l: integer, pub r: integer }
+             attr lang for Bounds = \"range\";",
+        ]);
         let mut sink = DiagnosticSink::default();
         let mut typed = check(&modules, &resolved, &mut sink);
         let expected = [Some(codes::DUPLICATE_ITEM), Some(codes::TYPE_MISMATCH)];
@@ -423,7 +460,9 @@ fn normalized_enum_diagnostics_keep_source_order() {
                 expected.to_vec()
             } else {
                 vec![]
-            }
+            },
+            "{operand}: {:?}",
+            sink.diagnostics()
         );
         fold_value_lengths(&mut modules, &typed);
         refresh_enum_values(&modules, &resolved, &mut typed, &mut sink);

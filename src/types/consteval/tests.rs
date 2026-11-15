@@ -83,6 +83,32 @@ fn typed_character_values_do_not_masquerade_as_integers() {
 }
 
 #[test]
+fn string_literal_values_count_code_points_without_becoming_integer_constants() {
+    let environment = ConstantExpressions(|_: &Path| None, std::marker::PhantomData);
+    for text in ["", "é🦀", "é", "A_0"] {
+        let expression = expression(&format!("\"{text}\""));
+        let expected: Vec<_> = text.chars().map(Value::Character).collect();
+        let Value::Array {
+            element,
+            values,
+            left,
+            descending,
+        } = evaluate_value(&expression, &environment, None, 0).unwrap()
+        else {
+            panic!("strings are character arrays")
+        };
+        assert_eq!(*element, Ty::Char);
+        assert_eq!(values.as_ref(), expected);
+        assert_eq!(left, 0);
+        assert!(!descending);
+        assert_eq!(
+            evaluate(&expression, &environment, 0).unwrap_err().reason,
+            Reason::Unsupported
+        );
+    }
+}
+
+#[test]
 fn source_receiver_and_named_parameters_use_their_resolved_declaration_ids() {
     let source = "module model; struct Counter { value: integer }
         impl Counter { fn add(self, amount: integer) -> integer { return self.value + amount; } }";
@@ -886,6 +912,67 @@ fn range_attributes_are_supplied_by_the_binding_environment() {
         env.eval("other'length").unwrap_err().reason,
         Reason::Unsupported
     );
+}
+
+#[test]
+fn aggregate_attributes_keep_owning_spans_after_cross_file_substitution() {
+    fn parse_value(file: FileId, text: &str) -> Expr {
+        let mut sink = DiagnosticSink::default();
+        let module = parse_module(
+            file,
+            &format!("module attributes; const VALUE: integer = {text};"),
+            &mut sink,
+        );
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let Item::Const(value) = module.items.into_iter().next().unwrap() else {
+            panic!("constant")
+        };
+        value.value
+    }
+
+    let environment = ConstantExpressions(|_: &Path| None, std::marker::PhantomData);
+    for (attribute_file, base_file) in [(FileId(0), FileId(2)), (FileId(2), FileId(0))] {
+        for (attribute, text, expected) in [
+            ("length", "\"é🦀\"", Some(2)),
+            ("high", "\"é🦀\"", Some(1)),
+            ("low", "\"é🦀\"", Some(0)),
+            ("length", "runtime", None),
+            ("length", "17", None),
+            ("high", "\"\"", None),
+            ("missing", "\"é🦀\"", None),
+        ] {
+            let mut expanded = parse_value(attribute_file, &format!("self'{attribute}"));
+            let owning_span = expr_span(&expanded);
+            let Expr::SysAttr { base, attr, .. } = &mut expanded else {
+                panic!("attribute")
+            };
+            *base = Box::new(parse_value(base_file, text));
+            assert_ne!(expr_span(base).file, attr.span.file);
+            assert_eq!(
+                evaluate_value(&expanded, &environment, None, 0),
+                expected.map(Value::Integer).ok_or(NotConstant {
+                    span: owning_span,
+                    reason: Reason::Unsupported,
+                }),
+                "{text}'{attribute}"
+            );
+        }
+
+        let mut expanded = parse_value(attribute_file, "self'length");
+        let Expr::SysAttr { base, .. } = &mut expanded else {
+            panic!("attribute")
+        };
+        *base = Box::new(parse_value(base_file, "1 / 0"));
+        let arithmetic_span = expr_span(base);
+        assert_eq!(
+            evaluate_value(&expanded, &environment, None, 0),
+            Err(NotConstant {
+                span: arithmetic_span,
+                reason: Reason::DivisionByZero,
+            }),
+            "base-expression failures keep their original reason and source"
+        );
+    }
 }
 
 #[test]

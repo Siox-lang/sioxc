@@ -259,6 +259,40 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    fn insert_definition(&mut self, definition: DefInfo) -> DefId {
+        let id = DefId(self.defs.len() as u32);
+        if let Some(span) = definition.span {
+            self.declarations.insert(span, id);
+        }
+        self.qualified.push(match &definition.module {
+            Some(module) => format!("{module}::{}", definition.name),
+            None => definition.name.clone(),
+        });
+        self.defs.push(definition);
+        id
+    }
+
+    /// Extend phase facts for compiler-generated declarations without renumbering source IDs.
+    pub(crate) fn register_generated_definition(
+        &mut self,
+        definition: DefInfo,
+        parameter_kind: Option<ParameterKind>,
+    ) -> DefId {
+        debug_assert_eq!(definition.kind == DefKind::Param, parameter_kind.is_some());
+        let id = self.insert_definition(definition);
+        if let Some(kind) = parameter_kind {
+            self.parameter_kinds.insert(id, kind);
+        }
+        id
+    }
+
+    /// Generated references have their own source spans, distinct from checked user uses.
+    pub(crate) fn register_generated_use(&mut self, span: Span, id: DefId) {
+        debug_assert!(self.def(id).is_some());
+        let previous = self.uses.insert(span, id);
+        debug_assert!(previous.is_none() || previous == Some(id));
+    }
+
     pub(crate) fn entity_id(&self, id: DefId) -> Option<DefId> {
         if self.kind_of(id) == Some(DefKind::Entity) {
             Some(id)
@@ -1691,23 +1725,14 @@ impl<'a> Resolver<'a> {
         span: Option<Span>,
         parent: Option<DefId>,
     ) -> DefId {
-        let id = DefId(self.out.defs.len() as u32);
-        if let Some(span) = span {
-            self.out.declarations.insert(span, id);
-        }
-        self.out.qualified.push(match &self.current_module {
-            Some(module) => format!("{module}::{name}"),
-            None => name.clone(),
-        });
-        self.out.defs.push(DefInfo {
+        self.out.insert_definition(DefInfo {
             name,
             module: self.current_module.clone(),
             kind,
             is_pub,
             span,
             parent,
-        });
-        id
+        })
     }
 
     // --- resolution (uses) --------------------------------------------------

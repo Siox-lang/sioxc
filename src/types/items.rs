@@ -634,7 +634,7 @@ impl<'a> Checker<'a> {
             return;
         };
         let target_name = self.key_leaf(&target).to_string();
-        if !self.structs.contains_key(&target) {
+        let Some(owner) = self.struct_type_id(target_ty) else {
             self.error(
                 codes::TYPE_MISMATCH,
                 type_head_span(target_ty).unwrap_or(view.span),
@@ -644,8 +644,8 @@ impl<'a> Checker<'a> {
                 ),
             );
             return;
-        }
-        let fields = self.base_struct_fields(target_ty);
+        };
+        let fields = self.base_struct_fields_of(owner);
         let mut seen = HashSet::new();
         for f in &view.fields {
             if !fields.iter().any(|n| n == &f.name.text) {
@@ -660,7 +660,7 @@ impl<'a> Checker<'a> {
                     f.name.span,
                     format!("view field `{}` is declared more than once", f.name.text),
                 );
-            } else if let Some(visibility) = self.field_visibility_for(&target, &f.name.text) {
+            } else if let Some(visibility) = self.field_visibility_for(owner, &f.name.text) {
                 // A view is allowed to make private storage part of an
                 // interface only when it is declared by that storage's own
                 // module. Otherwise a foreign module could publish private
@@ -846,7 +846,6 @@ mod tests {
             let mut checker = Checker::new(&mut sink, &resolved, &modules);
             checker.collect(&modules);
             checker.structs.clear();
-            checker.field_decl_types.clear();
             let mut checked = 0;
             for function in modules
                 .iter()

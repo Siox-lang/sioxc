@@ -9,7 +9,37 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-12): full guarded unit
+Latest local acceptance (2026-11-14): full guarded unit
+`1794682069805603352-663925` completed `exited/success/0` at 21:28:16 CET,
+peak 1,612,697,600 bytes under the normal 2 GiB hard/1.5 GiB soft caps.
+It passes 797 frontend/14 import tests, both complete Rust suites (854 default /
+833 bitpack library tests, every integration/doc-test and all 23 GDB/DWARF
+tests per mode), strict all-target/all-feature Clippy, 70 diagnostic-runner
+tests including 36 waveform cases and all 12 specified artifacts. Both ACTUAL
+274-program corpora pass. Each mode passes 71 UI/71 JSON cases, 56/56 active
+codes and both apply/recompile migrations. All 72 direct native/debug binaries
+and four aggregate VCD/timeline/parity checks pass. Source fingerprint
+`7ab1cdda9331fd903cae55eaca327a99e4a957e4788b91c7c3e9b3b574270792`
+and ACTUAL corpus
+`04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after and independent review. Only acceptance Markdown/logs change
+after that proof; code-only fingerprint excluding Markdown stays
+`aab457e22986ce239b300ec1ebe67a1d755a189bfe623926a96ae0ad3d197acc`.
+
+This accepts shared parameter-ID generic inference and partial-error recovery,
+borrowed original field typing/privacy, normalized alias conversion/layout,
+typed ordinary/Unicode and enum-context strings, nonempty open constant shapes,
+generated tuple declarations/references registered in the existing resolver,
+and cross-file constant-attribute span preservation. Optional guarded queue
+support passes argument checks and real bounded serialization/OOM integration.
+It does not accept the separate struct-registry-removal draft or finish all
+five sections. The estimate remains about **86% of compiler foundations**,
+not the whole compiler; applied generic/associated contexts, remaining typed
+values/defaults, suffix-folder migration, remaining registries and residual
+hooks remain open. No push, PR or wiki publication is implied. Earlier pending
+notes below are superseded only for this tested scope.
+
+Previous local acceptance (2026-11-12): full guarded unit
 `1794493076641606005-2865384` completed `exited/success/0`, 15:17:56–16:21:31
 CET, peak 1,612,836,864 bytes under the normal 2 GiB cap. It passes all 776
 frontend and 14 import API tests, both complete Rust suites (833 default /
@@ -43,6 +73,164 @@ suffix-folder migration, remaining declaration registries and residual hooks
 are still open. No push, PR or wiki publication is implied. Older pending
 statuses below are the historical sequence, superseded only for this accepted
 scope; their remaining-work requirements are not removed.
+
+Working followup (2026-11-12, not fully accepted): generic argument selection is
+shared by trait-bound checks, return inference and instantiated-body checking.
+It prefers healthy non-literal arguments, retains partial tuple/array types and
+suppresses only unknown subparts, without hiding known argument mismatches or
+other generic parameters. Incomplete bindings disable memoization rather than
+all body checks. An earlier focused run passed the three original diagnostic
+regressions and all 43 generic-focused tests. The combined draft additionally
+keeps known concrete body checks even when no generic binding is available;
+generic bodies are deliberately checked at calls, not abstractly at definition.
+The earlier empty-binding shortcut assumed otherwise and has been removed.
+Its corrected per-call diagnostic and field-recovery cases require a fresh gate.
+
+The same pending change removes `field_decl_types` and the copied field
+visibility registry. Field typing, existence, contextual initialization,
+privacy, inherited ordering and positional counts read the original declarations
+through checked owner `DefId`s and cycle-safe normalized base links. Privacy
+stays with the original field owner; explicit views keep their exposure and
+foreign-view restrictions. Source-pointer, same-leaf, alias, metadata, natural
+scalar and cycle regressions are included. Other struct/base/method/view maps,
+overloaded applied-view identity and applied-generic field substitution remain
+open. The new native integration test exercises contextual generic returns and
+borrowed inherited fields in simulation. Neither the 86% estimate nor the
+accepted checkpoint above is advanced before validation.
+
+Corrective preview (2026-11-13): unit `1794523918296588147-159507` completed
+failed/101, peak 1,119,854,592 bytes. All 792 frontend tests pass, including
+44 generic, 16 enum-refresh and 51 interpreter cases; strict frontend Clippy
+passes. The first native test rejects `Wrapped(packet)` through `PacketAlias`,
+exposing the old conversion ancestry walk's unnormalized string lookup.
+The pending fix follows borrowed struct declarations by `DefId` and normalizes
+their bases, preserving total-conversion and field-adding boundaries. Added
+coverage clears the compatibility map and checks aliases, kernel wrappers,
+unrelated identities and reversed module order. That new test and the native
+and complete full matrix still require validation. The replacement queued job
+runs preview then full under the same normal lock; a stopped, not-yet-started
+preview-only waiter supplies no pass evidence. No commit or push yet.
+
+The following combined preview `1794568985926332580-1268526` stops at the new
+ancestry test's invalid fixture syntax (792 other frontend tests pass; peak
+907,948,032 bytes). Source newtypes cannot also declare fields. The corrected
+test parses an ordinary record and sets its base directly in the test AST to
+retain the defensive field-adding-boundary assertion; no parser or production
+semantics change is needed. Native and full validation remain pending.
+
+The corrected fixture passes in unit `1794569480633480190-1333038`: all 793
+frontend cases and strict frontend Clippy pass. Its native executable still
+refuses Process 1 block 0. Focused diagnostic `1794569734188053522-1370912`
+(failed/101, peak 325,771,264 bytes) retains the actual TestExecutable IR:
+the alias-derived Wrapped declaration/local has no layout, while Packet has
+its full fields and generic results are correctly real. The pending shared
+layout-query fix normalizes aliases before examining inherited struct fields,
+using the existing borrowed declaration normalizer. Added native layout/label
+assertions and the original runtime checks require a fresh full gate; LLVM
+preflight and runtime behavior are not weakened. No acceptance or push yet.
+
+The first layout-query preview `1794571783477945220-1481979` fails the
+existing record-match layout regression (792 other frontend cases pass).
+Internal declaration-layout anchors use declared-name spans, not source
+reference spans. The correction preserves those already-identified terminal
+structs through the existing identity query, while alias uses still require
+shared normalization. No unknown-name fallback or test weakening is added;
+the full gate remains required.
+
+Preview `1794571934215427524-1510673` restores all 793 frontend cases and
+strict frontend Clippy, and the generic/borrowed-field native regression passes
+ordinary/debug execution in default storage mode. Its next native test exposes
+an open-array materialization gap: the checked TEXT value has two Unicode
+characters, but its declared Char[] representation still has no range, so
+hardware TEXT[index] has no form. The pending adapter completes only missing
+array ranges from the checked value during materialization and binds that same
+layout, retaining strict validation of declared labels/direction/length. A
+non-LLVM IR test covers open Unicode and integer arrays plus descending labels;
+the original dynamic native cases remain. Empty/null, packed and generic
+representations remain open. Bitpack and full validation are not yet accepted.
+
+Preview `1794574171878896579-1654103` passes all 794 frontend cases, strict
+frontend Clippy and the ordinary/debug default-storage generic native probe.
+Dynamic TEXT indexing now lowers, but LABELLED'left becomes an Invalid source
+value during canonical hardware CFG derivation. The pending system-attribute
+adapter first asks the existing shared interpreter about the borrowed original
+expression, then retains the existing signal/layout fallback. The IR regression
+now covers all numeric shape attributes and source-defined nonzero Boolean
+encoding for ascending. Native/bitpack/full acceptance is still required.
+
+Preview `1794592048582872904-2519140` passes all 794 frontend cases, strict
+frontend Clippy and ordinary/debug default generic native execution. The shared
+attribute adapter removes the previous scheduler-view error. The string native
+executable instead reports unsupported procedural Process 1 block 0. Focused
+diagnostic `1794594862590995741-2659332` retains its actual TestExecutable IR:
+the known two-character TEXT initializer still carries an open Char[] layout,
+whereas LABELLED retains 6..4. The pending source binding fix reuses literal
+shape inference for nonempty open array constants, including Unicode strings,
+before lowering their initializers. The LLVM-free constant-layout regression
+checks exact character extents, widths, module identities and declared ranges
+in both module orders. Empty/null shapes stay unchanged; no LLVM/runtime bypass
+or native assertion is removed. This is unaccepted work: both storage/debug
+modes and the complete actual-corpus/native/diagnostic/waveform gate remain.
+
+The corrected open-literal binding passes all 794 frontend cases and both native
+probes in default/bitpack, each ordinary/debug, with unchanged preview
+fingerprints. Four aggregate native/VCD timeline/declaration/waveform checks
+also pass. The wider full gate then rejects generic_data_aliases_test because
+its tuple binding has no type/layout; this is not complete acceptance. Focused
+diagnostic `1794597949921118321-2846785` retains the actual pair snapshot with
+missing widths, while the packet's instantiated field is intact.
+
+Working followup (2026-11-14, unverified): tuple lowering now allocates distinct
+generated-source spans and appends generated struct/type-parameter definitions
+and references to the existing resolver facts. Original source IDs are retained;
+resolution is not rerun and layout/name fallbacks are not added. The normal and
+generated paths share definition insertion, and compiler statistics include the
+new definitions. Regressions check old-ID preservation, distinct generated
+binders, shared normalizer/argument substitution for single/nested/aliased
+tuples in both module orders, and no added source/definitions without tuples.
+All native cases and the complete acceptance matrix remain required. This
+does not finish the remaining registries, typed contexts or hook cleanup.
+
+The Nov14 combined gate verifies those generated identities: all 796 frontend
+tests, 14 import cases, strict frontend/all-target Clippy, both generic/string
+native probes in all storage/debug modes, four aggregate VCD/parity checks and
+all 68 direct native executions pass, including the formerly failing ACTUAL
+generic-data-alias case. Complete Rust library suites pass 853/default and
+832/bitpack cases. Both integration runs then expose a cross-file span join
+in constant attribute evaluation; the default ACTUAL corpus is 273/274 with
+only type_attributes_test.siox failing identically. Default UI/JSON checks pass
+(71 cases each, all 56 codes and both suggestion migrations). The known-failing
+owned service was intentionally stopped during the bitpack corpus phase, not
+accepted. Its preserved stage logs are
+`/home/max/.cache/siox-jobs/foundations-types-strings-pre-span-fix-20261114`.
+
+The pending correction passes the original enclosing SysAttr span to the shared
+aggregate-attribute evaluator rather than joining a substituted source base to
+a library token. New coverage exercises both file orders, successful Unicode
+shape reads, unsupported/runtime reads and retained arithmetic-error origins.
+Span invariants, source identities, shared evaluation and native assertions are
+unchanged. That correction and the complete Rust/integration/DWARF, ACTUAL
+corpus, UI/JSON, native and waveform matrix require a fresh gate. No completion
+estimate increase, commit or push is claimed; all five sections remain in scope.
+
+The normal bounded launcher now has optional `--wait` lock acquisition inside
+the service, fixing observed starvation between an external waiter's unlock
+and the compiler launch. Default busy status 75, literal forwarding and memory
+caps are unchanged. Argument-only and real queued-execution/isolation tests
+pass; the complete combined compiler gate still requires execution. This
+is verification infrastructure, not a new compiler or language feature.
+
+The typed-string followup is now integrated locally, pending the fresh gate.
+Decoded literals reuse `Value::Array`: Unicode code points, source-selected
+enum members in enum-array contexts, and existing label/direction/length and
+binding rules. Three new string groups and all 51 interpreter tests passed in
+the isolated preview; native string-backed metadata, static projection and
+runtime-indexed array reads in both directions have not run yet.
+Enum-refresh regressions now expect ordinary/Unicode string lengths to be
+known before normalization, while array slices retain a genuinely deferred
+case. Exact source spans, diagnostic order and one-time emission across refresh
+remain asserted. General string operators, null-array bounds, packed families
+and generic contexts remain open; this does not advance the 86% estimate.
 
 Previous local acceptance (reviewed 2026-11-12, typed values/identity/ranges):
 guarded unit `1794150078265241988-398244` completed exited/success/0 on

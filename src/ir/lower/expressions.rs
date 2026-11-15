@@ -327,7 +327,10 @@ impl<'a> Lowering<'a> {
                     .push((crate::syntax::pretty::expr_string(e), ast::expr_span(e)));
                 Expr::Unknown
             }
-            ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
+            ast::Expr::SysAttr { base, attr, .. } => self
+                .eval_const(e, &self.cur_env)
+                .map(|value| self.source_index_label(value, ast::expr_span(e)))
+                .unwrap_or_else(|| self.lower_sysattr(base, &attr.text)),
             ast::Expr::Unary { op, rhs, .. } => {
                 // `-x` on a type with a `Neg` impl inlines it.
                 if *op == ast::UnOp::Neg {

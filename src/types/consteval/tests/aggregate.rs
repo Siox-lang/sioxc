@@ -51,6 +51,115 @@ fn function<'a>(modules: &'a [crate::syntax::Module], name: &str) -> &'a FnDecl 
 }
 
 #[test]
+fn string_constants_share_array_contracts_unicode_and_declared_ranges() {
+    let client = "module client;
+        type Text = Char[];
+        const TEXT: Text = \"é🦀\";
+        const LABELLED: Char[6..4] = \"Aé🦀\";
+        struct Packet { pub text: Char[8..6] }
+        fn literal() -> Char { return \"é🦀\"[1]; }
+        fn text() -> Text { return TEXT; }
+        fn first() -> Char { return TEXT[0]; }
+        fn descending() -> Char { return LABELLED[4]; }
+        fn length() -> integer { return text()'length; }
+        fn combining() -> integer { return \"é\"'length; }
+        fn bounds() -> integer { return LABELLED'left + LABELLED'right; }
+        fn reindex(value: Char[12..10]) -> Char { return value[11]; }
+        fn forwarded() -> Char { return reindex(LABELLED); }
+        fn local() -> Char {
+            let value: Text = \"Aé🦀\";
+            value = \"xλY\";
+            return value[1];
+        }
+        fn record() -> Char { return Packet { .text = \"Aé🦀\" }.text[7]; }
+        fn empty() -> Text { return \"\"; }
+        fn empty_length() -> integer { return empty()'length; }";
+    with_sources(client, |source, modules| {
+        for (name, expected) in [
+            ("literal", '🦀'),
+            ("first", 'é'),
+            ("descending", '🦀'),
+            ("forwarded", 'é'),
+            ("local", 'λ'),
+            ("record", 'é'),
+        ] {
+            assert_eq!(
+                evaluate_function(function(modules, name), vec![], &source, 0),
+                Ok(Value::Character(expected)),
+                "{name}"
+            );
+        }
+        for (name, expected) in [
+            ("length", 2),
+            ("combining", 2),
+            ("bounds", 10),
+            ("empty_length", 0),
+        ] {
+            assert_eq!(
+                evaluate_function(function(modules, name), vec![], &source, 0),
+                Ok(Value::Integer(expected)),
+                "{name}"
+            );
+        }
+        for (name, expected) in [("text", "é🦀"), ("empty", "")] {
+            let Value::Array {
+                element,
+                values,
+                left,
+                descending,
+            } = evaluate_function(function(modules, name), vec![], &source, 0).unwrap()
+            else {
+                panic!("{name} must use ordinary array storage")
+            };
+            assert_eq!(*element, Ty::Char);
+            assert_eq!(
+                values.as_ref(),
+                expected.chars().map(Value::Character).collect::<Vec<_>>()
+            );
+            assert_eq!(left, 0);
+            assert!(!descending);
+        }
+    });
+}
+
+#[test]
+fn string_constant_elements_obey_context_without_inventing_encodings() {
+    let client = "module client;
+        enum Glyph { 'é' = 37, '🦀' = 91 }
+        type Glyphs = Glyph[];
+        type Text = Char[];
+        type Numbers = integer[];
+        const GLYPHS: Glyph[3..2] = \"é🦀\";
+        const TEXT: Text = \"é🦀\";
+        fn symbol() -> Glyph { return GLYPHS[2]; }
+        fn bad_length() -> Char[2] { return \"Aé🦀\"; }
+        fn bad_element() -> integer[3] { return \"123\"; }
+        fn bad_empty() -> integer[] { return \"\"; }
+        fn bad_glyph() -> Glyphs { return \"é?\"; }
+        fn wrong_alias() -> Numbers { return TEXT; }";
+    with_sources(client, |source, modules| {
+        let declaration = function(modules, "symbol");
+        let symbol = evaluate_function(declaration, vec![], &source, 0).unwrap();
+        let owner = source
+            .enum_type(declaration.ret.as_ref().unwrap(), None)
+            .unwrap();
+        assert!(matches!(&symbol, Value::Variant { owner: actual, .. } if *actual == owner));
+        assert_eq!(symbol, source.enum_literal('🦀', owner).unwrap());
+        assert_eq!(source.word(symbol), Some(91));
+        for name in [
+            "bad_length",
+            "bad_element",
+            "bad_empty",
+            "bad_glyph",
+            "wrong_alias",
+        ] {
+            let error = evaluate_function(function(modules, name), vec![], &source, 0).unwrap_err();
+            assert_eq!(error.reason, Reason::Unsupported, "{name}: {error:?}");
+        }
+    });
+}
+
+#[test]
 fn aggregate_projections_keep_definition_site_bindings_and_declared_labels() {
     let client = "module client; use providers::left::{self}; use providers::right::{self};
         const OFFSET: integer = 999;

@@ -596,25 +596,17 @@ impl<'a> Checker<'a> {
                 })
                 .collect();
 
-            // Infer from the first non-literal value. Integer/character/bit
-            // literals are contextual and may adopt that inferred type.
-            let inferred_expr = occurrences
-                .iter()
-                .copied()
-                .find(|argument| !Self::is_contextual_literal(argument))
-                .or_else(|| occurrences.first().copied());
-            let inferred = inferred_expr.map(|argument| self.type_of(argument, sym));
+            let inferred = self.infer_type_argument(declaration, parameter, args, sym);
 
             if let Some(expected) = inferred.as_ref().filter(|ty| !matches!(ty, Ty::Error)) {
                 for argument in &occurrences {
                     let actual = self.type_of(argument, sym);
-                    if matches!(actual, Ty::Error)
-                        || if Self::is_contextual_literal(argument) {
-                            self.assignable(expected, argument, sym)
-                        } else {
-                            &actual == expected
-                        }
-                    {
+                    let matches = if Self::is_contextual_literal(argument) {
+                        self.assignable(expected, argument, sym)
+                    } else {
+                        actual.same_known_type(expected)
+                    };
+                    if matches {
                         continue;
                     }
                     self.error_with_help(
@@ -638,7 +630,9 @@ impl<'a> Checker<'a> {
             let Some(trait_id) = self.trait_type_id(bound) else {
                 continue;
             };
-            let Some(ty) = inferred else { continue };
+            let Some(ty) = inferred.filter(|ty| !ty.contains_error()) else {
+                continue;
+            };
             if !self.satisfies(&ty, trait_id) {
                 let Some(trait_name) = self.trait_definition_key(trait_id) else {
                     continue;
@@ -693,26 +687,18 @@ impl<'a> Checker<'a> {
                 key = None;
                 continue;
             };
-            let bound = declaration
-                .params
-                .iter()
-                .filter(|parameter| !parameter.is_self)
-                .zip(args)
-                .find_map(|(declared, argument)| {
-                    self.bind_type_param(
-                        declared.ty.as_ref()?,
-                        &self.type_of(argument, sym),
-                        parameter,
-                    )
-                });
+            let bound = self.infer_type_argument(declaration, parameter, args, sym);
             match bound {
                 Some(ty) if !matches!(ty, Ty::Error) => {
+                    if ty.contains_error() {
+                        key = None;
+                    }
                     if let Some(arguments) = &mut key {
                         arguments.push((parameter, ty.clone()));
                     }
                     bindings.insert(parameter, ty);
                 }
-                _ => return,
+                _ => key = None,
             }
         }
         if bindings.is_empty() && key.is_some() {

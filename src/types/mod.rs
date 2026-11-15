@@ -96,6 +96,50 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// An aggregate may retain known components after another component failed.
+    fn contains_error(&self) -> bool {
+        match self {
+            Self::Error => true,
+            Self::Array { elem, .. } => elem.contains_error(),
+            Self::Tuple(elems) => elems.iter().any(Self::contains_error),
+            _ => false,
+        }
+    }
+
+    /// Generic arguments require exact types, except for already-erroneous parts.
+    fn same_known_type(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Error, _) | (_, Self::Error) => true,
+            (Self::Tuple(left), Self::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| left.same_known_type(right))
+            }
+            (
+                Self::Array {
+                    elem: left,
+                    len,
+                    family,
+                    low,
+                },
+                Self::Array {
+                    elem: right,
+                    len: other_len,
+                    family: other_family,
+                    low: other_low,
+                },
+            ) => {
+                len == other_len
+                    && family == other_family
+                    && low == other_low
+                    && left.same_known_type(right)
+            }
+            _ => self == other,
+        }
+    }
+
     /// Whether this type crosses to C by pointer: a struct, a fixed array, or
     /// a packed value wider than the 64-bit word (little-endian words).
     pub fn is_c_aggregate(&self) -> bool {
@@ -391,12 +435,6 @@ struct Checker<'a> {
     conversion_sigs: HashSet<(String, String)>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
-    /// Raw representation fields are private unless exported. Views are
-    /// checked separately because applying one is an explicit interface.
-    field_visibility: HashMap<(String, String), MemberVisibility>,
-    /// Struct name -> field name -> the field's *full* declared type. The map
-    /// retains widths for field access and contextual literal checking.
-    field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
     /// Nominal newtypes whose representation is an array (`struct F(T[])`).

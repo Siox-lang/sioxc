@@ -87,8 +87,6 @@ impl<'a> Checker<'a> {
             operator_precedence: HashMap::new(),
             conversion_sigs: HashSet::new(),
             structs: HashMap::new(),
-            field_visibility: HashMap::new(),
-            field_decl_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             array_families: HashSet::new(),
@@ -642,26 +640,6 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
                     .insert(struct_key.clone(), (st.base.clone(), fields));
-                self.field_decl_types.insert(
-                    struct_key.clone(),
-                    st.fields
-                        .iter()
-                        .map(|f| (f.name.text.clone(), f.ty.clone()))
-                        .collect(),
-                );
-                let module = self.module_of(st.span);
-                for field in &st.fields {
-                    self.field_visibility.insert(
-                        (struct_key.clone(), field.name.text.clone()),
-                        MemberVisibility {
-                            is_pub: field.is_pub,
-                            type_private: true,
-                            owner: struct_key.clone(),
-                            module: module.clone(),
-                            span: field.name.span,
-                        },
-                    );
-                }
             }
             Item::View(v) => {
                 let Some(key) = self
@@ -764,101 +742,94 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The (transitive) field names of a struct-shaped base type.
-    pub(super) fn base_struct_fields(&self, ty: &Type) -> Vec<String> {
-        self.base_struct_fields_at(ty, &mut HashSet::new())
-    }
-
-    /// The field names of a struct head, including those inherited from a
-    /// nominal derivation base.
-    pub(super) fn base_struct_fields_named(&self, head: &str) -> Vec<String> {
-        self.base_struct_fields_named_at(head, &mut HashSet::new())
+    /// Fields retain their original declaration order and resolved owner.
+    pub(super) fn base_struct_fields_of(&self, owner: DefId) -> Vec<String> {
+        self.struct_field_declarations(owner)
+            .map(|fields| fields.map(|(_, field)| field.name.text.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// How many fields a struct definition has, for positional construction.
     pub(super) fn struct_field_count(&self, id: crate::resolve::DefId) -> Option<usize> {
-        let key = self.definition_key(id)?;
-        self.struct_field_count_at(&key, &mut HashSet::new())
-    }
-
-    /// As [`Self::struct_field_count`], guarding against a derivation cycle.
-    pub(super) fn struct_field_count_at(
-        &self,
-        name: &str,
-        seen: &mut HashSet<String>,
-    ) -> Option<usize> {
-        if !seen.insert(name.to_string()) {
-            return None;
-        }
-        let (base, own) = self.structs.get(name)?;
-        let inherited = match base.as_ref().and_then(|ty| self.type_key(ty)) {
-            Some(base) if self.structs.contains_key(&base) => {
-                self.struct_field_count_at(&base, seen)?
-            }
-            _ => 0,
-        };
-        seen.remove(name);
-        inherited.checked_add(own.len())
-    }
-
-    /// Cycle-safe because resolution reports cyclic derivation but checking
-    /// continues best-effort.
-    pub(super) fn base_struct_fields_at(
-        &self,
-        ty: &Type,
-        seen: &mut HashSet<String>,
-    ) -> Vec<String> {
-        let Some(head) = self.type_key(ty) else {
-            return Vec::new();
-        };
-        self.base_struct_fields_named_at(&head, seen)
-    }
-
-    /// As [`Self::base_struct_fields_named`], guarding against a derivation cycle.
-    pub(super) fn base_struct_fields_named_at(
-        &self,
-        head: &str,
-        seen: &mut HashSet<String>,
-    ) -> Vec<String> {
-        let mut out = Vec::new();
-        if !seen.insert(head.to_string()) {
-            return out;
-        }
-        if let Some((base, own)) = self.structs.get(head) {
-            if let Some(base) = base.as_ref().and_then(|ty| self.type_key(ty)) {
-                out.extend(self.base_struct_fields_named_at(&base, seen));
-            }
-            out.extend(own.iter().cloned());
-        }
-        seen.remove(head);
-        out
-    }
-
-    /// A struct field's declared type, following the derivation chain so a
-    /// field inherited from a base struct types the same as its own.
-    pub(super) fn field_decl_ty(&self, head: &str, field: &str) -> Option<Type> {
-        let mut current = head.to_string();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut owner = id;
+        let mut seen = HashSet::new();
+        let mut count = 0usize;
         loop {
-            if !seen.insert(current.clone()) {
+            if !seen.insert(owner) {
                 return None;
             }
-            if let Some(ty) = self
-                .field_decl_types
-                .get(&current)
-                .and_then(|m| m.get(field))
-            {
-                return Some(ty.clone());
-            }
-            match self
-                .structs
-                .get(&current)
-                .and_then(|(base, _)| base.clone())
-            {
-                Some(base) => current = self.type_key(&base)?,
-                None => return None,
-            }
+            let structure = self.declarations.structure(owner)?;
+            count = count.checked_add(structure.fields.len())?;
+            let Some(base) = self.struct_base_id(owner) else {
+                return Some(count);
+            };
+            owner = base;
         }
+    }
+
+    /// Borrow layout fields without consulting the compatibility struct table.
+    pub(super) fn struct_field_declarations(
+        &self,
+        mut owner: DefId,
+    ) -> Option<impl Iterator<Item = (DefId, &'a Field)> + 'a> {
+        let mut chain = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(owner) {
+                return None;
+            }
+            let structure = self.declarations.structure(owner)?;
+            chain.push((owner, structure));
+            let Some(base) = self.struct_base_id(owner) else {
+                break;
+            };
+            owner = base;
+        }
+        Some(chain.into_iter().rev().flat_map(|(owner, structure)| {
+            structure.fields.iter().map(move |field| (owner, field))
+        }))
+    }
+
+    /// Borrow a field's full written type from its resolved owner or base.
+    pub(super) fn field_decl_ty(&self, owner: DefId, field: &str) -> Option<&'a Type> {
+        Some(&self.field_declaration(owner, field)?.1.ty)
+    }
+
+    /// A field's privacy belongs to the declaration owner, not the derived type.
+    pub(super) fn field_declaration(
+        &self,
+        mut owner: DefId,
+        field: &str,
+    ) -> Option<(DefId, &'a Field)> {
+        let mut seen = HashSet::new();
+        while seen.insert(owner) {
+            let structure = self.declarations.structure(owner)?;
+            if let Some(field) = structure
+                .fields
+                .iter()
+                .find(|member| member.name.text == field)
+            {
+                return Some((owner, field));
+            }
+            owner = self.struct_base_id(owner)?;
+        }
+        None
+    }
+
+    fn struct_base_id(&self, owner: DefId) -> Option<DefId> {
+        let structure = self.declarations.structure(owner)?;
+        self.struct_type_id(structure.base.as_ref()?)
+    }
+
+    pub(super) fn struct_type_id(&self, ty: &Type) -> Option<DefId> {
+        let normalized = self.declarations.normalize_type(ty)?;
+        let mut head = normalized.as_ref();
+        while let Type::Generic { base, .. } | Type::Indexed { base, .. } = head {
+            head = base;
+        }
+        let Type::Path(path) = head else { return None };
+        let owner = self.resolved.resolved(path.span)?;
+        self.declarations.structure(owner).map(|_| owner)
     }
 
     /// Whether `name` is a nominal newtype over an array, directly or through

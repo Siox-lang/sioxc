@@ -2,8 +2,13 @@
 # Start one bounded verification job outside the calling agent's terminal scope.
 set -euo pipefail
 
+lock_options=(--nonblock --conflict-exit-code=75)
+if [[ ${1:-} == --wait ]]; then
+    lock_options=()
+    shift
+fi
 if [[ $# -eq 0 ]]; then
-    echo "usage: scripts/guarded-run.sh COMMAND [ARGUMENT ...]" >&2
+    echo "usage: scripts/guarded-run.sh [--wait] COMMAND [ARGUMENT ...]" >&2
     exit 2
 fi
 if [[ -z ${XDG_RUNTIME_DIR:-} ]] || ! systemctl --user show-environment >/dev/null; then
@@ -29,8 +34,9 @@ done
 
 # A service is a sibling cgroup, not --scope/--slice-inherit: an OOM in the
 # workload must not reach the terminal's OOMPolicy=stop and kill the agent.
-# flock is shared by all checkouts for this user; a busy job exits 75 rather
-# than accumulating parallel compilers. The manager owns logs, not a TUI pipe.
+# flock is shared by all checkouts. Default busy jobs exit 75; --wait queues
+# inside the same bounded service without releasing the lock before execution.
+# Queue time counts toward RuntimeMaxSec. The manager owns logs, not a TUI pipe.
 systemd-run --user --quiet --unit="$unit" --description="siox guarded verification" \
     --service-type=exec --expand-environment=no --working-directory="$PWD" \
     --property=MemoryMax="${SIOX_JOB_MEMORY:-2G}" \
@@ -41,6 +47,6 @@ systemd-run --user --quiet --unit="$unit" --description="siox guarded verificati
     --property=RuntimeMaxSec="${SIOX_JOB_TIMEOUT:-1h}" --property=RemainAfterExit=yes \
     --property="StandardOutput=append:$log" --property=StandardError=inherit \
     "${environment[@]}" \
-    /usr/bin/flock --nonblock --conflict-exit-code=75 \
+    /usr/bin/flock "${lock_options[@]}" \
     "$XDG_RUNTIME_DIR/siox-verification.lock" "$@"
 printf 'unit=%s.service\nlog=%s\n' "$unit" "$log"

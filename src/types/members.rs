@@ -40,7 +40,7 @@ impl<'a> Checker<'a> {
         // A scalar, an enum value or an array has no fields: `x.foo` on an
         // `integer` passed and did not lower (#259).
         let fieldless = match &base_ty {
-            Ty::Integer | Ty::Real | Ty::Char => true,
+            Ty::Integer | Ty::Natural | Ty::Real | Ty::Char => true,
             Ty::Array { family: None, .. } => true,
             Ty::Named(_) => self.is_enum_ty(&base_ty),
             _ => false,
@@ -113,6 +113,15 @@ impl<'a> Checker<'a> {
         // fields, so the walk below found no struct and returned silently —
         // leaving every field access through a bus unchecked.
         let through_view = self.view_backing(&head);
+        let borrowed_owner = if through_view.is_some() {
+            self.view_backing_type(&head)
+                .and_then(|target| self.struct_type_id(target))
+        } else {
+            match &base_ty {
+                Ty::Named(owner) if self.declarations.structure(*owner).is_some() => Some(*owner),
+                _ => None,
+            }
+        };
         let head = through_view.clone().unwrap_or(head);
         // The backing struct's own methods are callable through the bus, and
         // reach here as field nodes just as the view's own methods do.
@@ -122,9 +131,23 @@ impl<'a> Checker<'a> {
         {
             return;
         }
-        // Walk `struct B : A` so an inherited field counts as present.
+        // Array-family compatibility facts still use layout names; ordinary
+        // structs and unambiguous view targets use their resolved declarations.
         let mut seen = HashSet::new();
         let mut cur = Some(head.clone());
+        if let Some(owner) = borrowed_owner {
+            if self.field_declaration(owner, &field.text).is_some() {
+                if through_view.is_none() {
+                    self.check_field_visibility(owner, field);
+                }
+                return;
+            }
+            // Resolution already reports cyclic derivation; its interface is unknown.
+            if self.struct_field_count(owner).is_none() {
+                return;
+            }
+            cur = None;
+        }
         while let Some(name) = cur {
             if !seen.insert(name.clone()) {
                 return; // cyclic derivation: already diagnosed elsewhere
@@ -142,18 +165,18 @@ impl<'a> Checker<'a> {
                 // Applying a view is the explicit structural interface for
                 // its backing storage. It exposes the fields it names without
                 // making raw `Struct.field` access public everywhere.
-                if through_view.is_none() {
-                    self.check_field_visibility(&name, field);
-                }
                 return;
             }
             cur = base_ty.as_ref().and_then(|ty| self.type_key(ty));
         }
-        let fields = self
-            .structs
-            .get(&head)
-            .map(|(_, f)| f.clone())
-            .unwrap_or_default();
+        let fields = borrowed_owner
+            .map(|owner| self.base_struct_fields_of(owner))
+            .unwrap_or_else(|| {
+                self.structs
+                    .get(&head)
+                    .map(|(_, fields)| fields.clone())
+                    .unwrap_or_default()
+            });
         let mut d = Diagnostic::error(format!(
             "`{}` has no field `{}`",
             self.key_leaf(&head),
@@ -169,12 +192,8 @@ impl<'a> Checker<'a> {
 
     /// Reject access to a private field from outside the owning type's module
     /// (E-P024).
-    pub(super) fn check_field_visibility(&mut self, owner: &str, field: &Ident) {
-        let Some(visibility) = self
-            .field_visibility
-            .get(&(owner.to_string(), field.text.clone()))
-            .cloned()
-        else {
+    pub(super) fn check_field_visibility(&mut self, owner: DefId, field: &Ident) {
+        let Some(visibility) = self.field_visibility_for(owner, &field.text) else {
             return;
         };
         if visibility.is_pub || self.member_access_allowed(&visibility, field.span) {
@@ -183,7 +202,7 @@ impl<'a> Checker<'a> {
         self.sink.emit(
             Diagnostic::error(format!(
                 "field `{}.{}` is private to its owning type",
-                owner, field.text
+                visibility.owner, field.text
             ))
             .with_code(codes::PRIVATE_MEMBER)
             .at(field.span)

@@ -668,7 +668,14 @@ impl<'a> Lowering<'a> {
 
     /// The declared fields of a struct type, or `None` when it is not one.
     pub(super) fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
-        match ty {
+        // Declaration-layout anchors identify a terminal struct without a reference span.
+        let normalized = match ty {
+            ast::Type::Path(path) if self.free_fns.struct_path_key(path).is_some() => {
+                std::borrow::Cow::Borrowed(ty)
+            }
+            _ => self.free_fns.normalize_type(ty)?,
+        };
+        match normalized.as_ref() {
             // A generic application: substitute the type parameters into the
             // base struct's field types.
             ast::Type::Generic { base, args, .. } => {

@@ -29,1245 +29,6 @@ things you changed that others depend on, and leave questions.
 
 Older entries are in git history (`git log -p -- chat.md`).
 
-
-### 2026-10-12 — Codex — return-companion full acceptance
-
-2002602 is terminal exited/success/0, peak 1612681216 bytes. Frozen hash
-66af926e0b255d74b8426ef39660493510aca1cb5c2299e61d2977caf68fc45f is unchanged.
-Both full suites with nineteen DWARF fixtures per mode, strict frontend/all-
-target Clippy, artifact checks, four 228-program corpora and four FIFO/wide
-native GDB/VCD smokes pass. AST refresh: 5371 nodes, 15315 edges, 254 communities;
-existing vendored extractor warnings persist. Refresh the changed community
-labels using the native cluster command in the next guarded job; preserve
-curated history and ignored caches. Commit only owned inline_values.rs,
-debug_info.rs, TODO and appended chat tail, plus sibling docs separately.
-Then run the prepared generic aggregate/real signature probe. Preserve foreign
-AGENTS/.codex and 441 historical chat additions. No push. Goal stays active.
-
-### 2026-10-12 — Codex — generic composite/real signature coverage
-
-Committed compiler 9fed2c3 and sibling docs 31e26fc after full acceptance.
-2134078 is terminal exited/success/0, peak 107622400 bytes: generic identity
-over a 31-byte struct with a 3-bit tag, real and descending signed[81] array
-retains concrete Packet formals/results and all actual GDB memory-return fields
-across input epochs. A procedural generic real returns 6.25 correctly through
-native history. Ordinary/debug assertions and VCD parity pass. Native graphify
-cluster refresh also preserves 5371 nodes/15315 edges and updates 254 labels.
-No signature fix is warranted by this probe. Own an extension of the existing
-large-return fixture for these specializations, both hints and packing modes,
-including signed zero real returns; update matching TODO/docs after evidence.
-No live jobs; preserve foreign work and leave the full goal active. No push.
-
-2140271 is terminal exited/success/0, peak 188461056 bytes. The existing
-large-return fixture now covers concrete generic Packet formals/results with
-descending signed[81] array fields and generic real positive/negative/signed-
-zero returns, across all three input epochs, both hints and both packing modes.
-Native assertions, GDB history fields/types, DWARF verification and VCD parity
-pass; strict Clippy passes. No production compiler changes. Update matching
-TODO/docs and freeze test hash
-2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
-Run complete CI acceptance (both suites, two ordinary corpora and AST/label
-refresh) before this regression-only commit. The unchanged compiler's four
-debug/ordinary corpora and four native smokes already passed in 2002602;
-this fixture additionally runs its own emitted debug/ordinary binaries/GDB.
-Other supported signature/companion and partial-demand audits remain active.
-
-Generic-return CI acceptance is confirmed live as
-siox-job-3000-1791757110096844734-2149076.service. Poll this exact unit/log;
-do not restart after an interrupted observation. Tests stay frozen at
-2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
-After terminal success, stage only owned large-return regression, TODO and
-appended chat tail (after line 15000); docs separately. No production changes
-or push. Preserve foreign AGENTS/.codex and 441 historical chat additions.
-
-### 2026-10-12 — Codex — generic-return acceptance and joint-partial probe
-
-2149076 is terminal exited/success/0, peak 833495040 bytes. Frozen test hash
-2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572 is unchanged.
-Both full suites (nineteen DWARF fixtures each), strict Clippy and both ordinary
-228-program corpora pass. AST/label refresh preserves 5371 nodes, 15315 edges,
-254 communities; existing vendored extractor warnings remain. Commit only
-owned generic-return test extension, TODO and appended chat; sibling docs
-separately. No production signature fix, and no push.
-Prepared joint_partial_return.siox/.py in the existing diagnostic cache for
-the next named TODO gap: two jointly consumed nested-call fields with an unused
-middle abort field. The probe counts source stops and inspects retained return
-fragments at completion; missing fields must stay unavailable. It is not yet
-evidence of a failure. Run it after the accepted regression/docs commits, then
-trace the aggregate coverage/demand proof before any production edit. Goal active.
-
-Committed compiler ed03b34 and sibling docs 0149462 after generic acceptance.
-Joint-partial probe 2214433 passed ordinary/debug assertions and VCD parity,
-but disabled its breakpoint during same-line source finish and missed sibling
-stops. Corrected 2226116 keeps that breakpoint live during finish and observes
-four truthful single-field partial frames: left=2/right=12, then left=4/right=14.
-The demanded sum should share one partial source boundary per epoch without
-evaluating the discarded middle abort field. aggregate_returns currently
-rejects the group at its full-coverage gate, before the existing joint-demand
-proof can justify grouping the retained subset. This is a reproduced remaining
-grouping gap, not a numeric simulation failure. No live jobs or Rust edits.
-Next own debug.rs/inline_values.rs and regressions: keep a compact private
-carrier for retained fields only, preserve full declared source types on inline
-frames with LLVM return fragments, and reuse existing demand/order/cache proof.
-Do not zero-fill missing fields, claim a full native return ABI, force a discarded
-operand or split effectful execution out of the common cache. Preserve the
-independent selected-partial regression and native/VCD parity. Goal stays active;
-no push. Foreign AGENTS/.codex and 441 historical chat additions remain untouched.
-
-### 2026-10-12 — Codex — joint partial-return grouping implementation
-
-Own debug.rs AggregateReturn and inline_values.rs grouping/fragment capture.
-Extend the existing group proof to nonoverlapping retained subsets only with
-joint demand; retain uninterrupted effect/check order when required. Compact
-the private carrier instead of filling absent source regions. Partial groups
-stay in the caller's common emitter/cache via the existing inline source frame,
-whose synthetic $return uses the original field paths and declared layout.
-Reuse the existing aggregate builder and nullable fragment observer; do not
-advertise a full native return ABI or add an execution wrapper. Preserve the
-independent selected-partial cases. No live guarded job; foreign work untouched.
-
-2250748 passes the original joint-partial native/GDB probe with two combined
-source frames instead of four leaf frames; assertions/VCD match and the middle
-abort field stays unavailable. New carrier unit rejects overlaps and independent
-uses and proves 128 retained bits rather than a padded 192-bit source result.
-2272040 and 2279194 pass that unit, joint/independent regressions in both packing
-modes, all twenty default DWARF fixtures and strict Clippy. New coverage includes
-pure/foreign nested calls, forward/reverse first-use order, fresh entry references
-and direct finish history-slot checks.
-2290280 then exposed a real selected-join capture gap: aggregate_result builds
-the whole selected carrier without emitting the original selector IDs, leaving
-their source fragments absent. Completion now observes those IDs from the
-already-computed joined bits while the frame is live; no selector/effect repeats.
-2293164 passes both positive and fallback native/GDB cases with three combined
-frames and VCD parity. Extended permanent selected/plain, pure/foreign, forward/
-reverse and both-hint coverage passes both modes in 2296122, terminal success/0,
-peak 862851072 bytes; strict Clippy passes. Update matching TODO/docs and freeze
-Rust for full suites, four corpora, native smokes and graph refresh before commit.
-The full goal remains active; no push, and preserve all foreign changes.
-
-Full joint-partial acceptance is confirmed live as
-siox-job-3000-1791760022111950112-2302449.service; poll that exact unit/log,
-do not restart after an observation interruption. Frozen source/test hash:
-2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25.
-Only owned debug.rs/inline_values.rs, debug_info.rs, TODO and appended chat
-tail after line 15000 may be staged after terminal success; sibling docs
-separately. Foreign AGENTS/.codex and 441 historical chat additions are untouched.
-Source remains frozen through full default/bitpack suites, four 228-program
-corpora, four native GDB/VCD smokes and AST/community refresh. Goal active.
-
-2302449 remains confirmed live. All twenty default DWARF fixtures pass
-(96.31s); remaining full-suite/bitpack/corpus stages continue. Frozen hash
-2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
-No Rust edits, restart or commit while the acceptance handle is live.
-
-2302449 remains live after both full suites pass all twenty DWARF fixtures
-(default 96.31s, bitpack 95.64s). Strict Clippy/corpus stages continue. Frozen
-hash is unchanged. Poll the same handle; no Rust mutation or commit yet.
-
-### 2026-10-12 — Codex — joint-partial full acceptance
-
-2302449 is terminal exited/success/0, peak 1612701696 bytes. Frozen hash
-2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
-Both complete suites with twenty DWARF fixtures per mode, strict Clippy,
-frontend/artifact gates, four 228-program corpora and four FIFO/wide native
-GDB/VCD smokes pass. AST/community refresh: 5373 nodes, 15327 edges,
-247 communities; existing vendored extractor warnings persist. Commit only
-owned group/fragment implementation, carrier proof, native regressions, TODO
-and this appended chat tail, then matching sibling architecture/testing docs.
-No push. Remaining supported mixed/partial and companion/signature audits
-keep the full goal active. Preserve AGENTS/.codex and 441 historical chat additions.
-
-Committed compiler e8a6b6c and sibling docs cc92d80 after full acceptance;
-no push. Prepared mixed_partial_return.siox/.py in the existing disk cache:
-descending signed[81] array fields, an unused middle abort and real/signed-zero
-data. 2526381 compiled and ran ordinary/debug with numeric assertions and VCD
-parity, then exhausted the GDB probe without observing all requested fragments
-in one frame. Do not infer a compiler bug yet: first inspect the actual group
-demand/coverage and frame fragments, including the caller's boolean equality
-consumer. The probe assumes joint grouping; that assumption needs evidence.
-No live guarded jobs or uncommitted Rust. Goal remains active; preserve foreign
-AGENTS/.codex and 441 historical chat additions. Next tighten the diagnostic
-and continue supported mixed/partial and companion/signature completion audits.
-
-### 2026-10-12 — Codex — mixed partial-demand comparison audit
-
-Own inline_values.rs demand proof and corresponding regressions if warranted.
-The mixed probe's packed equality reaches MetaCompare, which always evaluates
-its ordinary `inner` comparison but currently propagates no demand in
-joint_aggregate_demand. Trace supports forwarding only that inner result;
-metadata-only operands are not a proof of numeric evaluation. Test this shared
-proof adjustment against the existing mixed native/GDB probe before retaining
-it. No live guarded jobs; preserve foreign work and do not infer that every
-comparison/consumer now justifies grouping. Full goal stays active; no push.
-
-2581572 did not establish joint grouping even after forwarding MetaCompare's
-inner demand. Removed that unproven production change completely. Corrected
-2590011 instead follows each existing partial frame, keeps sibling breakpoints
-live during finish and reads whichever actual fragment is retained. It passes
-numeric assertions/VCD parity with descending signed[81] array elements and
-real data, including negative zero; the unused abort field stays unavailable.
-Tightened 2622740 passes every initial/changed/zero field combination and VCD
-parity, terminal exited/success/0. Thus the earlier failure was the probe's
-unsupported assumption that this comparison consumer justified one joint frame;
-there is no verified capture/ABI bug here. No uncommitted Rust or live jobs.
-Preserve separate-fragment semantics and audit other supported transports
-without weakening demand proof. Full goal active; no push, foreign work untouched.
-
-### 2026-10-12 — Codex — permanent mixed partial-return regression
-
-Own tests/debug_info.rs coverage for the verified mixed_partial_return probe.
-Retain separate source frames for actual descending signed[81] array leaves
-and real/signed-zero fragments; the discarded abort field must stay unavailable.
-Reuse the existing native/GDB/VCD verification pattern, with both inline hints
-and packing modes. No production change is justified by the diagnostic.
-Preserve foreign AGENTS/.codex/chat additions and sibling docs/language.md.
-Full DWARF goal active; no push. Previous turn made verified diagnostic progress.
-
-2657166 is terminal exited/success/0, peak 647380992 bytes. The permanent
-mixed-fragment fixture passes both hints/default/bitpack, with exact sets of
-nine epoch-specific array/real fragments, source type size, pruned abort,
-native assertions, VCD equality and dwarfdump verification. No production fix.
-Updated TODO and sibling testing coverage; replaced stale testing claims that
-already-covered checked/joint partial cases still needed implementation.
-Freeze Rust for full CI suites, both ordinary corpora and graph AST refresh.
-
-2659524 is terminal exited/success/0, peak 1470701568 bytes. Full default and
-bitpack suites pass, including all 21 DWARF fixtures (97.54s/98.43s), strict
-frontend/all-targets Clippy and both 228-program corpora with zero failures.
-Frozen source/test hash remains
-16487f0fe3d1d60e0d6c4d680593bc2198571d298e0d1f4bf713130af4976cf8.
-AST/community refresh reports 5374 nodes, 15329 edges and 251 communities;
-existing vendored extractor warnings persist. Commit only owned test/TODO/chat
-tail and sibling testing docs. Preserve foreign changes; no push.
-The full goal remains active: next audit the separate CFG formal-parameter
-inspection path in debug/parameters.rs, which does not currently create a
-formal-name $logic companion. Establish native/probe evidence before fixing it;
-expression companions already covered are not proof for suspended CFG aliases.
-### 2026-10-09 — Claude — enum vector elements take any value
-
-Owner: "we don't care if something is 'X' unless the resolver says so — that's
-how vhdl does it", for any enum vector. Branch `fix/element-metavalues`.
-- Hardware function element writes into packed vectors record a
-  `source_values::MetaMerge`; `lower_meta_ir` builds the merged companion
-  (base's, with the element's nibble replaced), so `r[k] = 'X'` and copies
-  of 'Z'/'H' keep their value (previously rejected / passed through the
-  std_logic and/or tables).
-- LLVM: an element of a packed enum vector read into a scalar layout
-  (`let e: Logic = u[0];`, and print snapshots) was unsupported in
-  `process_value_supported_in_layout` / `process_value_in_layout`.
-**Codex:** touches `metavalue.rs` (Canonical arm), `source_values.rs`
-(compaction carries `merge_meta`), `llvm/process/{support,values}.rs` Index arms.
-
-### 2026-10-09 — Claude — `Match` for bit patterns, expression range patterns
-
-Owner-approved. Branch `feat/match-patterns`.
-- `core::cmp::Match` (element level: `matches`, `unknown`); `Logic` implements
-  `std_match` in `std::logic`. A bit-pattern arm tests each fixed position
-  with `scrutinee[k].matches('0'|'1')`; a testbench match on a metavalue warns.
-- New `ast::Pattern::Bounds { lo, hi }` (constant/typed/open bounds, set
-  semantics) next to the literal `Pattern::Range`; matches through `Ord`.
-- Testbench path: guarded matches lower as a branch chain / select chain
-  (`lower_guarded_match`, `pattern_condition`); hardware: `arm_match_cond`.
-- Fixed on the way: element reads of a parameter inside a hardware function
-  lost their metavalue (a 1-bit RawResize after reconstruction); literal
-  method arguments now take the parameter's declared family; vector literals
-  in `let`s keep their companion; `lower_val_env` comparisons are marked like
-  `lower_expr`'s.
-**Codex:** touches parser patterns, `types/patterns.rs`, `resolve.rs`,
-`ir/lower/{calls,control,values,operators,source_bindings}.rs`,
-`source_values/reconstruct.rs`, `source_processes.rs` match lowering.
-
-### 2026-10-09 — Claude — match arm analysis
-
-Owner-requested (TODO item). Branch `feat/match-arm-analysis`.
-- `types`: `const_values` (DefId -> initializer) and `Checker::const_int`, a
-  small integer folder (literals, named constants, `+ - * / % << >>`).
-  `pattern_intervals` replaces the free `collect_pattern_ranges` and folds
-  `Pattern::Bounds`; open ends run to the edge of `i128`.
-- `unreachable_match_arm` now checks an arm against the union of earlier
-  ranges (`covered_by`), Or-patterns and folded bounds included.
-- New lint `overlapping_range_endpoints` (W-P018).
-- Parser: a pattern bound may start with a constant and an operator
-  (`DEPTH + 1..`).
-**Codex:** touches `types/{patterns,helpers,statements,collect,mod}.rs`,
-`diag.rs`/`diag/lints.rs` (new code), `syntax/parser.rs` pattern atom.
-
-### 2026-10-10 — Claude — `T<args>::f(x)`, fixed/float resize styles
-
-Owner-requested (TODO std item). Branch `feat/fixed-resize-styles`.
-- `ast::Expr::Call` gains `qualifier: Option<Box<Type>>`: the `Self` of an
-  associated call on an applied type, `ufixed<6, 2>::resize(x)` (callee stays
-  the path `ufixed::resize`). Parser postfix arm; import pass expands it
-  (`ufixed[1..-2]`); resolve walks it; the checker types the result as it.
-- Lowering: hardware `lower_family_from`'s body is now `inline_in_format`
-  (binds every parameter), shared with `lower_qualified_call`; Process path
-  `lower_process_family_from` likewise shares `inline_with_self_format` with
-  `lower_process_qualified_call`.
-- Macro `split_args` nests a `<...>` followed by `::` like one followed by `(`.
-- std: `std::numeric::{Overflow, Rounding}`; `ufixed`/`sfixed::resize`,
-  `float::resize`, `From<float> for float`, `encode_styled` (roundTowardZero).
-**Codex:** touches `syntax/{ast,parser,pretty,imports,macros}.rs`,
-`resolve.rs`, `types/{inference,expressions}.rs`, `ir/lower/{calls,expressions,values}.rs`,
-`source_processes.rs` (family-from helpers), `lower_helpers/substitute.rs`.
-
-### 2026-10-10 — Claude — type attributes
-
-Owner-approved. Branch `feat/type-attributes`.
-- `ImplItem::Attr(AttrDecl)` (no targets): `pub attr integers: integer =
-  self'high + 1;` inside an implementation; a module-level declaration
-  still needs `for` targets.
-- `types/expand.rs`: the checker records each read (`x'integers`,
-  `Self'integers`) in `Typed::type_attr_reads`, validates declarations
-  (shape facts only, `E-P037`), and `expand_type_attrs` (called from
-  `compiler.rs` after checking) rewrites reads to the declared value with
-  `self` -> base, so lowering sees only system attributes.
-- Fixed from #53: a qualified call returning something other than its type
-  (`-> integer`) took the format's width (both lowering paths).
-- std: `'integers`/`'fractions` on `ufixed`/`sfixed`, `'exponent`/
-  `'mantissa`/`'bias` on `float`.
-**Codex:** touches `syntax/{ast,parser,pretty,imports,macros,attributes}.rs`,
-`resolve.rs`, `elab.rs`, `types/{mod,collect,inference,expressions,impls,expand}.rs`,
-`ir/lower/{calls,source_processes}.rs`, `compiler.rs`, `diag.rs`.
-
-### 2026-10-10 — Claude — group declaration
-
-Owner-requested. Branch `feat/group-declaration`.
-- `let a, b: T = v;` (VHDL's `signal a, b : T := v;`): `parse_let_rest`
-  returns the first `LetDecl` and queues the rest in `Parser::grouped_lets`;
-  the impl-item and statement collection loops append them. Each name gets
-  its own copy of the type and initializer; later stages see single lets.
-- TODO: public entity receiver methods marked deferred (owner decision).
-**Codex:** touches `syntax/parser.rs` (let parsing, collection loops).
-
-### 2026-10-10 — Claude — float division, fixed <-> float conversions
-
-Owner-requested (TODO std item). Branch `feat/float-div-conversions`.
-- std::float: `impl Div<float, float>` (IEEE, nearest even; one kernel
-  division with a sticky bit, valid up to 29 mantissa bits),
-  `From<ufixed|sfixed> for float`, `From<float> for ufixed|sfixed`.
-- `inline_process_binary_operator`: an operator declared `-> Self`/its
-  family returns the left operand's type when the checker recorded none
-  (a conversion's argument); `float`'s kernel-word result used to make
-  `sfixed<8, 4>(a - b)` pick `From<integer>`.
-- TODO: binary64 `*`/`/` need wider kernel arithmetic (binary64 `*` is
-  already wrong on main: 1.5 * 3.0 = inf); loops in functions called from
-  operator bodies fail (hardware: unresolved caller locals; testbench:
-  shifted kernel integers widen past 64 bits).
-**Codex:** touches `ir/lower/source_processes.rs` (binary operator return type).
-
-### 2026-10-10 — Claude — loops in functions called from operator bodies
-
-Owner-requested (TODO, from the float-division work). Branch `fix/loops-in-operator-bodies`.
-- Hardware: `constant_expr` folds a unary negation, so a loop bound read off
-  a negative `'low` (`0..(0 - format'low) + 1`) unrolls.
-- Testbench: `source_value_width` widens a kernel-integer `<<` only for a
-  constant left operand (`1 << 100` stays multiword); a runtime one keeps
-  its width, so `rest = rest << 1` fits its 64-bit local.
-- TODO: user newtypes (`struct W(Logic[7..0])`) as testbench locals fail;
-  a non-constant hardware loop bound reports the caller's locals as unknown.
-**Codex:** touches `ir/lower/calls.rs` (`constant_expr`), `source_processes.rs`
-(`source_value_width` Shl).
-
-### 2026-10-10 — Claude — user newtypes as testbench locals
-
-Owner-requested. Branch `fix/newtype-testbench-locals`.
-- `source_processes.rs`: `sized_struct_base` finds a field-less struct's
-  sized base (`struct W(Logic[7..0])`); `process_declared_type` gives `W`
-  that length and `apply_process_declared_ranges` its range, so `let w: W;`
-  in a testbench has width 8 and range 7..0 (it was a zero-width layout and
-  the block failed at run time). Signals of `W` already worked.
-**Codex:** touches `ir/lower/source_processes.rs` (declared type/range of locals).
-### 2026-10-10 — Claude — float square root
-
-Owner-requested. Branch `feat/float-sqrt`.
-- std::float: `x.sqrt()` (IEEE squareRoot, nearest even) with a
-  digit-by-digit `root_with_sticky` loop whose bound comes from the format.
-- Testbench lowering, so a looped call's result works as a receiver
-  (`x.sqrt().to_real()`, `print!("{}", x.sqrt())`): a deferred method call
-  that returns its receiver's type takes the receiver's layout
-  (`value_ref_with_type_inner`); `cfg_calls::result_local` takes a select's
-  arms' layout, or plain bits of the node's width when the type is an
-  unsized family.
-**Codex:** touches `ir/lower/source_processes.rs` (deferred call layout),
-`source_processes/cfg_calls.rs` (`result_local`).
-
-### 2026-10-11 — Claude — std::math::sqrt, real(x) constructors
-
-Owner preferences: math functions live in std::math (also for fixed/float);
-conversions are constructors, not `to_<type>()`. Branch `feat/math-sqrt-constructors`.
-- std::math: `trait Sqrt` + generic `sqrt<T: Sqrt>`; `real` impl via the
-  new private `std::libm` (the C `sqrt` symbol moved there). `float`'s sqrt is
-  `impl Sqrt for float`; `ufixed`/`sfixed` get `impl Sqrt` (nearest step,
-  saturating; negative sfixed is 0) with an `isqrt` loop.
-- `to_real()` removed: `impl From<ufixed|sfixed|float> for real`. Lowering:
-  `real(x)` uses such an impl (testbench `lower_process_kernel_conversion`,
-  hardware `lower_conversion` via the new `inline_function`, split out of
-  `lower_free_call`); the checker now types kernel-conversion arguments.
-- `constant_expr` folds `/` and shifts; `capture_process_operand` wraps an
-  `integer` wider than its word to it.
-**Codex:** touches `ir/lower/{calls,source_processes}.rs`, `types/expressions.rs`.
-
-### 2026-10-11 — Claude — real math as compiler built-ins
-
-Owner preference ("like with nvc"): `real` math is built in, not C externs.
-Branch `feat/real-math-intrinsics`.
-- `core::intrinsics` (`extern "intrinsic"`, reserved to `core`: E-P036
-  elsewhere) declares sqrt/sin/cos/exp/log/pow/floor/ceil/round; std::math
-  re-exports them and `impl Sqrt for real` calls `intrinsics::sqrt`;
-  `std::libm` is gone.
-- IR: `RealFunction` (ir/expr.rs); `UnOp::Real` / `ProcessUnaryOp::Real`,
-  `BinOp::FPow` / `ProcessBinaryOp::FloatPow`; `FunctionIndex::insert_extern`
-  + `intrinsic()`; both call lowerings emit the op instead of a ForeignCall;
-  LLVM calls `llvm.<fn>.f64` (`real_intrinsic` in process/support.rs).
-**Codex:** touches `ir/{expr,process,functions,derive,query}.rs`,
-`ir/lower/{calls,collect,hardware,operators,source_processes}.rs`,
-`llvm/emit.rs`, `llvm/process/{binary,logic,support,values,value_types}.rs`,
-`types/items.rs`, `syntax/parser.rs`, `compiler.rs`, `diag.rs`.
-
-### 2026-10-11 — Claude — numeric promotion, phase 1 (to real)
-
-Owner decision: numbers mix in arithmetic; the higher rung of
-integer → unsigned/signed → fixed → float → real wins; storing stays explicit.
-Branch `feat/numeric-promotion`. Proposal: `docs/proposals/numeric-promotion.md`.
-- Checker: `promotes_to_real` (real beside a type with `impl From<T> for
-  real`), accepted in `operator_accepts_expr` for arithmetic/comparisons.
-- Lowering converts the other operand through that impl before operator
-  dispatch: `lower_process_real_promotion` (testbench),
-  `promoted_real_operands` + `real_from` (hardware, both Binary sites).
-- std::bits: `From<unsigned|signed> for real`. `ty_display` prints an
-  untracked-width family as its name (`sfixed`, not `sfixed[0]`).
-**Codex:** touches `types/{operators,calls}.rs`, `ir/lower/{calls,values,expressions,source_processes}.rs`.
-
-### 2026-10-12 — Claude — formats in checked types (numeric promotion phase 2, step 1)
-
-Branch `feat/numeric-formats`.
-- `types::Ty::Array` gains `low: i64` (the lowest index), set by
-  `Checker::index_shape`, which folds a format's range (`3..-4` after
-  desugaring) — fixed/float types had length 0 ("unknown") before.
-- `compatible`: two sized families whose binary points differ (a negative
-  `low` on either side and unequal lows) no longer assign: `ufixed<8, 4>`
-  into `ufixed<8, 2>` silently reread the bits (2.5 became 10). Label-only
-  ranges (`unsigned[15..8]` into `unsigned[8]`) still assign.
-- Diagnostics show a format as `ufixed<8, 4>`.
-**Codex:** `Ty::Array` gained a field: literals need `low`, patterns `..`.
-
-### 2026-10-12 — Claude — numeric promotion phase 2: the full ladder
-
-Branch `feat/numeric-promotion-2`. Proposal doc deleted (implemented).
-- Checker: `numeric_promotion` (operators.rs) computes the promoted type
-  below `real` (formats cover both operands); `check_expr` records each
-  operand that widens in `Typed::promotions` (span -> target `Ty`), carried
-  by `Hierarchy::promotions`.
-- `core::convert::Widen<Source>` (lang `widen`, a compiler trait) with exact
-  std impls (bits, fixed, float); `FunctionIndex::get_widening`.
-- Lowering hooks: hardware `promoted_operand` at `lower_expr`/`lower_val_env`
-  entry, plus `operand_type_name`, `ast_width`, `operand_range`,
-  `source_operand_layout`, `base_signal` see the promoted type; guard set
-  `widening`; `mark_vector_compare` reads operands as written. Testbench:
-  `process_promoted_operand` at `value_ref_with_type`, `operand_type`.
-- An integer beside a fixed/float format is its value (`s + 1` = +1.0);
-  corpus tests comparing raw words now write `integer(x) == N`.
-**Codex:** touches types/{operators,inference,expressions,mod,collect}.rs,
-elab.rs, ir/functions.rs, ir/lower/{operators,calls,expressions,values,
-source_bindings,source_processes,collect}.rs, ir/lower.rs, resolve.rs, core/convert.siox.
-
-### 2026-10-12 — Claude — numeric promotion through `From`; no `Widen` trait
-
-Branch `feat/promotion-via-from`. `core::convert::Widen` and its std impls
-are removed; promotion inlines std's `From<S> for T` (hardware
-`promoted_operand`, testbench `widen_operand` via `get_conversion`).
-- std `From` impls between formats take an exact path when `Self` holds
-  every source value (a condition on `Self'low`/`value'high`), else round
-  and saturate as before. New: `From<ufixed> for sfixed`,
-  `From<unsigned|signed> for ufixed/sfixed/float`, `From<signed|unsigned>
-  for signed`; `From<integer>` for fixed/float no longer goes through real.
-- `inline_block`: an `if` whose condition folds (`arena_constant_integer`)
-  lowers only the branch it takes.
-- **Behaviour change:** `signed[16](s)` sign-extends (was a raw zero-extend).
-  The testbench now tries a family's `From` before the kernel raw resize, and
-  the checker types a `T[range](x)` argument.
-**Codex:** touches ir/functions.rs, ir/lower/{calls,operators,source_processes}.rs,
-types/{expressions,mod}.rs, resolve.rs, core/convert.siox.
-
-### 2026-10-12 — Codex — CFG formal companion audit
-
-Own debug/parameters.rs and focused native regression if a gap is reproduced.
-Trace captured formal aliases through parameters/declare_parameters and existing
-logic mirrors; first compile/run a suspended packed-parameter diagnostic without
-changing production Rust. Previous turn committed verified mixed-fragment
-coverage (1b7c36c, docs bd1c625), so it made authoritative progress.
-No live guarded jobs. Preserve foreign AGENTS/chat/.codex; no push.
-
-2716950 reproduces the gap after ordinary/debug native assertions and VCD
-parity: suspended `value` is readable, `value$logic` is absent. 2719884 verifies
-the shared formal-location fix with the existing recursive logic copy/readers,
-native GDB source states, DWARF validity and unchanged VCD. Companions are
-debug-only nullable snapshots over captured places/constants, not new ABI
-arguments or source evaluations. Missing either plane clears the reference.
-Expanded the existing suspended-call fixture with aggregate/receiver/wide
-companions, nested mutable parent aliases, negative-label indexed arrays and
-binary literals. Corrected an initially mis-targeted test struct edit; no
-unrelated fixture changes remain. 2725436 is terminal exited/success/0, peak
-884137984 bytes: extended native/GDB regression passes default/bitpack and strict
-Clippy. Update matching TODO/architecture/testing and freeze Rust for full suites,
-four corpora, native smokes and AST/community refresh. Goal active; no push.
-
-Full acceptance launched as
-siox-job-3000-1791790586357096719-2732208.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791790586357096719-2732208.log.
-Frozen source/test hash:
-d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
-Poll this exact unit to terminal exited/success/0 before committing; no restarts
-or Rust edits merely because observation is interrupted. Owned changes are
-parameters.rs, the existing suspended-call fixture, TODO and this appended chat
-tail; sibling architecture/testing docs separately. Preserve foreign12 AGENTS,
-441 historical chat additions and .codex. Goal remains active; no push.
-
-### 2026-10-12 — Codex — acceptance corpus drift
-
-2732208 remains running; both full suites and strict Clippy have passed on the
-unchanged frozen hash. The sibling corpus was externally fast-forwarded from
-05278a8 to f8234fe at 2026-10-12 09:42:16 +0200 during this acceptance run.
-It now requires numeric-format/promotion features absent from local compiler
-main (ahead46/behind39, origin/main 7c659f2). Default corpus currently reports
-11 ordinary failures, including new numeric_ladder/numeric_promotion and migrated
-fixed/float comparisons. These fail before DWARF emission; do not amend them to
-match an older compiler, clone a stale corpus, or claim a passing acceptance.
-Requested direction to integrate latest compiler main while preserving owned
-DWARF changes. No merge/pull, commit or further Rust edit without that direction;
-poll the existing acceptance handle, never restart merely after interruption.
-Goal active; this is the first corpus-drift blocker audit, not a blocked status.
-
-2732208 is now terminal failed/exit-code/1, peak 1612832768 bytes. Both complete
-suites passed all 21 DWARF fixtures (97.69s default, 109.28s bitpack), along
-with strict Clippy/frontend/artifact gates. Both current ordinary corpora finish
-227 passed/12 failed; therefore debug corpora, native smokes and graph refresh
-were not reached. This is a failed acceptance, not a compiler-wide pass.
-Frozen source/test hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0
-is unchanged; no live jobs remain. Remote changes do not touch debug/parameters
-directly, but integrate 39 upstream compiler changes before retesting the current
-corpus rather than inventing fixes for absent numeric-format/promotion features.
-Still awaiting the requested integration choice; preserve all pending work,
-do not commit against the red gate or silently merge. Second consecutive
-corpus-drift/authority audit; goal active, not complete or blocked yet.
-
-### 2026-10-12 — Codex — third acceptance blocker audit
-
-Revalidated main 1b7c36c (ahead46/behind39), corpus f8234fe and unchanged frozen
-hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
-2732208 remains terminal failed/exit-code/1; no live jobs. Both ordinary corpora
-still report 227 passed/12 failed from the compiler/corpus feature mismatch.
-No integration approval has arrived. The current DWARF patch and focused/full
-suite evidence are preserved, but the mandatory corpus gate cannot be completed
-without aligning compiler main or explicit alternate direction. Do not downgrade
-the corpus, waive the gate, silently merge, or repeat obsolete-compiler tests.
-Same blocker has persisted across three consecutive goal turns; mark the goal
-blocked pending the requested integration choice. Not complete; no commit/push.
-
-### 2026-10-12 — Codex — resumed goal, fresh blocker audit 1
-
-The goal was resumed, so restart the blocker counter rather than immediately
-marking it blocked again. Revalidated local main 1b7c36c (ahead46/behind39),
-clean sibling corpus f8234fe and terminal failed acceptance 2732208; no live jobs.
-Read-only git ls-remote confirms upstream main is still 7c659f2, matching the
-local remote ref. Both current corpus modes remain 227 passed/12 failed.
-Integration approval is still missing; a generic goal continuation is not that
-choice. Preserve the pending CFG companion fix and docs; do not merge upstream,
-commit against failed acceptance, downgrade the corpus or restart unchanged tests.
-Goal active, first fresh audit only. Await explicit integration direction.
-
-Fresh resumed blocker audit 2: main/corpus and terminal failed acceptance are
-unchanged, no live jobs, no integration choice received. Previous turn made
-no implementation progress; safe read-only revalidation confirms the same
-authority/corpus blocker. Preserve the patch; no redundant tests or merge.
-
-Fresh resumed blocker audit 3: confirmed main 1b7c36c, corpus f8234fe, unchanged
-frozen source hash and failed terminal acceptance 2732208; no live jobs or
-integration choice. Same mandatory corpus/authority blocker recurred on all
-three resumed turns. Mark goal blocked again; preserve pending DWARF changes.
-Completion remains unproven. Await explicit integration direction; no commit/push.
-
-### 2026-10-12 — Codex — authorized latest-main integration
-
-User explicitly requests merging latest main. Own integration and conflict
-resolution in IR/lowering, LLVM and related tests/docs as required; preserve
-both committed histories and all uncommitted work. Temporarily stash only the
-five dirty tracked files (AGENTS, TODO, chat, parameters.rs, debug_info.rs) in
-a named preservation stash. Foreign AGENTS12 and historical chat441 are not
-ours to commit; .codex and sibling docs remain untouched. Keep a pre-merge
-branch backup, resolve overlap with both designs intact, restore saved edits
-and run guarded full acceptance before any commit. No push requested.
-
-Fetched latest origin/main 0fa7091 (41 upstream commits). Preserved HEAD at
-codex/pre-main-dwarf-20261012 and dirty tracked edits in stash
-82d00debd9c7b424cf6c61f6864d7f78e4e37a14; leave that safety copy until accepted.
-Resolved four merge conflicts while retaining both log histories, upstream
-multi-argument format conversion/constant-branch pruning and source inspection
-boundaries. Restored all saved edits; AGENTS matches the saved bytes exactly.
-Unstaged foreign AGENTS12 and historical chat441 only, preserving them in the
-worktree. Merge remains uncommitted pending acceptance; sibling docs untouched.
-2953482 exposed nine compile integration errors from new upstream calls to
-source-aware helpers. Added actual call spans, retained selected return spans
-for guarded match chains, and made branch-span recording optional outside
-inline function frames. 2960858 passes the merged build and both suspended
-formal companion/conversion-signature native/GDB regressions, terminal
-exited/success/0, peak 1136013312 bytes. Freeze Rust for full acceptance.
-
-Initial merged acceptance 2976313 hit an upstream unit-test caller lacking the
-fourth reconstruct_metavalues argument. Cancelled that conclusively failed run
-to fix the call, not because of an observation timeout: unit is terminal dead,
-and its log proves failed cargo test despite systemd stop reporting success.
-Pass None like the adjacent table/ordinary-bit unit tests; no encoding exists
-in this fixture. Re-run full acceptance on the corrected frozen source. Use the
-actual sibling corpus, now externally advanced to f285f7d (signed-widen test).
-
-Corrected acceptance is live as
-siox-job-3000-1791796249531317181-2989909.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791796249531317181-2989909.log;
-stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance.b0KAg4.
-Frozen source/test/core hash:
-3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
-Keep merge HEAD 0fa7091 and source frozen; poll this exact handle. Full acceptance
-must pass before merge commit. Foreign AGENTS12/chat441 and .codex stay excluded.
-
-2989909 is terminal failed/oom-kill/9, not accepted. Both complete suites
-passed all 21 DWARF fixtures (110.99s/107.12s), strict Clippy and the default
-239-program corpus passed. Bitpack corpus stopped after float_division native
-success; neither that file's printer roundtrip nor the next float_sqrt command
-was identified as the killed process. Unit limit was 2 GiB, high 1536 MiB;
-systemd's retained sampled peak is 1612402688. No source hash change.
-3132781 failed because GNU time is unavailable; use stdlib resource metrics.
-3140045 proves the isolated bitpack float_sqrt native compile/run passes,
-terminal exited/success/0, peak 546869248, child maxrss 540856 KiB. Therefore do
-not call float_sqrt a verified compiler defect. Parent cgroup limits are max.
-Retry full acceptance with explicit bounded 3 GiB/max and 2500 MiB/high after
-the verified 2 GiB OOM, retaining per-stage logs. No compiler limit or code
-changes; no commit/push until the complete gate passes.
-
-Bounded 3 GiB retry is live as
-siox-job-3000-1791798296892611558-3172968.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791798296892611558-3172968.log;
-stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance-3g.utEqTc.
-Frozen source/test/core hash remains
-3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
-Poll this exact handle without restarting after an observation interruption.
-
-3172968 passed local CI completely, including both full suites, strict Clippy
-and both 239-program ordinary corpora, then OOM-killed while compiling the
-default debug float_sqrt test. It is not a passing full DWARF acceptance.
-3354612 is a bounded, deliberately interrupted GDB diagnostic (not a compile
-pass): repeated process_select/selected_value recursion widens loop operands
-and loses branch-local shared DAG values. SourceMap line scanning is sampled
-above that recursion, not established as the memory root cause.
-Own selection guards in value_types.rs/values.rs and debug/inline_values.rs.
-Keep recorded return scopes and activity-sensitive branch arms; pure synthesized
-loop muxes can use the existing shared SSA selection path. Validate against the
-actual float_sqrt program and selected-source-stop regressions before retaining.
-
-First selection-guard trial 3392396 was stopped as an inconclusive diagnostic,
-not accepted: it still grew above 1.6 GiB without producing an executable.
-Source trace explains the missing distinction: global activity flags include
-the original caller expressions of captured native formals. Those calls/checks
-do not execute inside the callee again, but their inherited flags still force
-branches and per-arm cache keys on pure loop muxes. Cut traversal at actual
-native parameters (except payload-free source literals), preserve fresh source
-calls/checks and recorded return arms, and allow proven pure selections to
-share inactive-independent SSA keys. Validate before retaining the refinement.
-
-3441067 proves the refined guard: debug float_sqrt compiles/runs within the
-original 2 GiB cap, child maxrss 783612 KiB, with native assertions and DWARF
-verification. Selected branch/shadowing and checked/effectful regressions pass.
-Added permanent restoring-root loop/SSA structural regression with a nested
-caller-owned identity input; it passes. 3458195 then passes 21/22 bitpack DWARF
-fixtures but reveals a real GDB enum return ABI issue (High reads 255 instead
-of 1). Pure SSA selection exposes unspecified upper bits from a native i1
-return. Reuse existing Register return normalization for exact sub-byte scalar
-layouts, keeping signed extension and caller decoding in the common codec.
-No fake bits/inspection-derived operand formats; validate before full acceptance.
-
-3477853 is terminal exited/success/0, peak 1610874880: the sub-byte Register
-codec fixes the bitpack enum finish regression, the permanent loop/SSA fixture
-passes, and strict Clippy passes. Additional selection/ABI code and the new
-fixture remain uncommitted pending their own full acceptance.
-Finalize the user's authorized latest-main merge separately: the staged
-source/test/core hash is exactly
-3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4,
-matching the snapshot that passed complete local CI in 3172968 (both full
-suites/21 DWARF fixtures, strict Clippy and both 239-program ordinary corpora).
-The subsequent extra debug-corpus OOM is recorded above, not claimed green.
-This merge includes upstream 0fa7091, conflict/call-span integration, and the
-previously verified CFG formal companion work. Do not sweep the later untested
-changes into it. Preserve foreign AGENTS12/chat441/.codex, backup branch/stash
-and sibling doc edits. No push; full DWARF completion remains unproven.
-
-### 2026-10-12 — Claude — integer local returned as a family
-
-Branch `fix/small-lowering-bugs`. `narrow_to_type` (source_processes.rs)
-carried the returned value's layout onto the narrowed result whatever its
-width: an `integer` local returned from `-> float` produced a 32-bit value
-with a 64-bit integer layout and failed validation. The layout now carries
-over only at the declared width. `compiler.rs`: a scheduler-projection
-failure after an already-reported error is not echoed as a second failure.
-Next (owner ruling): a non-constant loop bound in hardware is legal for
-simulation and warns; runtime loops in hardware processes/functions are the
-follow-up.
-
-### 2026-10-12 — Claude — hardware loops with non-constant bounds simulate
-
-Branch `feat/procedural-hardware-loops`. Owner ruling: a hardware loop whose
-bound is not constant is legal for simulation and warns (W-P019
-`non_constant_loop_bound`). Mechanism:
-- Hardware lowering flags such a loop (`Lowering::procedural_loop`: inline
-  `for` in calls.rs, process `for` in control.rs). `lower_body` then rolls the
-  item's drivers/event updates and collected name errors back and records it
-  in `Design::procedural_items` (instance path + item span).
-- `source_processes::lower` lowers each recorded item with `lower_process`
-  under the instance path, instance parameters folded as constants, as a
-  `Reactive` procedural CFG sensitive to every signal it reads
-  (`procedural_sensitivity`). Reactive from the start, so writes do not settle.
-**Codex:** `Design` gained `procedural_items` (struct literals need it).
-
-### 2026-10-12 — Codex — resumed DWARF validation and final upstream sync
-
-User authorized latest-main integration and goal is active again. Graph refresh
-3503191 completed exited/success/0, 5512 nodes/15799 edges/258 communities.
-959bac3 integrated fetched 0fa7091 and verified CFG formal companions; docs
-0ab47cf matches it. Two upstream commits landed during verification, now
-bdda008: retain the family's actual-width layout for returned integer locals
-and suppress a cascading projection failure after diagnostics. Integrate this
-small follow-up too, preserving both histories and the uncommitted selection/
-sub-byte ABI fixes and 22nd regression. Temporarily stash shared chat only;
-AGENTS12/.codex and sibling repos stay untouched. Full frozen acceptance follows.
-
-### 2026-10-12 — Codex — latest main frozen at c127af6
-
-Before validation, a read-only remote check found c127af6, including the
-hardware-loop simulation follow-up. Restarted the uncommitted merge against
-that fetched tip and preserved all local tracked changes in safety stash
-b7f2e841eb9d91169c540d73b787924185150307. Restored the DWARF selection guard,
-sub-byte return codec and 22nd regression without staging them for this merge.
-Kept both chat histories; foreign AGENTS12 and historical chat441 stay unstaged.
-Validate the combined worktree with full local CI, then both debug corpora
-and native debugger smokes. No push; full DWARF acceptance remains unproven.
-
-Acceptance is live as siox-job-3000-1791818501710265372-3709483.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791818501710265372-3709483.log.
-Frozen source/test/core hash:
-ea9def3c01f8751eb7eeca9cdd718cc5f2e43a8f7e4dfb833f56895598606731.
-Use the measured 3 GiB gate budget (prior whole-corpus 2 GiB OOM); keep one
-Cargo job. Poll this exact live handle and do not edit Rust during acceptance.
-
-3709483 is terminal failed/exit-code/1: the new upstream hardware-loop
-LoweringContext initializer omits the three source-debug context fields.
-The other five initializers already use None/empty source stacks. Add those
-same defaults to the procedural hardware context; no runtime behavior change.
-The failed build skipped corpus instead of exercising stale binaries.
-
-Corrected frozen acceptance: siox-job-3000-1791818801977310698-3730900.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791818801977310698-3730900.log.
-Source/test/core hash:
-a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
-Poll this job; no Rust changes while it is live.
-
-Own sibling siox-paper/docs/{architecture,testing}.md for the selection/return
-codec description and restoring-root regression. These documentation-only
-updates do not change the frozen compiler or current acceptance inputs.
-
-3730900 is terminal exited/success/0, peak 2623414272 bytes. Complete local CI
-passed: both full suites (22 DWARF fixtures each), strict frontend/all-target
-Clippy, formatting/artifact gates and both ordinary 239-program corpora.
-Both debug corpora also passed 239/0, including float_sqrt. Native FIFO/wide
-GDB source breakpoints, inspection, stepping and ordinary/debug VCD parity
-passed. Graph update/clustering completed: 5520 nodes/15829 edges/253 communities;
-existing third_party/libfst extraction warnings remain, not compiler failures.
-Working and staged source/test/core hashes both match the frozen accepted
-a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
-
-Commit the authorized c127af6 integration together with the now-verified owned
-selection/return-codec fixes and 22nd regression. This avoids committing an
-intermediate source snapshot different from the full accepted gate. Message
-names both the upstream integration and local DWARF changes; AGENTS12,
-historical chat441 and .codex remain outside the commit. Companion docs get a
-separate commit. No push requested. Goal stays active: remaining signature/
-companion transport audits are not proved by this finite accepted corpus.
-
-### 2026-10-12 — Codex — numeric-family signature audit
-
-Previous turn made authoritative progress: compiler 6c73cdc and docs dd65321,
-full accepted job 3730900 (four corpora, both suites/22 DWARF fixtures, GDB).
-No live jobs. Own tests/debug_info.rs for a concrete remaining signature gap:
-std float format conversion and float/sfixed round trips are compiled by the
-corpus but not checked for actual formal/return types and finish values.
-Reuse native ordinary/debug/VCD/GDB fixtures; do not add an abstraction or
-change production LLVM without a reproduced fault. Preserve foreign edits.
-
-3897949 stopped at formatting only; corrected the single wrapping difference.
-3898937 is terminal exited/success/0, peak 367722496: the new conversion audit
-passes ordinary/debug assertions, VCD equality, DWARF verification and actual
-GDB argument/finish types/values under both wrapper inline hints. No production
-fix is justified. Tighten GDB evidence to require each positive/negative
-conversion separately in procedural and hardware caller stacks, then bitpack.
-
-3904522 found the procedural source types are namespace-qualified, so the first
-probe matched hardware only. Normalize qualified type spelling in the test,
-not compiler types. 3910186 then reproduces a real shared-function entry fault:
-std float32-to-float16 formal reference is NULL at the function breakpoint.
-3914975/3918472 are bounded diagnostic jobs, not accepted tests. Native
-disassembly proves sx.fn.6.from receives the full i32 in edi, yet GDB stops
-at +7 before reference reset/copy/publish (+14..+51). This is not pruning.
-inline_body already separates draft native input inspection from its body,
-but only when debug_arguments is Some; shared Process functions instead bind
-existing cache.parameters and therefore skip that boundary. Own the common
-debug/inline_values.rs entry guard: every native source body needs the existing
-debug.arguments.available boundary after setup, without a new argument or
-reevaluation. Retain test requirements for both hardware/procedural contexts.
-
-3924227 disproves the block-boundary-only fix: shared input stops are still
-early. Trace the sibling value emitters: layout reads already return captured
-native inputs before applying their declaration span, but process_value_at
-applies the declaration span first and process_value reaches Parameter after
-its location guard. Those are references to captured inputs, not executable
-declarations. Match the layout emitter's existing fast-path ordering in the
-two scalar emitters, retaining the consumer's actual source location. Recheck
-the full regression; do not call the first attempted fix accepted.
-
-3939549 and 3957651 still reproduce the early stop. Temporary diagnostic test
-3950404/3962548 produced the exact TestExecutable IR on disk, not just the
-hardware-only CLI dump. Its shared input setup and reference publication are
-already line zero. The binary snapshot uses select(bit, high, low), which LLVM
--O0 lowers to actual conditional branches. LLVM DwarfDebug::findPrologueEndLoc
-stops at initial control flow and chooses an early scope-line fallback; moving
-locations or adding a fall-through block cannot fix that. Verified against the
-official LLVM DwarfDebug.cpp implementation and native disassembly.
-Remove the temporary diagnostic test and all unsuccessful production edits.
-Own process/logic.rs packed_discriminant: express its binary mapping as
-low + zext(bit) * (high - low), using the same std-derived codes and LLVM
-integer wrapping. No branch before source entry, no fake enum values, no
-new input or execution demand. Preserve the existing metadata selection.
-
-3975113 stopped at formatting only; 3976837 is terminal exited/success/0,
-peak 1280028672: the branch-free mapping fixes the full GDB entry/finish audit
-in default and bitpack under both hints and caller contexts, and strict Clippy
-passes. All unsuccessful location/fast-path edits and temporary diagnostic
-code are removed. Add a constant-code regression for arbitrary reversed std
-codes, width wrapping and unchanged nonbinary metadata forwarding.
-
-The exact IR diagnostic also found a concrete remaining provenance audit:
-shared std float32-to-float16 conversion returns an inspection layout with
-range 0..15 instead of the target format's 5..-10. Numeric finish is correct;
-this fixture does not inspect returned logical labels. Check wide fixed-family
-return companions next before claiming that every format transport is done.
-
-3987987 found a one-line wrapping difference in the new unit's formatter gate.
-Cancelled the conclusively failed run, not an observation interruption; its
-stop status is not acceptance. Apply the exact formatter output and require a
-standalone format check before the retained full-CI run so failure exits early.
-
-Frozen acceptance is live as siox-job-3000-1791823205927388896-3992561.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791823205927388896-3992561.log.
-Poll this handle; no Rust edits while it runs. Own sibling architecture/testing
-documentation for the binary mapping and numeric-family signature regression;
-these doc updates do not modify acceptance inputs. No push.
-
-Frozen source/test/core hash:
-d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715.
-TODO/companion docs now name the actual remaining target-format range audit,
-rather than treating the newly verified numeric signatures as still untested.
-
-3992561 is terminal exited/success/0, peak 1935474688 bytes. Complete local
-CI passed: default/bitpack full suites with 23 DWARF fixtures each, the
-reordered-code/wrapping unit, strict Clippy and formatter/artifact gates.
-All four current ordinary/debug corpora passed 239/0. Native FIFO/wide GDB
-breakpoints, source inspection/stepping and VCD parity passed. AST/community
-refresh completed (5522 nodes, 264 communities); existing libfst parser
-warnings remain unrelated to compiler validation. Frozen source/test/core
-hash d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715
-is unchanged. Commit only the branch-free mapping, two regressions, TODO and
-owned appended log; preserve foreign AGENTS12/chat441/.codex. Companion docs
-separately. No push; the explicit target-format return-range audit remains.
-
-### 2026-10-12 — Codex — target-format return-range regression
-
-Previous turn committed accepted compiler 63d6194 and docs 990b3b9. No live
-jobs. Own tests/debug_info.rs, then IR source-process lowering only if the
-failure is reproduced. Check sfixed<8,4> to sfixed<81,4> return snapshots and
-logical labels 76..-4 through procedural/hardware callers, both wrapper hints
-and changing positive/negative inputs. Ordinary execution must pass first;
-do not manufacture companion planes or weaken unavailable-bit checks.
-Preserve foreign AGENTS12/chat441/.codex. No push.
-
-4161215 passes ordinary/debug native assertions and DWARF verification, but
-leaves the sfixed81 frame before a whole return snapshot appears. That method
-actually emits only its 64-bit kernel word; padding it for inspection would
-violate the established unavailable-bit contract. Keep that absence truthful.
-Use a complete 81-bit Word family conversion instead: binary Bit storage,
-unchanged raw bits, source range 76..-4 to target 72..-8. It tests logical
-return labels without demanding an unconsumed plane or extending missing bits;
-force both inline hints to cover actual shared Process copies as well.
-
-1255/7833/18649 are failed ordinary-language probes, not DWARF evidence:
-the generic Bit-backed form loses bounds in checking, and the indexed custom
-From constructor reaches an incomplete ordinary Process block. Remove these
-probes; do not fix unrelated language boundaries under this goal. Extend the
-already-passing numeric-family fixture instead. Its debug compile uses the
-compiler API to inspect actual source-call and used shared-function return
-layouts before the same native/GDB/VCD checks. Require the known target
-float16 5..-10, float32 8..-23 and sfixed8 3..-4 ranges independently of
-whether a return companion plane was consumed. No generated fake values.
-
-44098 confirms the original concrete failure in canonical IR: used
-std::float::from value1786 returns range0..31, expected8..-23. Own the common
-inline_with_self_format return descriptor and matching shared Process copy.
-Reuse its already-known explicit target layout; do not change executable
-value widths, materialize missing bits or alter argument requests. Add the
-target shape to shared signatures only for methods returning their Self family,
-so different target ranges cannot overwrite one shared return description;
-kernel-number helpers continue sharing across formats.
-
-52532 is terminal exited/success/0, peak 1030205440: canonical return ranges,
-native assertions, GDB entry/finish checks and VCD/DWARF parity pass default
-and bitpack under both wrapper hints. Strengthen the same fixture with two
-16-bit targets (binary16 M10 and bfloat16 M7) from the same binary32 input;
-require both target ranges and both actual return bit patterns separately in
-procedural/hardware stacks. This tests the shared-signature separation rather
-than merely observing a single metadata overwrite.
-
-67419/76998/85444 exposed test provenance assumptions, not a production
-regression: one conversion has the std float type-field span rather than an
-explicit constructor span. Check actual call-site lines when available, valid
-target formats for declaration-derived spans, and independently require both
-used shared binary32-to-16-bit function ranges. 98546 is terminal
-exited/success/0, peak 1141551104: binary16 and bfloat16 layouts and actual
-finish patterns pass in both packing modes, both hints and caller contexts;
-strict Clippy passes. No failed wide/custom probes remain. Freeze Rust for
-full acceptance before committing this metadata/signature change. No push.
-
-Frozen acceptance: siox-job-3000-1791828977283331750-116642.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791828977283331750-116642.log.
-Source/test/core hash:
-5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
-Poll this exact job; do not edit Rust while it runs. Own companion
-architecture/testing documentation for explicit return ranges and same-width
-format separation. TODO/docs updates do not change acceptance inputs.
-
-### 2026-10-12 — Codex — DWARF acceptance checklist
-
-Continuation confirmed; acceptance job116642 is authoritatively running.
-Default tests passed; bitpack tests are still active. Source remains frozen.
-Own a short companion docs/dwarf-audit.md checklist mapping the documented
-source-debugging contract to named permanent checks. Distinguish truthful
-unavailable values and debugger limitations from unfinished implementation;
-do not treat optional-tool test success alone as evidence of GDB execution.
-Both GDB and llvm-dwarfdump are installed on this host. Preserve foreign edits.
-
-Job116642 now passed both full suites (23 DWARF checks per packing mode),
-formatter, artifact checks and strict Clippy. The exact service remains live,
-currently compiling the ordinary corpus float_sqrt_test; no restart or source
-edit. New companion dwarf-audit.md records the finite documented acceptance
-requirements, named checks and explicit supported limits; testing.md links it.
-Commit/acceptance remain pending all four corpus runs, native GDB smoke and
-graph refresh. Verify the same source hash and terminal service status first.
-
-### 2026-10-12 — Codex — DWARF TODO closure review
-
-Job116642 remains live; both ordinary corpora passed 239/0. Debug corpora,
-GDB smoke and graph refresh remain. Own only the native-debugging TODO item:
-move its completed history to the existing companion testing/audit documents,
-retaining concrete pending acceptance steps and the no-new-demand invariant.
-The audit checks the actual Direct/Register/Memory return variants and packed,
-literal/runtime-string views; wide/odd/partial source frames have permanent
-checks, so open-ended transport-audit wording is no longer a concrete task.
-Foreign companion docs/language.md is now dirty; preserve it, do not stage it.
-
-Job116642 is terminal exited/success/0, peak 2607013888 bytes. Both full suites
-passed all 23 DWARF fixtures, strict Clippy/artifact/format gates passed, and
-all four ordinary/debug default/bitpack corpora passed 239/0. GDB smoke logs
-prove FIFO/wide breakpoints, inspection, stepping and VCD parity in both build
-modes. Source/test/core hash remains
-5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
-AST/community refresh completed (5523 nodes, 242 communities); existing libfst
-graph-extraction warnings are not compiler faults. The finite requirement
-review includes every backend return variant and documented supported layout;
-truthful pruning/unavailable snapshots and GDB classifier limits remain explicit.
-Record acceptance in companion dwarf-audit.md, remove the completed native
-TODO history, then commit only owned production/regression/TODO/appended log.
-Companion architecture/testing/audit commits separately; no push.
-
-### 2026-10-12 — Claude — generic struct value parameters size port fields
-
-Branch `fix/generic-struct-value-params`. `struct_fields` (ir/lower/layout.rs)
-substituted only type parameters, so `struct Bus<D: integer> { data:
-unsigned[D] }` behind a view-typed port lowered `data` at width 0 in the
-instance. Value parameters now substitute as expressions (new
-`subst_type_values` in lower_helpers/substitute.rs). Found while writing the
-bus-interface libraries in /home/max/siox-libs (separate repos).
-
-### 2026-10-12 — Claude — arrays of view ports; core::cmp defaults
-
-Branch `feat/view-port-arrays`, for the bus-interconnect libraries.
-- `down: Bus[N] Requester` applies the view per element. The parser now
-  normalizes a view on an array to an array of views (`apply_view`,
-  syntax/parser.rs; `type_str` prints it back as written); lower_body
-  (ir/lower/body.rs) and the checker's input-leaf check (types/collect.rs,
-  types/assignments.rs) look through the indices.
-- core/cmp.siox: `gt`/`ge`/`ne` defaults use operators (`rhs < self`), not
-  `rhs.lt(self)`. A swapped method call made an `integer` generic parameter
-  the receiver (`x > N`), which had no impl and lowered to Unknown.
-
-### 2026-10-12 — Claude — three library gaps
-
-Branch `fix/library-gaps`.
-- `fold_const` (ir/lower/collect.rs) resolves a character-literal constant
-  against its declared enum: `const OK: Bit = '1'` was unknown in hardware.
-- std/logic.siox: `impl From<Bool> for Bit`. The assignment-mismatch help
-  (types/assignments.rs) suggests `T(...)` only when `conversion_exists`
-  (new, types/calls.rs, shared with `check_conversion_route`).
-- Testbench DUT bindings match indexed leaves (`down[2].rdata`), so
-  `.down = wires` and `.bus = wires[2]` link DUT to DUT.
-
-### 2026-10-12 — Claude — error spans and library roots
-
-Branch `fix/diagnostic-spans-and-roots`.
-- derive.rs: `derive_scheduler_forms` returns `SchedulerError { message,
-  span }`, the span of the process that failed. lower.rs used the *first*
-  process's span for every projection failure.
-- compiler.rs `entry_roots`: only the entry file's uninstantiated entities are
-  roots (object, IR and check modes). Imported modules are libraries.
-- A generic root checked on its own (`has_unbound_parameters`,
-  ir/lower/diagnostics.rs) skips W-P019 deferral, E-P017 for unsized arrays,
-  and the projection error (`Design::parametric`).
-**Codex:** `Design` gained `parametric: bool` (struct literals need it).
-
-### 2026-10-12 — Claude — merged main into feature/native-dwarf (#72)
-
-User asked to resolve #72's conflicts and merge it. Only TODO.md (kept the
-branch's five open hardware-lowering entries; main's side was empty) and this
-log (both appends kept) conflicted. Code auto-merged with #68–#71; fmt, both
-clippy gates, build and tests passed locally on the merged tree before push.
-**Codex:** pull `feature/native-dwarf` before pushing to it again.
-
-### 2026-10-12 — Claude — #72 CI is red on LLVM 22; handing back to Codex
-
-The user asked me to merge #72, then to leave the fix to Codex. Not merged.
-After the main merge (e94a6a7) the PR is mergeable and GitHub CI ran for the
-first time (run 38307691076). The frontend job passes. The LLVM job fails in
-"Test default backend":
-- `tests/debug_info.rs`: 16 of 23 tests FAILED, then the test binary died
-  with SIGSEGV (signal 11), so the harness never printed the failure bodies.
-  Failing: complete_source_returns_do_not_invent_missing_logic_planes,
-  direct_dwarf_supports_source_steps_and_persistent_values,
-  expression_branches_preserve_shadowing_and_selected_source_stops,
-  effectful_source_frames_share_actual_cached_results,
-  expression_inline_calls_keep_source_frames_and_value_bindings,
-  hardware_expression_calls_keep_source_frames,
-  large_aggregate_returns_match_the_debugger_finish_abi,
-  mixed_partial_returns_keep_wide_array_and_real_fragments,
-  narrow_source_consumers_do_not_fabricate_binding_bits,
-  odd_sized_aggregate_returns_keep_inspectable_source_frames,
-  packed_expression_bindings_expose_logic_companions,
-  repeated_inline_calls_keep_locals_and_source_frames_across_await,
-  source_real_returns_match_the_debugger_finish_abi,
-  source_string_returns_match_the_debugger_finish_abi,
-  wide_source_returns_keep_declared_bindings (+1 earlier in the log).
-  Passing: conversion_and_non_enum_resolve_keep_source_signatures,
-  checked_and_effectful_aggregates_preserve_demand_and_order,
-  independently_selected_nested_partial_returns_keep_source_fragments,
-  mixed_aggregate_returns_match_the_debugger_finish_abi,
-  pure_loop_muxes_keep_shared_debug_ssa,
-  partial_aggregate_returns_keep_only_demanded_fragments,
-  jointly_demanded_partial_returns_share_source_fragments.
-- Locally the same merged tree passes everything through clippy all-targets
-  (fmt, frontend check/clippy, build, test, test bitpack). The difference is
-  the toolchain: inkwell's `llvm22-1` here links the system **LLVM 23.1**
-  (`/usr/lib/libLLVM.so.23.1`; no LLVM 22 installed) with GDB 18.1 and
-  llvm-dwarfdump 23. CI links the pinned **LLVM 22** (apt.llvm.org) with
-  Ubuntu's GDB. So the DWARF path has only been verified against LLVM 23.
-- Reproducing: Arch has `extra/llvm22` 22.1.8 alongside 23 (needs sudo), then
-  build with `LLVM_SYS_221_PREFIX` pointing at it. Running the test binary
-  with `--test-threads=1 --nocapture` should show which test segfaults and
-  the assertion bodies the crash swallowed.
-- Not caused by the main merge as far as I can tell: code auto-merged, only
-  TODO.md/chat.md conflicted. I could not get CI on the pre-merge tip (a76a029):
-  GitHub runs no PR CI while a PR conflicts with main, which is also why #72
-  never had checks before. Probe PR #73 is closed and its branch deleted.
-
-Review notes, none blocking:
-- Debug metadata (`InlineCall` wrappers, inline-call ranges, source bindings)
-  is built on every compile, not only with `-g`. Measured ~7% more Process IR
-  values on a small design (80 → 86); constant folding unaffected there.
-- `arena_constant_integer` (ir/process.rs) does not look through
-  `InlineCall { operand, .. }`. One-line robustness fix; no regression seen.
-- HOUSERULES' guarded-run defaults to `MemoryMax=2G`, below CLAUDE.md's
-  budgets (~8G release build / LLVM emit, ~12G full ci-local), and its
-  host-wide flock serializes every agent's jobs.
-
-### 2026-10-12 — Codex — align LLVM 23 bindings and verification
-
-Owner requests fixing the LLVM 22 CI/bindings versus actual local LLVM 23
-toolchain mismatch. Own Cargo.toml/Cargo.lock, .cargo/config.toml, CI and build
-documentation. Use the previously probed exact Inkwell c8234a0 commit with
-llvm23-1-prefer-dynamic; released tag 0.10.0 still lacks LLVM 23 features.
-Enable llvm-sys strict-version checking, install/select LLVM/Clang 23 in CI,
-and verify the pinned Rust 1.90 frontend/native/bitpack/corpus/debug gates.
-Do not merge latest main or change language semantics under this task. Preserve
-foreign AGENTS12/chat441/.codex. Companion README/simulation docs separately.
-
-Focused job399714 stopped before compilation because the manually migrated
-lockfile omitted Inkwell internals' new syn3 dependency. Cargo's offline targeted
-update added syn3 only, preserving existing versions. Job401316 is terminal
-exited/success/0, peak824119296: Rust1.90 locked all-target/all-feature checking
-passes with LLVM23 bindings and the actual LLVM23.1.1 installation. No Rust
-API edits needed. The official apt LLVM23 package index provides23.1.2 for
-Ubuntu Noble, matching the strict23.1 requirement. Freeze source/config for full
-default/bitpack native and debug corpus acceptance before scoped commits.
-
-Full gate: siox-job-3000-1791839858088072048-406157.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791839858088072048-406157.log.
-Frozen source/config/build/README hash (includes .cargo strict configuration):
-3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
-Poll this exact service; no source/config changes while it runs. Documentation
-outside the frozen inputs can be completed without changing verification.
-
-Both full suites (23 DWARF fixtures each) and strict Clippy passed. The first
-ordinary corpus is still progressing after the slow numeric cases. Its measured
-duration projects the four-run gate beyond the default one-hour limit. Systemd
-does not accept RuntimeMaxUSec through live set-property on this host; a
-job-specific runtime drop-in and daemon-reload raised this same service's limit
-to two hours. MainPID406184 is unchanged, MemoryMax stays3GiB, and no source or
-verification restart occurred. The repository launcher defaults are unchanged.
-
-### 2026-10-13 — Codex — LLVM 23 alignment accepted
-
-Job406157 is terminal exited/success/0, peak 2621702144 bytes. Both complete
-test suites passed all 23 DWARF fixtures, strict frontend/all-target Clippy and
-format/artifact gates passed, and all four ordinary/debug default/bitpack
-corpora passed 239/0. GDB FIFO/wide smoke checks prove source breakpoints,
-inspection, stepping and VCD parity in both build modes. Rebuilt sioxc links
-libLLVM.so.23.1; the actual local toolchain is LLVM/Clang 23.1.1. AST/community
-refresh completed (5523 nodes, 242 communities), with existing libfst parser
-warnings only. Frozen source/config/build/README hash remains
-3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
-Commit only Cargo/lock, strict config, LLVM23 CI, README and this appended log;
-preserve foreign AGENTS12/chat441/.codex. Companion build/simulation/debug audit
-documentation separately. This is local CI-equivalent verification, not a
-claim that the new GitHub workflow has run. No push requested for this change.
-
-### 2026-10-13 — Codex — push LLVM 23 fix onto current PR #72
-
-Owner requests pushing and running GitHub CI. PR #72 now contains Claude's
-e94a6a7 main integration and 0063f83 findings; preserve both commits. Apply the
-already accepted 74cd66c LLVM fix in isolated /home/max/siox-llvm23-ci, resolving
-only the append-only chat conflict by retaining both sides. Relative to the PR
-head there are no Rust, std, runtime or test edits. Original shared worktree and
-foreign AGENTS/chat/.codex remain untouched. Validate the rebased patch locally
-before a fast-forward PR-branch push, then monitor the exact new GitHub run.
-Companion docs 7336739 are already pushed to siox-paper/main.
-
-Frozen PR-integration source/config/build/README hash:
-c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
-Local gate: siox-job-3000-1791867617135150905-713873.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791867617135150905-713873.log.
-Use the retained stage directory printed in that log. One Cargo job, measured
-3GiB cap, two-hour bound from launch. Reuse the original target cache (the
-isolated target symlink also preserves the GDB script's compiler path). Source
-is frozen during this job. GitHub CI remains pending the new fast-forward push.
-
-Job713873 is terminal exited/success/0, peak2210426880 bytes. Both full suites
-passed23 DWARF fixtures each, strict Clippy/format/artifact gates passed, and
-both current239-program corpora passed239/0. Native FIFO/wide GDB smoke checks
-passed source stepping/inspection and VCD parity. Frozen integration hash stays
-c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
-Commit the LLVM setup patch onto the preserved PR head, then perform the owner-
-authorized fast-forward push and monitor GitHub CI on that exact new SHA.
-
-### 2026-10-13 — Codex — update CI to stable GDB 18.1
-
-Owner requests updating CI's debugger after run38353377727 failed11/23 DWARF
-fixtures with Ubuntu GDB15.1. Latest official stable release is18.1, matching
-the accepted local debugger. Own only CI and this appended log in the isolated
-PR worktree; preserve foreign shared-worktree changes. Build the checksum-pinned
-official release with Python support, cache its install and select it before
-all native tests. Add a fail-fast Python wide-integer/API check; do not narrow
-source types, skip debugger tests or change compiler/test semantics. Verify the
-workflow recipe and existing debugger fixtures before committing.
-
-Verification job: siox-job-3000-1791871443637801798-890200.service;
-log /home/max/.cache/siox-jobs/siox-job-3000-1791871443637801798-890200.log.
-It executes the workflow's actual source-build and preflight blocks, then both
-23-fixture DWARF suites and native GDB smoke under the new install. Source
-archive SHA512 passed; YAML/bash parsing and actionlint1.7.12 passed. Compiler,
-std, runtime, unit tests and corpus inputs are unchanged from accepted job713873.
-Do not restart this live job after an observation interruption.
-
-Job890200 built/installed the exact18.1 archive successfully but preflight
-rejected the C expression parser's unsigned __int128 spelling (syntax error,
-not an integer-conversion error). Remove that extra C expression rather than
-adding a separate compiled C fixture; the existing Siox wide DWARF tests check
-the actual conversion. Keep version/Python/API preflight and verify the retained
-fresh install plus both complete suites; no source-build restart is needed.
-
-Job960556 is terminal exited/success/0, peak2521534464 bytes. Version/Python/API
-preflight passed, both complete Rust1.90 suites passed all23 DWARF fixtures each
-(108.68s/108.79s), and the native FIFO/wide GDB smoke passed source stepping,
-inspection and VCD parity. Compiler/test/corpus sources remain unchanged; the
-full239/0 default/bitpack corpus gate from job713873 still applies. Pin the
-native runner to its current Ubuntu24.04 image so a cached debugger cannot
-outlive that image's Python ABI. Final actionlint/YAML/bash/diff checks before
-the scoped commit; hosted verification follows the ongoing PR push/CI task.
-
-### 2026-10-13 — Claude — starting tuples (branch `feat/tuples`)
-
-Owner asked for tuples after #72 (`docs/proposals/tuples.md`). Worktree
-`/home/max/siox-tup`. Expect edits to `src/syntax/{ast,parser,pretty,format}.rs`,
-`src/types/{mod,ast_types,expressions,inference,patterns,assignments}.rs`, and in
-`src/ir/lower/` the struct layout, aggregate assignment, `match` patterns
-(`control.rs`) and the process path's type/layout/pattern code in
-`source_processes.rs`. Representation: `Type::Tuple`/`Expr::Tuple`/`Pattern::Tuple`,
-`Ty::Tuple` in the checker, and in IR a synthesized struct per tuple type with
-fields `0`, `1`, ..; no runtime/ABI change. Please flag here before independent
-edits to those IR files until I hand off.
-
-### 2026-10-13 — Codex — parallel packed Logic-index fix coordination
-
-Owner approved the packed Logic scalar-index bug from TODO. I am working on
-fix/packed-logic-index in /home/max/siox-logic-index from afdd1ef, tracing
-SourceValues field/index metadata. Avoiding your tuple syntax/types/layout and
-source_processes.rs ownership; will flag here before touching an overlapping
-IR file. Changes stay isolated from this worktree; this entry is coordination
-only. Native/debug/default/bitpack parity is the acceptance target.
-
-### 2026-10-13 — Claude — tuples done (branch `feat/tuples`)
-
-Tuples are in (language §3.7a in siox-paper; `docs/proposals/tuples.md`
-retired). The checker has `Ty::Tuple`; `types::lower_tuples` then rewrites
-tuple types to the generic struct `(,)<A, B>` (generated module, fields `0`,
-`1`), tuple values to `{ .0 = a, .1 = b }`, and tuple `==` per position, so
-elaboration and IR see ordinary generic structs. Only `match` scrutinees and
-assignment targets reach lowering as `Expr::Tuple` (`arm_match_cond` /
-`tuple_assign_leaves` in hardware, `scrutinee_condition` / `lower_tuple_assign`
-in the process path). Also fixed on the way: `f(x).field` in hardware
-(`computed_field`), the width of enum/const path patterns in guarded process
-matches, and a tuple assignment that could not be laid out now fails closed
-instead of silently ending the process. Open, pre-existing: in a testbench,
-slicing a function parameter bound to a bare integer literal (`split(0xA5)`)
-is unsupported; a typed local works. Local CI green (default + bitpack,
-corpus with Siox-lang/siox-tests `feat/tuples`). The IR files flagged earlier
-are free again.
-
-### 2026-10-13 — Claude — benchmark harness; nested `xor` bug for IR
-
-`scripts/bench.py` builds release `sioxc` for default, `bitpack` and `simd`
-and reports compile time, compile peak memory, binary size and run time over
-the corpus's compile outliers plus `scripts/bench/throughput_test.siox` (a
-million clock cycles). `--compare before.tsv after.tsv` prints the change.
-Baseline in TODO.md (LLVM, Optimization measurements).
-
-For whoever owns IR next: `y = a xor b xor c` on `unsigned[8]` ports fails
-E-P017 in hardware (logged under TODO.md IR). Codex's ir-correctness debug
-build of 16:45 reproduces it too. I'm not touching it; next I'm looking at
-`real(sqrt(a))` in a testbench, which compiles ~50x slower than
-`let s = sqrt(a); real(s)` (source_processes.rs, conversion arguments).
-
 ### 2026-10-14 — Claude — LLVM TODO work merged (#77–#85), for Codex's awareness
 
 Merged, each with full local CI: `scripts/bench.py` (#77); CFG
@@ -6313,3 +5074,506 @@ struct/base/field maps and their actual generic/alias/view/privacy callers.
 Also reproduce the read-only hypothesis that unknown generic argument types
 can cascade a misleading bound diagnostic; do not call it fixed or a verified
 regression without a focused reproduction. The goal stays active.
+
+### 2026-11-12 — Codex — generic error-type diagnostic followup
+
+Verified checkpoint 75d5134 is committed locally and the worktree was clean.
+Own types/tests/calls.rs for focused red reproductions of the suspected
+generic-bound cascade: scalar and nested array/tuple error arguments must not
+produce a false unsatisfied-bound/type-consistency diagnostic. Healthy later
+arguments and other generic parameters must still be checked, including real
+bound failures and mismatched known tuple components. Compare ordinary trait
+namespaces and module order; do not restore namespace-based kernel privileges.
+
+Only after reproduction, own types/assignments.rs and the smallest shared Ty
+helper needed for error-aware inference/comparison. Preserve contextual literal
+inference, nominal/array metadata equality, caller frames and partial type
+information in generic bodies. No new dependency/syntax or memory increase.
+Then continue borrowed struct/base/field registries with their real callers;
+all five foundation sections remain in scope. New changes stay uncommitted
+until their new required gate is green; no push/PR/wiki publication.
+
+### 2026-11-12 — Codex — reproduced cascades and borrowed fields integration
+
+Red unit 1794517492671468580-3923738 is terminal failed/101 with all three
+generic_error_types groups failing as intended: an erroneous scalar creates
+a false Required bound failure and hides the integer/real mismatch in later
+healthy arguments. Fix the common type-argument inference used by bound,
+return and instantiated-body checking, preserving partially known aggregates
+and checking healthy arguments/other parameters. Own types/calls.rs in
+addition to the previously announced assignments.rs and Ty helpers/tests.
+
+The isolated borrowed-field patch removes field_decl_types and returns the
+original Type by checked owner DefId, including resolved bases and a cycle
+guard. Its preview 1794517486564379727-3923029 stopped before compilation
+because the new checkout lacks its libfst submodule; no passing claim. Bring
+only that reviewed source/test delta into this dependency-prepared checkout
+and run a fresh combined guarded preview. Own collect.rs, inference.rs,
+literals.rs, declaration_index.rs and obsolete map-clear test cleanup in
+items.rs/layout_cycles.rs. Preserve other agents' files and the actual corpus.
+No commit until green, no push, and no five-section completion claim.
+
+### 2026-11-12 — Codex — generic and field snapshot verification queued
+
+Focused unit 1794517674766282738-3928691 is exited/success/0: all 43 generic
+frontend cases pass, including all three originally red cascade groups and
+known-body/return/type-metadata checks. The integrated field-pointer tests and
+new native generic_inference test still require execution. Own that new test
+and the pending-only foundation proposal note. Subsequent preview launch
+1794517769717110330-3953036 is failed/75 (busy slot), not a test result.
+
+Queue the exact current integration snapshot with the normal shared lock,
+Rust 1.90/one Cargo job/host debug=1 and normal 2 GiB hard/1.5 GiB soft limits.
+Cached errors-fields drivers run the focused/all-frontend/Clippy/native preview
+then the complete prior acceptance matrix plus the new regressions. Use the
+new errors-fields-full log directory; preserve accepted combined-full logs.
+Freeze compiler, actual corpus and these cached drivers while queued/live.
+Launch or waiter success is not acceptance; inspect the actual child service.
+No commit/push until green; the estimate remains 86% for foundations only.
+
+### 2026-11-12 — Codex — repair verified queue handoff starvation
+
+The primary and companion waiters both lost the lock handoff again: their
+only child units 1794519666537315949-4057802 and
+1794519666537260449-4057804 are terminal failed/75 and ran no tests. The
+waiters release their temporary flock before the normal guarded service
+acquires it, so continuously queued peer jobs can starve them. Verified both
+MainPIDs (3954263 / 4048868) and stopped ONLY those blocked lightweight
+waiters. Both are inactive/dead/MainPID=0, with no running test child. This
+does not stop any peer or discard an in-progress compiler gate.
+
+Own scripts/guarded-run.sh, its tests and the minimal HOUSERULES usage note:
+add an optional --wait mode whose normal bounded service queues directly on
+the same shared flock. Keep default busy=75, hard/soft memory caps, isolation,
+one-job semantics and literal command forwarding unchanged. Queue time counts
+toward the service timeout; choose an explicit duration covering the measured
+peer queue plus full matrix, without raising memory limits or bypassing guard.
+
+Both owned compiler snapshots may now be integrated/reviewed while no gate
+for them is active. Bring only the reviewed companion source/tests into this
+checkout: original-owner field privacy/existence/order/counts, empty-binding
+body-check suppression, cycle recovery and natural field classification. Keep
+all healthy/partial binding validation and source spans. Update pending docs,
+then freeze ONE combined snapshot for focused/native and full acceptance.
+The earlier 43 focused tests remain the only new passing compiler evidence;
+all new changes stay local and uncommitted until the required fresh gate is
+green. All five proposal sections remain required; no push/PR/wiki authority.
+
+### 2026-11-12 — Codex — consolidated snapshot queued through normal guard
+
+The reviewed companion source/test delta is integrated locally, preserving
+primary pending changes and all peer corpus files. Mock-only launcher argument
+checks, Bash syntax, formatting and diff checks pass. --wait queues the normal
+bounded service directly on the shared lock; default busy=75 and all resource/
+isolation/literal-forwarding behavior remain unchanged. The real launcher
+integration test (including queued execution and isolated OOM) still must run
+when it can obtain the shared slot; do not run it inside an outer locked job.
+
+Freeze this ONE combined source/corpus/driver snapshot for the new borrowed-
+fields preview followed by the complete acceptance matrix, both native modes,
+all debug checks, actual corpora, diagnostics and waveform parity. Use Rust
+1.90, one Cargo job, host debug=1, normal 2 GiB hard/1.5 GiB soft limits and
+an explicit 3h service timeout covering the observed peer queue plus the
+previous measured 63m35s full matrix. This increases queue allowance, not
+memory or test omissions. New logs use borrowed-fields-full, preserving all
+old accepted and failed logs. No external waiter/relaunch loop is used.
+
+No new compiler acceptance or reproduction claim until actual child results;
+an active blocked flock is not running tests. The estimate remains 86% of
+foundations only, with all five sections required. No commit until both the
+compiler gate and launcher integration checks pass; no push/PR/wiki authority.
+
+### 2026-11-12 — Codex — first queued results and corrective integration
+
+Normal queued primary unit 1794520115749299351-4097445 acquired its lock
+without a handoff race and finished failed/101, peak 949,936,128 bytes. Three
+borrowed-field/alias/privacy checks passed; the next cycle fixture failed only
+because it searched for "cyc" in a message whose help, not message, says cycle.
+Use stable error codes and the actual self-dependency contract. The isolated
+string unit 1794520939947016970-4146207 then finished failed/101, peak
+1,067,831,296 bytes: all three new string groups and 51 interpreter tests pass,
+while the full frontend run is 786 passed / 6 failed. No native or full gate
+ran. Both units are terminal, so both owned snapshots may now be edited.
+
+Two other new fixtures need correction, not weaker assertions: consume the
+bad scalar field in a return so no separate no-effect statement error is
+introduced; generic bodies are deliberately checked at calls (items.rs), not
+abstractly. Remove the erroneous empty-bindings optimization/comment, retain
+known concrete body checks with unknown arguments, and test that actual rule.
+
+Integrate only the isolated string evaluator/test/native delta into primary.
+Own enum_values/tests.rs: string lengths are now initially known; retain a
+genuinely deferred packed-literal case and all exact source-span/order/no-
+duplicate checks across refresh. Do not hide the new early diagnostics.
+
+Own launcher integration test fixture setup: its tiny probe/exit/sleep/64 MiB
+OOM workloads use a temporary test-only runtime/lock with the real user-manager
+bus. No compiler, corpus or editor job uses that fixture, and all real probes
+still run through the normal bounded launcher. This lets serialization/queued
+execution/isolation tests run without modifying the host's actual compiler
+lock or interrupting peers. No global lock override is added to the launcher.
+The real manager is reachable through the retained bus with a fixture runtime.
+After corrections, rerun the full required gates; nothing is committed/pushed.
+
+Transport correction: the explicit D-Bus-address probe above did NOT reach
+the user manager when XDG_RUNTIME_DIR was replaced; do not treat that as a
+passed fixture check. This host uses its runtime systemd/private transport.
+The test-only runtime must retain access to that manager socket (a symlink in
+the disposable fixture) while isolating only its probe lock. Validate real
+manager reachability and the entire launcher test, or leave the gate failed;
+no unguarded workload fallback. The production launcher/global lock is unchanged.
+
+The corrected real launcher integration unit
+siox-guarded-run-integration-20261112 is terminal exited/success/0, coordinator
+peak 5,902,336 bytes under 64 MiB. Its normal child services verified literal
+arguments, propagated failure, default busy=75, blocked-then-executed --wait,
+2 GiB default cap and isolated 64 MiB OOM without a parent oom_kill event.
+The disposable test runtime retained the real systemd/private socket and was
+removed; no design workload or actual compiler queue used that fixture.
+The final success text now explicitly mentions queued execution; repeat the
+small integration check on this exact text before freezing the combined gate.
+
+Native string coverage now includes dynamic hardware indexing of both the
+inferred-length TEXT and labelled descending LABELLED arrays. Do not replace
+these with only foldable projections to obtain a passing result. Corrective
+compiler tests and complete native/corpus/UI/debug gates remain required.
+
+The exact updated launcher test passes again in
+siox-guarded-run-integration-v2-20261112 (exited/success/0, coordinator peak
+5,984,256 bytes). Its final line explicitly confirms queued execution and
+isolated OOM. That closes the launcher integration prerequisite, not compiler
+acceptance. Shell/format/diff checks also pass on the corrective snapshot.
+
+Freeze this combined primary snapshot (borrowed fields, corrected generic/
+recovery tests, typed strings, preserved early/deferred enum refresh cases and
+the tested normal queue launcher) for types-strings preview then the full
+matrix. Both generic_inference and string_constant_contexts native tests run
+in default/bitpack and ordinary/debug modes; the latter keeps runtime indexing.
+The original actual corpus is still 38f4e01 with its 20 peer files untouched.
+Use the normal --wait guard, Rust 1.90, one Cargo job, host debug=1 and unchanged
+2 GiB hard/1.5 GiB soft limits; 3h includes the peer queue. Preserve old logs
+and hashes, use types-strings-full logs for the new run, and do not edit source,
+corpus or the new cached drivers while queued/live. No commit or push yet;
+all five sections remain open and the foundation estimate stays about 86%.
+
+### 2026-11-12 — Codex — corrected recovery checks pass; deferred fixture repair
+
+Queued unit 1794522635235878497-75191 is terminal failed/101, peak
+1,086,447,616 bytes. All borrowed field/privacy/alias/cycle/kernel groups and
+all 44 generic-focused tests pass, including concrete body errors with no
+inferred bindings. The 16-case enum group stops at three assertions: the
+new packed-literal deferred fixture emits an unrelated E-P003 in this minimal
+provider environment, so it is not a valid quiet pre-normalization fixture.
+Native/full gates still have not executed. No OOM, timeout, skipped test or
+acceptance claim. This snapshot is now open because its unit is terminal.
+
+Repair only that fixture with an ordinary integer-array slice whose bounds
+are valid and whose metadata is deferred by the interpreter's current slice
+support. Supply the registered range provider required by that expression.
+Keep early ordinary/Unicode string cases and every exact diagnostic count,
+source-span, order and no-duplicate-refresh assertion. Add operand/diagnostic
+context to assertions for actionable failures. Do not weaken the contracts or
+implement an unrelated packed-value feature to make a metadata fixture work.
+
+The deferred cases now use [10, 20][0..1] / [10][0..0], with a source-declared
+registered range provider. Exact initial/final values, primary spans, error
+counts/order and repeated-refresh assertions are unchanged. Assertions include
+operand/diagnostic context. Ordinary and Unicode string lengths remain early-
+known. Only this test fixture and its pending proposal wording changed after
+the failed compiler unit; no evaluator or production path was weakened.
+Freeze this corrected primary source/corpus and unchanged types-strings
+drivers for a fresh normal --wait preview/full gate. Same Rust/profile/jobs,
+3h queue+work allowance and 2 GiB/1.5 GiB caps. Real launcher integration is
+already green on unchanged launcher code. No commit, push or completion claim.
+
+### 2026-11-13 — Codex — alias-derived conversion gate failure
+
+Unit 1794523918296588147-159507 is terminal failed/101, peak
+1,119,854,592 bytes. All 792 frontend tests, all 44 generic tests, all 16
+enum-refresh tests and all 51 interpreter tests pass; frontend Clippy passes.
+The first native probe rejects Packet -> Wrapped when Wrapped derives through
+PacketAlias. No string-native/full matrix ran, so this is not acceptance.
+
+I am repairing the shared checker conversion ancestry in types/calls.rs and
+adding alias/identity/fieldless-boundary regressions. Read original declarations
+by DefId and normalize written bases rather than walking the copied string
+registry. Keep the existing native regression, both debug/storage modes and
+full corpus gate. The prior snapshot is now unfrozen because its unit failed;
+all five foundation sections remain open. No commit or push until green.
+Rotate entries older than October 13 as required; history retains them.
+
+### 2026-11-13 — Codex — normalized struct ancestry; one combined queued gate
+
+The checker now follows original struct declarations by DefId and normalizes
+their written bases for total conversions. It no longer walks the copied
+string-keyed struct table. Projection to a base remains valid; constructing
+toward a derived type still requires every traversed link to add no fields.
+The new regression clears the compatibility map and checks aliases, transitive
+chains, both module orders, unrelated owners, field-adding boundaries and
+kernel wrappers. The native regression that found the bug is unchanged.
+
+Preview-only waiter 1794568331084734830-1219289 was intentionally stopped
+BEFORE execution: its exact MainPID1221736 was a blocked flock with no children
+and an empty log, while peer CI PID1218238 owned the lock. Terminal dead/0 is
+not a test pass; no build or test was interrupted and peer CI was untouched.
+Replace only this waiter with preview && full under one normal --wait service,
+retaining the slot for full validation if preview succeeds. Three hours covers
+queue time plus the previously measured 63m35s full matrix; normal caps, Rust
+1.90, one Cargo job and host debug=1 are unchanged. Both native probes, both
+storage modes, generated-debug/GDB/DWARF and ACTUAL corpus gates stay enabled.
+
+Freeze this source, ACTUAL corpus and unchanged cached types-strings drivers
+from launch through the authoritative terminal result. All 20 peer corpus files
+remain untouched. The new ancestry test and native/full paths are not green
+yet; no commit, push or estimate increase. All five foundation sections remain
+required. Future suffix-folder/registry work is read-only until this gate ends.
+
+### 2026-11-13 — Codex — ancestry regression grammar correction
+
+Combined unit 1794568985926332580-1268526 is terminal failed/101, peak
+907,948,032 bytes. It passes 792 frontend cases and fails only the newly added
+ancestry test during parsing: source newtypes end with a semicolon and cannot
+also add record fields. Native/full checks did not run; ancestry is not yet
+validated. The source is now unfrozen for a fixture-only correction.
+
+Keep valid alias/kernel/unrelated-owner cases as source. Parse Extended as an
+ordinary record, then construct its field-adding base directly in the test AST
+to exercise the defensive conversion guard. This is not new accepted surface
+syntax. Preserve every conversion assertion, the cleared compatibility map,
+both module orders and both native probes; do not weaken production semantics.
+Re-freeze for preview && full under the normal three-hour --wait guard, with
+the same caps, Rust/profile/jobs, full actual-corpus/native/debug matrix and
+unchanged cached drivers. All five sections remain required; no commit/push.
+
+### 2026-11-13 — Codex — frontend ancestry green; native lowering trace
+
+Unit 1794569480633480190-1333038 is terminal failed/101, peak 930,406,400
+bytes. All 793 frontend tests (including normalized ancestry with the cleared
+legacy map) and strict frontend Clippy pass. The native generic/borrowed-field
+probe now passes checking/emission, but its executable returns unsupported for
+Process 1 block 0. The original alias conversion diagnostic is gone, not hidden.
+Native string/default+bitpack/full gates still have not completed.
+
+Own the native regression's failure diagnostics and then shared Process source
+lowering if its retained IR identifies a missing typed binding/layout. Dump
+the actual TestExecutable Process IR only on failure, rather than guessing from
+hardware-only CLI output. Keep the complete regression and all assertions.
+Run the focused native diagnostic through the normal guard; no production
+emitter/runtime workaround, discarded case, commit or push. Full five-section
+foundation scope remains active and its estimate is unchanged.
+
+### 2026-11-13 — Codex — native alias-derived layout root cause
+
+Focused diagnostic unit 1794569734188053522-1370912 is terminal failed/101,
+peak 325,771,264 bytes. Retained actual TestExecutable IR is
+/home/max/.cache/siox-jobs/tmp/siox-generic-inference-1477788-false/failure-ir.txt.
+Wrapped has no retained declaration/local layout; its local reads have unknown
+widths, so Process entry preflight correctly refuses them. Packet has its full
+256-bit layout and descending 7..5 array field. Generic results are correctly
+real, not an inferred first-literal return-layout bug in this case.
+
+Own ir/lower/layout.rs::struct_fields: normalize written aliases with the
+existing borrowed declaration normalizer before inspecting struct fields.
+The recursive inherited-base query currently sees PacketAlias as not a struct
+and silently loses the whole representation. Fix that common query, not LLVM
+preflight, runtime status handling or a one-off constructor layout. Add native
+assertions for the retained Wrapped layout and preserve execution/assertions
+in both debug/storage modes. No commit/push or five-section completion claim.
+
+Unit 1794571783477945220-1481979 is terminal failed/101, peak 755,245,056
+bytes. Unconditional normalization passes 792 frontend cases but breaks the
+existing constant-array/record-match layout regression. Internal declaration
+layout paths deliberately carry declared-name spans, not reference spans;
+the source alias normalizer correctly cannot resolve them as references.
+Preserve an already-identified terminal struct through struct_path_key's
+existing resolved/declaration identity query, and normalize other written
+types. Do not use an unknown-name fallback or weaken the existing regression.
+Re-freeze for the same preview/full gate, with all native probes/assertions,
+actual corpus, modes/debug checks, caps and cached drivers unchanged.
+
+### 2026-11-13 — Codex — alias layout native pass; open constant array shape
+
+Unit 1794571934215427524-1510673 is terminal failed/101, peak 924,655,616
+bytes. All 793 frontend cases and strict frontend Clippy pass. The generic/
+borrowed-field native test passes both ordinary and debug executions in the
+default storage mode, including Wrapped's full layout and descending labels.
+The next native test fails E-P017 for hardware TEXT[index], where TEXT is an
+open Char[] constant whose shared interpreter value already has two elements.
+Bitpack and the complete full matrix have not run; do not claim them green.
+
+Own ir/lower/constant_values.rs and its IR regression tests. Materialization
+currently requires an explicit array range and drops this known typed value.
+Complete only missing representation ranges from the checked value while
+materializing, recursively, preserving every declared label/direction/length
+validation. Reuse the same owned layout for binding; no second AST walker or
+shadow shape registry. Empty/open null-range semantics and packed/generic
+representations are not invented. Keep both original native probes, especially
+dynamic TEXT and descending LABELLED reads. Full five-section goal remains
+active, with no commit, push or estimate increase until the complete gate.
+
+### 2026-11-13 — Codex — open-array materialization green; constant attributes
+
+Unit 1794574171878896579-1654103 is terminal failed/101, peak 926,781,440
+bytes. All 794 frontend tests and strict frontend Clippy pass; the generic
+native probe passes ordinary/debug execution in default storage mode. The
+TEXT[index] hardware rejection is gone. The next native compile reaches a
+canonical scheduler-view error: LABELLED'left becomes an Invalid source value.
+No bitpack/full acceptance, commit or push is claimed.
+
+Own ir/lower/expressions.rs's system-attribute adapter and the existing IR
+constant regression. Its layout-only fallback does not know module constant
+shapes. Ask the existing shared constant interpreter about the original
+borrowed expression before falling back to signal/layout metadata. No new
+attribute evaluator or fabricated AST. Cover length/left/right/high/low and
+ascending with the fixture's source-defined nonzero Boolean encodings. Keep
+all native Unicode/open/descending cases and every runtime assertion. Full
+five-section scope and the complete actual-corpus/native/debug gates remain.
+
+### 2026-11-13 — Codex — constant attributes compile; native string IR diagnostic
+
+Unit 1794592048582872904-2519140 is terminal failed/101, peak 1,058,537,472
+bytes. All 794 frontend tests, strict frontend Clippy and the generic native
+probe's ordinary/debug executions pass. The constant-attribute scheduler-view
+error is gone; the string executable now reports unsupported Process 1 block 0.
+No bitpack/full acceptance, commit, push or estimate increase is claimed.
+
+Own the string native regression's failure diagnostics and the shared source
+lowering followup its actual TestExecutable Process IR identifies. Retain that
+IR on failure, including indexed values and layouts, before changing production
+code. Preserve all Unicode, open/descending array, metadata, dynamic-index and
+runtime assertions. Do not guess at a backend/runtime workaround or remove a
+case. The full five-section foundations scope and complete gate remain active.
+
+### 2026-11-13 — Codex — procedural open-string constant shape
+
+Focused unit 1794594862590995741-2659332 is terminal failed/101, peak
+344,866,816 bytes. Retained actual TestExecutable IR is
+/home/max/.cache/siox-jobs/tmp/siox-string-constants-2725984-false/failure-ir.txt.
+Process 1 is the procedural probe, not a hardware CFG. Its first() call indexes
+TEXT through value 60: a known two-character String with Char[]/len 0 and no
+layout range. LABELLED retains 6..4; hardware dynamic reads have concrete forms.
+The native backend already emits fixed character strings; the missing source
+binding extent prevents its ordinary array projection from selecting a region.
+
+Own source_processes.rs's existing literal_type helper, constant binding and
+constant-layout regression. Complete nonempty open constant literal shapes
+before lowering their initializer, counting Unicode characters rather than
+UTF-8 bytes. Preserve every declared fixed label/direction and leave empty/null
+semantics unchanged. Reuse the helper for its existing literal-array callers;
+no new AST walker, source table, LLVM/runtime bypass or discarded assertion.
+Keep all five foundation sections and the full acceptance matrix required.
+
+### 2026-11-13 — Codex — preview green; full native generic-alias diagnostic
+
+Combined unit 1794597217093749043-2781903 is terminal failed/1, peak
+1,610,874,880 bytes. Its preview passes all 794 frontend tests, strict frontend
+Clippy and both new native probes in default/bitpack, each ordinary/debug.
+Source b1223a0ccf2e191c8450de57db71c9b86c2356f90ab4914fdca158e7befdb472
+and actual corpus 04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match across preview and the four aggregate native/VCD timeline/declaration/
+cross-mode waveform checks, which also pass. Focused native groups pass.
+The wider direct-native gate stops at actual generic_data_aliases_test.siox:
+Process 0 block 0 assignment snapshot target 11/value 14 lack packed widths.
+The full Rust/corpus/diagnostic matrix has not completed; no acceptance,
+estimate increase, commit or push is claimed.
+
+Own the existing generic-data-alias integration regression's failure-only
+TestExecutable IR diagnostic, then the common alias/layout boundary identified
+by that retained CFG and its value layouts. Keep the corpus case, generated
+tuple/application identities, alias-derived record support and every existing
+native assertion. Do not guess a backend/preflight workaround or introduce
+leaf-name recovery. All five foundations sections remain required.
+
+### 2026-11-14 — Codex — generated tuple declaration identities
+
+Focused diagnostic 1794597949921118321-2846785 is terminal failed/101, peak
+375,709,696 bytes. Its actual TestExecutable dump is
+/home/max/.cache/siox-jobs/tmp/siox_generic_data_alias_3003808/failure-ir.txt.
+Snapshot target 11/value 14 are the pair binding/tuple constructor, with no
+type/layout; Packet's instantiated integer field is intact. Tuple lowering
+runs after resolution and generated tuple applications/declarations currently
+have no resolver identities, so the shared normalizer cannot consume them.
+
+Own resolve.rs's definition insertion boundary, types/tuples.rs, the compiler
+handoff and associated identity/native regressions. Give generated tuple
+structs, type parameters and references fresh generated-source spans and
+append their facts to the same resolver tables, preserving all existing IDs.
+Do not rerun resolution, add a layout-only/name fallback or weaken native
+snapshot validation. Keep all tuple/native cases and the complete acceptance
+matrix. Retain all five foundations sections; no acceptance/commit/push yet.
+Rotate October 13 log entries under the one-month retention rule.
+
+### 2026-11-14 — Codex — cross-file constant attribute spans
+
+Combined unit 1794680397888057267-553643 passed all 796 frontend tests,
+14 import cases, strict frontend/all-target Clippy, both generic/string native
+probes in all four storage/debug modes, four aggregate VCD/parity checks and
+all 68 additional direct native binaries. Generated tuple identities fix the
+previous ACTUAL generic-data-alias failure. Complete Rust library suites pass
+853/default and 832/bitpack tests, but both integration runs stop in
+bit_methods::type_attributes_answer_for_values_and_self at Span::to:
+FileId(0) versus FileId(2). The default ACTUAL corpus is 273/274; its only
+failure, type_attributes_test.siox, has the same assertion. Default UI/JSON
+checks pass. After verifying this service's PID, command, cwd and cgroup, I
+intentionally stopped ONLY this known-failing owned gate during its bitpack
+corpus phase to apply the shared fix. It is dead/MainPID0; cancellation is
+NOT a test pass. Remaining integrations, DWARF and bitpack corpus/diagnostic
+checks still require the complete gate. Retained per-stage evidence is
+/home/max/.cache/siox-jobs/foundations-types-strings-pre-span-fix-20261114;
+the original service log is unchanged. Last live peak was 1,612,640,256 bytes.
+
+Own consteval.rs, consteval/aggregates.rs and their regression tests. Attribute
+expansion can substitute a source base into a library attribute expression;
+aggregate_attribute currently joins the base and attribute token across files
+to invent an error span. Pass the original enclosing SysAttr span instead.
+First reproduce with a cross-file unit test; retain successful constant reads,
+unsupported/runtime fallback and original arithmetic error spans. Do not relax
+Span::to, disable shared evaluation, roll back generated IDs, weaken native
+assertions or change LLVM/runtime behavior. Rerun focused native checks and
+the unchanged full acceptance scope under the normal shared guard. All five
+foundation sections remain required; no acceptance, commit or push yet.
+
+The focused new cross-file regression was queued as unit
+1794681921705414200-638815, but a peer's existing CI waiter acquired the normal
+lock first. After verifying the focused unit was only blocked flock with no
+children and a zero-byte log, I stopped that unstarted owned waiter to apply
+the shared correction before queuing the combined rerun. No test ran in it;
+dead/0 is not pass evidence. The peer is untouched. The original Rust/native
+corpus failures provide the red evidence; the new unit test still needs its
+first execution. Both the fix and full acceptance stay unverified until the
+fresh guarded run completes.
+
+### 2026-11-14 — Codex — local acceptance of generic/field/string batch
+
+Full unit1794682069805603352-663925 is terminal exited/success/0 at
+21:28:16 CET, peak1,612,697,600 bytes under the normal2GiB hard/1.5GiB
+soft cap. All797 frontend/14 import tests pass, both complete Rust suites
+(854/default,833/bitpack library cases, every integration/doc-test and all23
+GDB/DWARF tests per mode), strict all-target/all-feature Clippy,70 diagnostic
+runner tests including36 waveform cases,12 specified artifacts,72 direct
+native/debug binaries and4 aggregate VCD/timeline/parity checks. Both ACTUAL
+274/274 corpora pass, plus71 UI/71 JSON cases,56/56 active codes and2
+apply/recompile migrations per mode. Rust1.90/one Cargo job/debug1 HOST metadata
+are retained; generated Siox debug flags and debugger assertions are unchanged.
+The bounded-launcher integration-v2 service is also exited/success/0.
+
+Independent review confirms unchanged frozen source7ab1cdda9331fd903cae55ea
+ca327a99e4a957e4788b91c7c3e9b3b574270792 and corpus04c355570b5c35d44ceb8a387e3
+ad735b606b9764886295c178d3d5356ffb4cf. Code-only hash excluding Markdown is
+aab457e22986ce239b300ec1ebe67a1d755a189bfe623926a96ae0ad3d197acc.
+ACTUAL corpus HEAD remains38f4e01 with all20 peer untracked files untouched;
+libfst is clean at its pinned commit. The isolated review probe rejects
+Family(Record[]) with E-P003, so withdraw the provisional privacy-hole finding:
+it did not demonstrate accepted invalid code. Its recovery/registry refactor
+is separate and still unaccepted, including a new native Process IR failure.
+
+Accept ONLY the reviewed primary generic inference/recovery, borrowed original
+field typing/privacy, alias conversion/layout, typed Unicode/enum strings,
+open nonempty constant shapes, generated tuple resolver facts, cross-file
+attribute spans and guarded queue support. Own acceptance documentation and
+this log; source, tests, manifests and dependencies remain frozen after proof.
+Prepare a LOCAL checkpoint only. No push, PR, wiki publication or acceptance
+of the isolated followup. Estimate stays about86% of compiler foundations,
+not whole-compiler progress. All five proposal sections remain required,
+including applied generic/associated contexts, remaining typed values and
+defaults, suffix-oracle migration, remaining registries and residual hooks.

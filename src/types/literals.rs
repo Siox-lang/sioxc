@@ -75,7 +75,8 @@ impl<'a> Checker<'a> {
         value: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
-        let fields = self.base_struct_fields_named(head);
+        let Ty::Named(owner) = expected else { return };
+        let fields = self.base_struct_fields_of(*owner);
         if fields.is_empty() {
             return;
         }
@@ -115,7 +116,7 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(private) = fields.iter().find_map(|field| {
-            let visibility = self.field_visibility_for(head, field)?;
+            let visibility = self.field_visibility_for(*owner, field)?;
             (!visibility.is_pub && !self.member_access_allowed(&visibility, expr_span(value)))
                 .then_some(visibility)
         }) {
@@ -152,7 +153,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 for (field, value) in fields.iter().zip(parts) {
-                    self.check_struct_field_value(head, field, value, sym);
+                    self.check_struct_field_value(*owner, field, value, sym);
                 }
                 return;
             }
@@ -189,13 +190,13 @@ impl<'a> Checker<'a> {
                 Some(f) => {
                     seen.insert(f.text.clone());
                     if let Some(value) = &c.value {
-                        self.check_struct_field_value(head, &f.text, value, sym);
+                        self.check_struct_field_value(*owner, &f.text, value, sym);
                     }
                 }
                 None => {
                     positional = true;
                     if let (Some(field), Some(value)) = (fields.get(position), &c.value) {
-                        self.check_struct_field_value(head, field, value, sym);
+                        self.check_struct_field_value(*owner, field, value, sym);
                     }
                 }
             }
@@ -241,7 +242,7 @@ impl<'a> Checker<'a> {
     /// Check one field's value against the field's declared type.
     pub(super) fn check_struct_field_value(
         &mut self,
-        owner: &str,
+        owner: DefId,
         field: &str,
         value: &Expr,
         sym: &HashMap<String, Ty>,
@@ -249,18 +250,18 @@ impl<'a> Checker<'a> {
         let Some(declared) = self.field_decl_ty(owner, field) else {
             return;
         };
-        let expected = self.ast_ty(&declared);
+        let expected = self.ast_ty(declared);
 
         // A name-less nested literal gets its type from this field. Recurse so
         // every nested leaf is contextualized, instead of accepting it merely
         // because an unknown expression type suppresses compatibility checks.
         let nested_struct = self
             .declarations
-            .normalize_type(&declared)
+            .normalize_type(declared)
             .and_then(|ty| self.type_key(&ty))
             .is_some_and(|head| self.structs.contains_key(&head));
         if nested_struct && matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
-            self.check_struct_literal_value(&declared, value, sym);
+            self.check_struct_literal_value(declared, value, sym);
             return;
         }
 
@@ -268,6 +269,9 @@ impl<'a> Checker<'a> {
         // `let` (conversions proposal).
         if !matches!(expected, Ty::Error) && !self.site_assignable(&expected, value, sym) {
             let actual = self.type_of(value, sym);
+            let Some(owner) = self.definition_key(owner) else {
+                return;
+            };
             self.error_with_help(
                 codes::TYPE_MISMATCH,
                 expr_span(value),

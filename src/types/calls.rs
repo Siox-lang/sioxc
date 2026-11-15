@@ -162,7 +162,7 @@ impl<'a> Checker<'a> {
                 .conversion_sigs
                 .contains(&(target_name.clone(), source_name.clone()))
             || self.enum_conversion_is_total(target, source)
-            || self.struct_conversion_is_total(&target_name, &source_name)
+            || self.struct_conversion_is_total(target, source)
     }
 
     /// A chain-connected enum conversion is total only when every source
@@ -198,50 +198,34 @@ impl<'a> Checker<'a> {
                 })
     }
 
-    /// Whether `name` derives transitively from `base` as a struct.
-    fn struct_derives_from(&self, name: &str, base: &str) -> bool {
-        let mut current = name.to_string();
-        let mut seen = HashSet::new();
-        while seen.insert(current.clone()) {
-            let Some((Some(parent), _)) = self.structs.get(&current) else {
-                return false;
-            };
-            let Some(parent) = self.type_key(parent) else {
-                return false;
-            };
-            if parent == base {
-                return true;
-            }
-            current = parent;
-        }
-        false
-    }
-
     /// A derived struct can always project to its base. Constructing in the
     /// other direction is representation-total only across fieldless newtype
     /// links such as `struct time(integer)`.
-    fn struct_conversion_is_total(&self, target: &str, source: &str) -> bool {
-        if self.struct_derives_from(source, target) {
-            return true;
-        }
-        let mut current = target.to_string();
-        let mut seen = HashSet::new();
-        while seen.insert(current.clone()) {
-            let Some((Some(parent), fields)) = self.structs.get(&current) else {
-                return false;
-            };
-            if !fields.is_empty() {
-                return false;
+    fn struct_conversion_is_total(&self, target: &Ty, source: &Ty) -> bool {
+        let ancestor = |descendant: &Ty, base: &Ty, fieldless: bool| {
+            let mut current = descendant.clone();
+            let mut seen = HashSet::new();
+            while let Ty::Named(owner) = current {
+                if !seen.insert(owner) {
+                    return false;
+                }
+                let Some(structure) = self.declarations.structure(owner) else {
+                    return false;
+                };
+                if fieldless && !structure.fields.is_empty() {
+                    return false;
+                }
+                let Some(parent) = structure.base.as_ref() else {
+                    return false;
+                };
+                current = self.ast_ty(parent);
+                if &current == base {
+                    return true;
+                }
             }
-            let Some(parent) = self.type_key(parent) else {
-                return false;
-            };
-            if parent == source {
-                return true;
-            }
-            current = parent;
-        }
-        false
+            false
+        };
+        ancestor(source, target, false) || ancestor(target, source, true)
     }
 
     /// Compile-time fit check for conversion expressions with constant
@@ -556,18 +540,7 @@ impl<'a> Checker<'a> {
                     {
                         // Bound where it appears in a parameter, directly
                         // (`x: T`) or as an element (`arr: T[4]`, `p: (T, U)`).
-                        declaration
-                            .params
-                            .iter()
-                            .filter(|parameter| !parameter.is_self)
-                            .zip(args)
-                            .find_map(|(parameter, argument)| {
-                                self.bind_type_param(
-                                    parameter.ty.as_ref()?,
-                                    &self.type_of(argument, sym),
-                                    parameter_id,
-                                )
-                            })
+                        self.infer_type_argument(declaration, parameter_id, args, sym)
                             .unwrap_or(Ty::Error)
                     }
                     _ => self.ast_ty(declared),
@@ -575,6 +548,46 @@ impl<'a> Checker<'a> {
             }
             _ => self.ast_ty(declared),
         }
+    }
+
+    /// Prefer a known non-literal binding; preserve partial information when
+    /// no complete argument is available, then fall back to contextual literals.
+    pub(super) fn infer_type_argument(
+        &self,
+        declaration: &crate::syntax::ast::FnDecl,
+        parameter: DefId,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) -> Option<Ty> {
+        let mut inferred = None;
+        let mut best = u8::MAX;
+        for (declared, argument) in declaration
+            .params
+            .iter()
+            .filter(|parameter| !parameter.is_self)
+            .zip(args)
+        {
+            let Some(ty) = declared.ty.as_ref().and_then(|declared| {
+                self.bind_type_param(declared, &self.type_of(argument, sym), parameter)
+            }) else {
+                continue;
+            };
+            let priority = if Self::is_contextual_literal(argument) {
+                2
+            } else if ty.contains_error() {
+                1
+            } else {
+                0
+            };
+            if priority < best {
+                inferred = Some(ty);
+                best = priority;
+                if best == 0 {
+                    break;
+                }
+            }
+        }
+        inferred
     }
 
     /// What a resolved parameter stands for when `ty` takes an argument

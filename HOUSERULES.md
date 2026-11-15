@@ -88,6 +88,19 @@ restarting it after an observation interruption. Set `SIOX_JOB_MEMORY` /
 Verify the launcher with `bash scripts/test-guarded-run.sh` on this Linux host;
 it deliberately triggers an OOM inside a separate 64 MiB service.
 
+Use `bash scripts/guarded-run.sh --wait COMMAND ...` to queue inside the
+bounded service on that same shared lock. This avoids losing a handoff between
+an external waiter and the launcher; it does not run compilers concurrently.
+Queue time counts toward `SIOX_JOB_TIMEOUT`, so include both the expected queue
+and workload duration. Without `--wait`, a busy job still exits 75 immediately.
+Argument-only launcher checks can run without the manager or test slot through
+`bash scripts/test-guarded-run-args.sh`; the full launcher check above still
+verifies real serialization, queued execution and isolated OOM behavior.
+That check isolates only the lock of its tiny probe workloads in a disposable
+cache fixture, retaining the real user-manager socket. It never builds or runs
+a design through that fixture; actual compiler/editor/corpus work always uses
+the normal shared runtime lock.
+
 For this compiler's large Rust test binaries, lighter **host** test debug
 metadata avoids measured soft-limit thrashing without changing generated Siox
 `--debug` output or its GDB/DWARF checks. Pass the setting inside the guarded
