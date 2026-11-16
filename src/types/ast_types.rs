@@ -72,6 +72,20 @@ impl<'a> Checker<'a> {
             // (`Packet<8>`) is not a type, and an application with one is
             // left bare, as before.
             Type::Generic { base, args, .. } => match self.ast_ty(base) {
+                // `Vec<T>` (std's `vec` lang item) is the simulator's
+                // growable store of `T`: the runtime array representation,
+                // under its own name (proposal `vec`).
+                Ty::Named(id, _) if self.resolved.lang("vec") == Some(id) => {
+                    match args.first().and_then(|arg| arg.as_type()) {
+                        Some(element) => Ty::Array {
+                            elem: Box::new(self.ast_ty(&element)),
+                            len: 0,
+                            family: None,
+                            low: 0,
+                        },
+                        None => Ty::Error,
+                    }
+                }
                 Ty::Named(id, _) => {
                     let types: Option<Vec<Ty>> = args
                         .iter()
