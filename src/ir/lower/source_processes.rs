@@ -585,6 +585,21 @@ fn process_declared_type_inner(
             .map(|arg| process_declared_type_inner(&arg.as_type()?, context, aliases))
             .collect::<Option<Vec<_>>>()
             .map(crate::types::Ty::Tuple),
+        // `Vec<T>` (std's `vec` lang item) is the runtime store of `T`, as
+        // the checker reads it (proposal `vec`).
+        ast::Type::Generic { base, args, .. }
+            if matches!(base.as_ref(), ast::Type::Path(path)
+                if context.resolved.resolved(path.span).is_some()
+                    && context.resolved.resolved(path.span) == context.resolved.lang("vec")) =>
+        {
+            let element = args.first()?.as_type()?;
+            Some(crate::types::Ty::Array {
+                elem: Box::new(process_declared_type_inner(&element, context, aliases)?),
+                len: 0,
+                family: None,
+                low: 0,
+            })
+        }
         ast::Type::Generic { base, .. } => process_declared_type_inner(base, context, aliases),
         ast::Type::View { target, .. } => process_declared_type_inner(target, context, aliases),
         // Rewritten to `(,)<..>` before lowering (`types::lower_tuples`).
@@ -7943,6 +7958,17 @@ fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Opt
             family: Some(family),
             ..
         } => Some(context.functions.canonical_type_key(family)),
+        // A runtime store of elements dispatches to std's `Vec` (proposal
+        // `vec`); a fixed array and a string have no owner.
+        crate::types::Ty::Array {
+            elem,
+            len: 0,
+            family: None,
+            ..
+        } if !matches!(elem.as_ref(), crate::types::Ty::Char) => context
+            .resolved
+            .lang("vec")
+            .and_then(|definition| context.functions.nominal_type_key(definition)),
         crate::types::Ty::Array { family: None, .. }
         | crate::types::Ty::Tuple(_)
         | crate::types::Ty::Void

@@ -240,7 +240,20 @@ impl<'a> Checker<'a> {
     /// declared `m: Bus Master` has the view's own head. Looked up by that
     /// alone, no view method was found and every check of the call was
     /// skipped (#607).
+    /// The key of std's `Vec` (the `vec` lang item), when it is loaded.
+    pub(super) fn vec_key(&self) -> Option<String> {
+        self.definition_key(self.resolved.lang("vec")?)
+    }
+
     pub(super) fn method_head(&self, t: &Ty) -> Option<String> {
+        // A runtime store of elements (`Vec<T>`, `T[]`) takes `Vec`'s methods.
+        if matches!(t, Ty::Array { elem, len: 0, family: None, .. }
+            if !matches!(elem.as_ref(), Ty::Char))
+        {
+            if let Some(key) = self.vec_key() {
+                return Some(key);
+            }
+        }
         let head = self.ty_head(t)?;
         // Views are keyed `View@Target` already; one view of this name.
         let prefix = format!("{head}@");

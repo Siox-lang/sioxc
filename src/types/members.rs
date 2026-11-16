@@ -239,6 +239,13 @@ impl<'a> Checker<'a> {
             return;
         };
         let recv = self.type_of(base, sym);
+        // A method `std::vec::Vec` declares (`v.len()`) is checked as any
+        // method is, through `method_head` (proposal `vec`).
+        let vec_method = matches!(&recv, Ty::Array { elem, len: 0, family: None, .. }
+            if !matches!(elem.as_ref(), Ty::Char))
+            && self
+                .vec_key()
+                .is_some_and(|key| self.methods.contains_key(&(key, field.text.clone())));
         // A runtime array (`T[]`) grows by `push`, as a Rust `Vec` does.
         if let Ty::Array {
             elem,
@@ -247,7 +254,7 @@ impl<'a> Checker<'a> {
             ..
         } = &recv
         {
-            if !matches!(elem.as_ref(), Ty::Char) {
+            if !vec_method && !matches!(elem.as_ref(), Ty::Char) {
                 match (field.text.as_str(), args) {
                     ("push", [value]) => {
                         if !self.assignable(elem, value, sym) {
@@ -276,7 +283,7 @@ impl<'a> Checker<'a> {
         // `xs.push(4)` and `p.foo()` passed and did not lower (#205). A
         // string (`Char[]`) is one too: any method passed (#472).
         let fixed_array = matches!(recv, Ty::Array { family: None, .. });
-        if (fixed_array && !self.array_methods.contains(&field.text))
+        if (fixed_array && !vec_method && !self.array_methods.contains(&field.text))
             || matches!(recv, Ty::Tuple(_))
         {
             let string = matches!(&recv, Ty::Array { elem, len: 0, .. } if matches!(elem.as_ref(), Ty::Char));

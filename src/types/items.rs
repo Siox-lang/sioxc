@@ -629,6 +629,21 @@ impl<'a> Checker<'a> {
             Type::Indexed { base, .. } => self.check_storable(base),
             Type::Path(_) | Type::Generic { .. } => {
                 let Some(key) = self.type_key(ty) else { return };
+                // `Vec<T>` is stored by the simulator, not field by field:
+                // testbench storage, with no hardware form.
+                if self.vec_key().as_deref() == Some(key.as_str()) {
+                    if !self.in_testbench.get() {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            crate::syntax::ast::type_span(ty),
+                            "a `Vec` grows at run time, so it has no hardware form".to_string(),
+                            "use it in a `#[test]` entity, or give the array a fixed length \
+                             (`T[N]`)"
+                                .to_string(),
+                        );
+                    }
+                    return;
+                }
                 if self
                     .structs
                     .get(&key)
