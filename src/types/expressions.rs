@@ -775,17 +775,16 @@ impl<'a> Checker<'a> {
                         // family's; an array of scalars or structs has none,
                         // and the call did not lower (#223).
                         if let Expr::Path(path) = base.as_ref() {
-                            let key = self.path_key(path);
                             let kernel = path.segments.len() == 1
                                 && matches!(
                                     path.segments[0].text.as_str(),
                                     "integer" | "natural" | "real" | "Bool" | "Char"
                                 );
-                            let record = key.as_ref().is_some_and(|key| {
-                                self.structs
-                                    .get(key)
-                                    .is_some_and(|(_, fields)| !fields.is_empty())
-                            });
+                            let record = self
+                                .resolved
+                                .resolved(path.span)
+                                .and_then(|owner| self.declarations.structure(owner))
+                                .is_some_and(|structure| !structure.fields.is_empty());
                             // `Bit[4](x)`, `Logic[4](x)`: an array of an enum
                             // has no constructor either (#324). A `Logic[]`
                             // takes a vector family implicitly, by `Into`.
@@ -922,7 +921,7 @@ impl<'a> Checker<'a> {
                 if let Some(ty) = ty {
                     let expected = self.ast_ty(ty);
                     if let Some(head) = self.type_key(ty) {
-                        if self.structs.contains_key(&head) {
+                        if self.struct_type_id(ty).is_some() {
                             self.check_struct_literal_for_head(&expected, &head, e, sym);
                         }
                     }

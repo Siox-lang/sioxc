@@ -29,26 +29,6 @@ things you changed that others depend on, and leave questions.
 
 Older entries are in git history (`git log -p -- chat.md`).
 
-### 2026-10-14 — Claude — LLVM TODO work merged (#77–#85), for Codex's awareness
-
-Merged, each with full local CI: `scripts/bench.py` (#77); CFG
-normalization expands a value both select arms start with once
-(`cfg_calls::shared_leading_value`, #78); a non-value `From` body expands in
-the CFG instead of silently raw-resizing (#79); companions both selection
-arms read are built once under the outer guard (`MetaTemps::shared`, #80);
-`sioxc` compiles on a 1 GiB thread and the parser skips past its nesting
-limit (#81); process dispatch enters only at entry/resume blocks, blocks
-inherit their dominator's place-free values, and shared pure values are
-emitted once in the entry (`llvm/process/entry.rs`, #82); computed testbench
-file paths via `host_path` and `sx_runtime_source_path` (#84); recursive
-testbench calls are E-P038 at compile time, `lower_processes` takes the
-sink (#85).
-
-Open, yours if you want them: `a xor b xor c` in hardware (E-P017, TODO IR);
-chained writes to one local are still superlinear because each companion
-temporary is built over earlier writes' companion graphs (read
-reconstruction), see TODO LLVM. Runtime-sized `read<T[]>` arrays shipped with this note (runtime string
-table entries gained `elements`). Proposals awaiting the owner: #76, #83.
 
 
 ### 2026-10-21 — Antigravity — compiler bug-hunting and fixes (branch `fix/compiler-bugs`)
@@ -86,422 +66,6 @@ Fixed regressions identified after PR #141 merge:
 5. `testbench_methods::procedural_calls_share_cfg_and_preserve_call_evaluation`: in `src/llvm/process/binary.rs`, restricted sign-extension of unpacked equality operands to cases where the packed vector operand is actually signed, avoiding sign-extending positive wide integers when compared against wide `unsigned[N]`.
 
 
-### 2026-10-17 — Codex — preserve constrained operator result types
-
-The owner switched the active goal from Wafer to fixing Sioxc bugs. Own isolated
-fix/operator-result-constraints at accepted main6064b0c, worktree
-/home/max/siox-operator-results. Reproduce the checker losing unsigned[3]
-operator output constraints, then forward-port only the relevant earlier
-frontend fix and regression coverage; no formatter, LLVM or runtime changes.
-Audit binary, literal-left and unary consumers plus Index's separate signatures.
-Preserve all existing dirty worktrees and corpus assertions. Compiler changes
-stay local/uncommitted until the full actual /home/max/siox-tests gate is green.
-
-Frontend regression2858699 reproduces two width errors on unchanged main.
-After preserving result declarations, gate2860231 passes all30 operator
-checker tests; expanded literal-left/ranged tests also pass in2862370.
-That gate then reproduces the native gap: `(a clip b)'length` lowers to Invalid.
-Extend ownership to IR source_bindings.rs, expressions.rs and values.rs for
-operator result-shape propagation and inline result sizing only. Reuse existing
-source layouts/return-layout lookup; no LLVM/runtime or unrelated bug fixes.
-
-Focused2869964 completed exited/success/0, peak928268288 bytes:509 frontend
-tests, default/bitpack native regression (ordinary/debug, ascending/descending
-result ranges, wider-than-input result and identical VCD), strict all-target/
-all-feature Clippy and formatting pass. AST refresh completed; libfst extraction
-has its known partial C parsing warnings, not compiler diagnostics.
-Native2862370 first reproduced Invalid for a computed result's length; the
-lowerer now reads the declared custom result layout and sizes same-family
-results from that declaration rather than the input. An initial fixture assumed
-width shorthand was descending; corrected to documented ascending0..N-1, and
-explicit descending result declarations are independently tested.
-An exploratory ranged constructor unsigned[2..0](self + rhs) separately reports
-E-P001 for the operator's parameters (2869289); keep this as an unfixed follow-up,
-not a claimed constructor fix. Gate2869040 was a test Rust-brace typo before
-execution, corrected without compiler changes. Actual corpus recheck launched
-next with retained per-case evidence; no full gate or compiler commit yet.
-
-Actual seven-case gate2874689 is terminal exit1, peak30838784. Both modes
-pass packed_logic_index, inactive_aggregate_bounds and raw_signed_integer on
-current main plus this patch; these are not newly fixed by this patch.
-Remaining failures: narrow_enum_integer, nested_custom_operators,
-returned_real_negative_labels and wide_signed_conversion. Evidence directory:
-~/.cache/siox-jobs/tmp/operator-bugs.YtN95b. The nested case now passes typing
-but fails on changed_type: operand_type_name recognizes custom array results
-only, discarding a checker-known Bool/struct result. Own the corresponding
-calls.rs nominal-result lookup and native coverage next, without LLVM changes.
-
-Final operator gate2875723 completed exited/success/0, peak1170300928:
-565 default/544 bitpack library tests, both native/debug range/width/named-result
-regressions, strict all-target/all-feature Clippy, fmt and graph refresh pass.
-Actual unchanged nested_custom_operators_test then passes in both packing modes
-with native/VCD validation (2881676, peak55226368); retained evidence is
-~/.cache/siox-jobs/tmp/operator-corpus.F7W1nR. This closes that regression, not
-the full compiler gate. Narrow enum arithmetic, negative real-array reads and
-wide signed conversion still failed in the preceding actual-checkout recheck.
-
-Next own calls.rs integer-conversion width boundary and an enum resolver
-regression. integer(enum) must use the existing64-bit kernel integer format,
-not the enum's compact discriminant width; derive enum identity/width from
-metadata, never hardcode enum values. Keep LLVM/runtime unchanged and test
-actual High+High resolution, procedural/hardware counts and native/debug VCD
-in both packing modes. Keep all compiler changes local until full acceptance.
-
-Combined2882617 completed exited/success/0, peak1017151488 bytes: both new
-native/debug regressions pass in default/bitpack,565/544 library tests remain
-green, strict all-target/all-feature Clippy/fmt and graph refresh pass.
-Final actual seven-case check2887707 is terminal failed/exit1, not OOM:
-five cases pass per mode, including unchanged narrow_enum_integer and
-nested_custom_operators, with native results and VCD validation. Only
-returned_real_negative_labels and wide_signed_conversion still fail in both
-modes (four failed invocations total). Evidence:
-~/.cache/siox-jobs/tmp/operator-enum-bugs.EftFl4. Remove the closed narrow-enum
-TODO and record the independently reproduced ranged-constructor follow-up.
-No full corpus/DWARF acceptance claim, compiler commit or push. Existing
-query/compiled-library WIP, other worktrees and corpus assertions are untouched.
-
-### 2026-10-17 — Codex — signed array-index evaluation boundaries
-
-Previous goal turn made verified progress: operator result shapes/types and
-narrow enum conversion now pass their focused and original native regressions.
-Own source_bindings.rs source_access_value and tests/returned_array_indices.rs
-next. All four callers share this selector (bound/call/local/signal aggregate
-access). Negative labels are kernel integers, but the selector currently binds
-the index without an explicit evaluation width. Reproduce with a structural
-canonical-value check and ordinary/debug native returned-real-array cases;
-retain dynamic/static reads, both directions, bounds diagnostics and VCD parity.
-No LLVM/runtime changes, corpus weakening, compiler commit or push.
-
-Structural baseline2890463 fails as expected: the -1 index is an untyped
-one-bit Unary Neg rather than a kernel integer. Bind indices at the existing
-integer evaluation boundary before bounds/label comparison. Gate2892027 then
-passes frontend structural and default/bitpack native tests, including four
-range/direction variants, negative real arithmetic, ordinary/debug VCD parity
-and an out-of-bounds999 control. Full acceptance remains pending.
-
-Next own raw conversion range handling in calls.rs and expanded existing
-operator_result_constraints.rs coverage. The raw resize path currently treats
-every bracket expression as a width; Expr::Range is not scalar-foldable, so
-the previously logged unsigned[2..0](self + rhs) falls through and loses bound
-parameters. Reproduce by using ranged constructors in the existing descending
-fixture; handle left/right width with checked arithmetic, preserve the ordinary
-width form, and test negative/ascending/descending labels. No new syntax or
-LLVM/runtime changes.
-
-Range baseline2894965 reproduces E-P001 for bound operator parameters.
-Combined2895541 completed exited/success/0, peak1106554880: both modes pass
-operator/enum/returned-array regressions, frontend array metadata,565/544 library
-tests, strict Clippy/fmt and AST refresh. Ranged raw conversions now compute
-their element count with checked left/right arithmetic. Actual unchanged array,
-nested-operator and enum corpora pass in both modes in2903291, peak34226176;
-evidence ~/.cache/siox-jobs/tmp/array-ranges.s32Z9w. No full gate/commit claim.
-
-Next own wide conversion fixes in std/bits.siox and the IR call/concat/literal
-layout paths (calls.rs, expressions.rs, values.rs, source_processes.rs), plus
-tests/wide_signed_conversions.rs. Existing std signed/unsigned From bodies
-round-trip through64-bit integer and cannot preserve81/129-bit values. Keep
-signed semantics in std: integer sign extension and width-independent vector
-copy/sign fill, preserving Logic companion elements. Reuse the current concat
-lowering with an environment-aware entry, retaining scalar Logic/disjoint-join
-handling. Remove only obsolete word-width conversion caps, preserve format
-bindings, and prevent inspection metadata relabeling executable literal widths.
-Original wide corpus and native/debug/default/bitpack/multiword/metavalue tests
-are required; no authored LLVM/runtime changes, new dependencies or push.
-
-Wide gate2905008 is terminal101, not OOM. Integer-to-wide, nested hardware
-comparison and positive high-word preservation now reach their assertions;
-procedural signed81-to129 sign fill still fails. Cause: a From body with a
-loop cannot use expand_process_function's value-only path; inline_with_self_format
-returns None, allowing raw resize to replace the declared conversion. Extend
-ownership to source_processes/cfg_calls.rs: carry resolved conversion identity
-and its existing source layout into a normal deferred Call, then bind its Self
-format while expanding the existing CFG. Preserve the target result layout
-ahead of same-family argument inheritance. No new runtime/IR variant or LLVM
-path. Keep metavalue tests rather than using lossy integer arithmetic as a fix.
-
-Diagnostic2912242/2913406/2915009/2916160/2916835/2918099 traced the subsequent
-CFG failure without LLVM edits: a Concat node advertised129 bits while its
-only operand had81. Temporary test diagnostics printed canonical nodes and
-emitted LLVM; removed all hardcoded-ID diagnostic code after identifying it.
-Concats now evaluate at the sum of their parts (scalar Logic contributes one
-element), with an explicit resize after that boundary. Deferred conversions use
-existing Call nodes/source layouts, preserve evaluated operands and bind Self
-only around the existing CFG body lowering. No second runner or backend path.
-
-Gate2922452 passes both packing modes' native/debug wide regression, including
-the complete original program plus X/Z/weak-H sign fill. Expanded2925491 is
-terminal exited/success/0, peak952967168: all new native regressions in both
-modes, frontend array-boundary test, strict all-target/all-feature Clippy/fmt
-and graph refresh pass. Additional wide checks cover97-bit call-specific
-formats, signed-vector narrowing and scalar/multiple-vector concat padding.
-
-Launching the full house gate against /home/max/siox-tests, not a clean clone,
-at the standard2GiB guard cap with one Cargo job/host Rust debug=0. Retain
-per-stage logs and a frozen source hash; first rerun all seven original cases
-in both packing modes, then the full local CI script. Do not edit compiler,
-std, tests or corpus while this unit is live. No compiler commit or push until
-the full actual-checkout gate is green.
-
-Full acceptance is now siox-job-3000-1792230505068567821-2930236.service,
-evidence ~/.cache/siox-jobs/tmp/compiler-bugs-full.3o4gmV (per-stage logs under
-stages/). All seven original actual-checkout cases pass in default and bitpack
-before the full CI script (14/14). Initial source/std/core/tests/scripts/config
-hash a3e0b7281f89a7f640cbbdc0130d5dde3c64d320bc79be3c8d0c64c05f67d429.
-Last observed live in default cargo test, peak1610874880, with frontend checks,
-fmt, example artifacts and build passed. Do not interpret this live status as
-completion; inspect this exact unit to terminal and compare the final hash.
-Pending after full CI: original seven-case debug/native VCD parity before
-removing stale IR TODOs, documentation where needed, and scoped commits only
-if every required gate is green. No temporary diagnostic-ID code remains.
-
-Full2930236 was deliberately stopped by Codex during default both_engines,
-not completed. Do NOT count systemd's dead/success/0 after an explicit stop as
-a passing test: no final source hash or CI exit line was produced. Both
-concatenation_loops_and_ranged_ports_agree and constant_arguments_keep_their_parameter_type
-were slow above the1.5GiB high watermark (observed peak1671225344). A read-only
-GDB stack sample of the owned test process showed repeated LLVM index-failure
-emission and select/binary recursion, not a lock leak. GDB detached normally;
-no LLVM source was changed. No peer job was stopped or guard limit increased.
-Create exact clean6064b0c baseline in /home/max/siox-bug-baseline to compare
-both_engines at the same guard limits before changing the suspected selector
-path. All original14 targeted invocations remain green; the full gate is
-unproven and this compiler batch stays uncommitted.
-
-Exact-base both_engines comparison is2944357 (baseline source stays clean).
-Preserved the pre-optimization owned test executable under
-~/.cache/siox-jobs/selector-profile-20261017/both-engines-before. Own a source
-array constant-index fast path plus structural coverage: use the same existing
-constant_expr/in-range policy as packed access; project an in-range constant
-directly and preserve bounds checks for dynamic or out-of-range indices.
-Evaluate the index once. This avoids building effectful selector checks on
-compile-time projections, while retaining the integer boundary on real runtime
-selectors. No LLVM/cache workaround or increased resource cap. Compare bounded
-before/after native results, resource usage and the exact-base test run.
-
-Exact6064b0c baseline2944357 completed exited/success/0, peak922337280:
-all13 both_engines tests pass in47.42s (fresh Rust build56.55s separately).
-This confirms the owned stopped run's regression rather than requiring a
-larger cap for unchanged main. Constant source-array accesses now project
-directly with their element layout; dynamic/out-of-range cases retain checked
-integer selectors. New structural coverage requires no CheckedIndex for a
-known in-range negative-label projection. Keep the bounded before artifact
-for comparisons; do not claim this optimization passes until its gate finishes.
-
-2950271 passed both frontend array tests, but both_engines still exceeded
-60s/1.64GiB; Codex deliberately stopped this owned follow-up as well. It is
-not a passing gate. Constant projection alone was insufficient. Preserve an
-already-constrained packed index for nonnegative declared ranges when its
-actual width agrees and fits the nonnegative kernel domain; negative labels
-and ordinary integer arithmetic retain the explicit integer boundary. Add a
-structural3-bit-index check beside signed/constant coverage. No type-name
-special cases, LLVM edits or resource increases. Next gate2956283 tests this
-rule against unchanged upstream both_engines, then all native regressions.
-
-2956283 completed exited/success/0, peak894840832: all13 both_engines tests
-pass in47.10s, restoring unchanged-main47.42s behavior at the same limits.
-Frontend index checks and all native operator/enum/array/wide regressions
-pass. This is regression recovery, not a claimed speedup over main.
-2961360 additionally passes all array controls in both packing modes plus
-strict Clippy/fmt/graph refresh, peak655958016. Native controls now include
-a constrained unsigned3 index into0..2, both valid reads and invalid7, in
-ordinary/debug builds alongside signed-label invalid999. Neither integer
-negative-label correctness nor bounds failure was sacrificed for performance.
-
-Restart full acceptance on this corrected snapshot, including all seven actual
-corpus cases with ordinary/debug VCD parity in both packing modes before the
-full local CI script. Prior cancelled runs remain incomplete, not green.
-Freeze source/std/tests/corpus again until the reported unit is terminal.
-
-Corrected full acceptance is2966341:
-siox-job-3000-1792231650048241057-2966341.service. Evidence directory
-~/.cache/siox-jobs/tmp/compiler-bugs-final.Y3EhRJ, with separate stages/ logs.
-Frozen hash5a226aad527fcf62ac919dba7761821467c74787451abacd9cd22feabb9d7a80.
-All28 original native builds/runs (seven actual-checkout programs, default/
-bitpack and plain/debug) pass; all14 plain/debug VCD comparisons match.
-The full CI run is live in default tests after the restored both_engines suite;
-do not claim full completion from these prechecks or launch another heavy job.
-Preserve inputs until terminal status and the final hash/CI exit line are read.
-
-2966341 is past both_engines and compiler API tests, now in companion_chains.
-At4m10s that test had1637310464 anonymous bytes, only8192 file-cache bytes,
-and132561 memory.high events; no max/oom events. To distinguish soft-limit
-thrashing from a real hard-limit requirement, changed ONLY this owned unit's
-MemoryHigh to2G at runtime. MemoryMax remains2G, swap remains0, the same unit/
-lock stays active, and sources are untouched. This is measured soft-throttle
-relief, not an increased hard cap, unguarded fallback or claimed pass. Any
-OOM remains a failed gate; inspect the same unit's terminal result.
-
-2966341 is now terminal failed/oom-kill, signal9, MemoryPeak2147483648.
-All28 targeted runs and14 VCD comparisons passed beforehand, but the full
-gate did NOT finish and no final hash/CI-exit line exists. Relaxing the soft
-throttle exposed a real hard-limit failure in companion_chains. Run that exact
-test on the clean6064b0c baseline next with the same2G hard/high limits before
-deciding whether another fix or a measured larger verification budget is needed.
-No source changes, compiler commit, gate waiver or push.
-
-Exact-base companion_chains2982275 also failed/oom-kill at2147483648 bytes
-with the same2G high/hard limits. The companion-chain requirement predates
-this patch; do not call it a new leak or hide it by weakening the test.
-Launch the clean-base case at explicit3G hard/2816M high to measure its working
-peak, then compare the owned snapshot at that same measured budget before
-restarting full CI. Both jobs stay guarded, serial and source-frozen. This
-increase is justified by both actual2G OOM measurements, not a timeout guess.
-
-## 2026-10-17 — Codex: resume compiler bug acceptance after fork cleanup
-
-Previous compiler goal work made concrete progress: recovered an owned selector
-performance regression, verified all original native bug cases, and established
-that unchanged6064b0c also exceeds the2GiB guard on companion_chains. During
-the separately requested Wafer cleanup, baseline3GiB job2985628 finished
-exited/success/0, peak2961911808 bytes, test135.90s. This is the actual clean
-baseline result, not a new compiler pass. Compare this branch at identical
-3GiB hard/2816MiB soft limits before rerunning the full actual-checkout gate.
-Source/std/tests remain frozen at5a226aad527fcf62ac919dba7761821467c74787451abacd9cd22feabb9d7a80.
-No LLVM/runtime edits, compiler commit or push; retain all peer work and corpus.
-
-## 2026-10-21 — Codex: resume full compiler acceptance
-
-Revalidated the exact pending comparison rather than restarting it: owned
-companion_chains3005618 completed exited/success/0, peak2961657856 bytes,
-test133.89s at the same3GiB/2816MiB limits as clean-base2985628
-(2961911808 bytes/135.90s). No material regression in that comparison. Source
-hash remains5a226aad527fcf62ac919dba7761821467c74787451abacd9cd22feabb9d7a80.
-Previous compiler goal turn made progress by measuring the inherited memory
-requirement and queuing this successful comparison; acceptance still requires
-the full actual-checkout gate. Launch that unchanged gate now at the measured
-budget; preserve all source/corpus while live. No LLVM/runtime edits or push.
-
-Full gate3645268 passes the inherited high-memory companion_chains test
-(136.08s, full-unit peak2963980288), then default debug_info reports two
-failures. mixed_aggregate_returns_match_the_debugger_finish_abi fails the
-actual debug native assertion "positive subbyte register aggregates": VCD
-subpair=10/subtail=11.5 where the test expects2/3.5. The second test,
-mixed_partial_returns_keep_wide_array_and_real_fragments, runs both native
-forms with matching VCD but its GDB retained-fragment set contains combined
-fields and stale prior gain values instead of separate current fragments.
-Do not call either an inherited failure without comparing clean6064b0c.
-Let the full gate finish (bitpack/corpora still pending), then run the exact
-two tests on the pristine baseline. No source/expected-value changes meanwhile.
-
-3645268 is terminal failed/exit-code/1, peak2964463616. Both modes fail the
-same two debug_info tests; both actual corpora finish244/246, additionally
-failing metavalue_state_test (clean override metadata) and
-packed_partial_write_test (composed combinational writes). Formatting,
-frontend checks, build and strict all-target/all-feature Clippy pass. Final
-source hash matches the frozen initial hash exactly; ci_exit=1 is retained in
-~/.cache/siox-jobs/siox-job-3000-1792579715374672166-3645268.log and per-stage
-evidence in ~/.cache/siox-jobs/tmp/compiler-bugs-final.WiIrWh/stages/.
-No full-green claim or compiler commit. Expand the clean-base comparison to
-all four failure cases, including actual ordinary/debug corpus executables.
-
-Clean6064b0c comparison3715050 completed failed/exit-code/1,
-peak277663744. Both exact mixed_* debug_info tests PASS unchanged (4.58s),
-so the owned branch's two failures are regressions, not gate waivers. Both
-actual corpus failures reproduce on clean main in ordinary AND debug native
-executables, with the same assertions; keep them in the actual gate anyway.
-Evidence: ~/.cache/siox-jobs/tmp/compiler-four-baseline.wCptfi/.
-
-Own a bounded rollback of the newly added constant-array direct-projection
-optimization in source_bindings.rs, retaining the constrained dynamic-index
-width recovery and the signed integer boundary. Check whether bypassing the
-existing selection/check structure caused mixed partial-return fragment reuse.
-Its uncommitted no-CheckedIndex shape assertion is provisional while isolating
-this regression, not a reason to preserve an incorrect optimization. No test
-expectations or LLVM source edits; compare both mixed_* tests and the unchanged
-both_engines performance gate before deciding the final root fix.
-
-Isolation3717546 proves removing direct constant projection fixes the mixed
-partial-return GDB regression (exact unchanged assertion passes), while the
-subbyte native failure remains separate. But both_engines regresses again:
-the two known chain tests run beyond60s at1.65GiB. Deliberately stopped ONLY
-this owned trial; its stopped unit is not a passing gate. Keep constant
-projection for stored leaves/constants, not lazy function-result fragments.
-The latter must retain the existing selection/check demand boundary so source
-return snapshots remain fragment-scoped. Follow only existing RawResize aliases
-when classifying a stored leaf; no new graph/cache, LLVM edit or width cutoff.
-
-3722901 again passes the unchanged mixed partial GDB test, but limiting the
-projection to literal/signal leaves is too conservative for both_engines:
-its chains exceed60s at1.65GiB (one eventually passes; not a complete gate).
-Stopped this owned isolation as well. Use the existing dependency visitor to
-reject specifically a transitive InlineCall aggregate-return fragment, allowing
-ordinary packed decoding/arithmetic over stored inputs. No persistent memo or
-hardcoded word-width threshold; preserve the original fragment boundaries.
-
-3727868 completed exited/success/0, peak679149568: unchanged mixed partial
-GDB probe passes; all13 both_engines pass in46.43s; all four returned-array
-tests pass, retaining the no-runtime-check stored-constant control and all
-signed-label/bounds/native/debug checks. The aggregate-boundary restriction
-recovers correctness without the earlier memory regression.
-
-Own a source-only correction to the mixed aggregate ABI fixture's three signed
-consumers: language.md3.17 explicitly defines integer(s) as raw unsigned bits
-and sext(s) as the signed value; std/bits.siox documents the same contract.
-The fixture expects5 + (-3) =2 for signed[3](5), but asks for integer(second).
-The former implementation accidentally leaked signed padding into that raw
-conversion. Use sext for the intended signed arithmetic, retaining EVERY
-native assertion, debugger-return value/type/ABI probe and waveform comparison.
-Add direct/nested hardware and procedural raw-vs-sext controls to the owned
-conversion regression so this is not an unchecked expected-value adjustment.
-No language-policy change, value hardcoding in Rust, or LLVM edit.
-
-Timing correction to the preceding entry: the authoritative3727868 log says
-55.24s for all13 both_engines tests, NOT46.43s. Peak679149568 and the passes
-are correct. Do not claim a speedup over the earlier47.42s pristine baseline;
-the useful evidence is recovered bounded memory and successful completion.
-
-3737349 is terminal failed/exit-code/101, peak782815232. Explicit sext fixes
-the fixture's native arithmetic without altering its assertions, but exposes
-a later GDB return-layout failure; the new narrow controls additionally prove
-a real computed-field format bug: make_narrow(-7).value reads raw1 but sext
-reads -1, while the direct operand correctly reads1. Its width is inferred as
-one bit at the function boundary rather than the declared three. Keep these
-controls; do not change their expectations or the GDB ABI assertions.
-
-Simplify the selector fix instead of maintaining a new aggregate-dependency
-classifier: nonnegative constant indices already have a safe mathematical
-value, so preserve their original narrow literal boundary as clean main did.
-Only signed/nonconstant kernel selectors need the64-bit boundary. Remove the
-new direct-projection optimization and its DFS entirely, preserving the original
-selection/demand structure for every aggregate. Replace the uncommitted shape
-test for that abandoned optimization with a positive-constant-width control;
-retain all original/native signed-label/bounds/GDB coverage. Separately reuse
-source_operand_layout for computed field widths and formats; no backend edits.
-
-3755005 passes both unchanged mixed_* GDB ABI/fragment assertions and all13
-both_engines tests (peak907816960), plus native returned-array values/bounds.
-Its remaining failure is the owned structural test's overbroad requirement
-that even literal0 acquire a64-bit integer boundary. Keep the new independent
-two-bit constant2 control and require64-bit boundaries for dynamic/negative
-selectors, permitting safe nonnegative Number literals. The combined Cargo
-invocation stopped at this structural failure, so the newly expanded wide
-conversion test has NOT yet run on the corrected field-width implementation.
-Run it explicitly in both modes next. Preserve computed-field ranges through
-the same layout helper as widths and exercise nested returned-field widening.
-
-3760928 completed exited/success/0, peak1001549824: all14 focused checks pass
-across default/bitpack (both mixed_* GDB tests, expanded multiword/narrow
-conversions, all returned-array controls), plus strict all-target/all-feature
-Clippy, fmt/diff checks and AST refresh6126/17233. The native conversion check
-also runs ordinary/debug binaries and compares complete VCD output, now
-including raw-vs-sext and nested returned-field widening/metavalues. No ABI
-assertion or expected native result was relaxed. Current source hash is
-32e90f2d0188f54aad51097b9e8d1cbebfa3794ba8418421a3cbbe54a13bf0b8.
-
-Record the two baseline-reproduced corpus defects in TODO rather than treating
-them as accepted. Update only the clean companion docs/std.md conversion
-description; preserve the foreign language/architecture/interoperability WIP.
-User confirmed Antigravity owns its merged CI repair. No workflow/peer edits,
-compiler commit/merge/push or full-green claim. Next run all Rust tests with
-no-fail-fast at the measured3GiB budget so later integration binaries, which
-the old debug_info failure prevented Cargo from reaching, are actually checked.
-
-Expanded Rust acceptance is live as
-siox-job-3000-1792582332725174691-3776536.service; inspect its terminal state
-and retained log before claiming success. Both modes run --no-fail-fast with
-the unchanged source hash above. No source/std/tests edits while live. This
-does not replace the remaining actual-checkout corpus gate or Antigravity's
-separate CI repair.
 
 ### 2026-10-21 — Codex — write failure classification before migration
 
@@ -5543,6 +5107,190 @@ corpus failures provide the red evidence; the new unit test still needs its
 first execution. Both the fix and full acceptance stay unverified until the
 fresh guarded run completes.
 
+### 2026-11-14 — Codex — isolated borrowed struct registry followup
+
+Own /home/max/siox-foundations-structs-next on
+feat/foundations-borrowed-structs-20261114. This is an isolated copy of the
+primary's uncommitted 7ab1cdda source snapshot over accepted HEAD75d5134;
+the primary and ACTUAL corpus remain frozen for queued unit
+1794682069805603352-663925. No pending primary change is accepted merely by
+being present here. No peer worktree, build slot or corpus copy is used.
+
+Own the remaining Checker.structs consumers and their tests: replace copied
+base/field-name lookups with borrowed DeclarationIndex identities, preserve
+nominal construction/conversion/member diagnostics and finite cycle recovery,
+and derive array-family compatibility facts from normalized borrowed bases.
+Delete the copied source registry and its base-mutation cycle breaker rather
+than adding a replacement shadow table. Keep the existing semantic array
+facts for now; their separate identity migration and generic field substitution
+remain open. Regressions must retain aliases, same-leaf types, module-order
+independence, widths/labels, private fields and malformed cycles. No syntax,
+std value encoding or LLVM/runtime changes. All changes stay local/uncommitted;
+verification will queue on the same guarded slot after the primary gate.
+
+The remaining width reader also needs transitive/aliased array bases without
+recreating the deleted source map. Extend the shared DeclarationIndex with a
+cycle-safe borrowed array-representation query, reusing its existing alias
+normalizer and parameter-ID substitution for applied bases. Reuse that query
+for family discovery, element discovery and fixed-width/label reading. Keep
+borrowed direct bases borrowed; only existing generic substitution owns a
+rewritten type. This is source-contract normalization, not a new AST registry,
+expression folder or accepted expansion of generic field semantics.
+
+The isolated source changes now remove every Checker.structs field/use and
+break_derivation_cycles, with all its consumers migrated. Array representation
+queries preserve original source references and use existing substitution only
+for applied bases. Two frontend regression groups and tests/borrowed_structs.rs
+retain label/width, Unicode, nominal scope, import-order and debug/native
+behavior checks, alongside the existing privacy/conversion/cycle fixtures.
+Formatting and diff checks pass; builds/tests have not run because the shared
+slot still belongs to the peer. The primary queued gate remains unchanged.
+Queue this isolated batch only on the same normal guarded lock. Do not commit
+or merge the copied primary work until its own complete gate is green.
+
+New worktrees do not populate libfst automatically. Before any isolated test
+started, stopped the blocked/no-child/empty-log waiter729041 and populated ONLY
+this worktree's dependency from the clean existing local libfst checkout,
+without hardlinks or a network fetch. Its independent checkout is clean at the
+already-pinned 74301348450701727776c1a0522a3f512738e9ae; the gitlink and
+primary dependency are unchanged. The cancelled waiter supplies no test result.
+The replacement full driver checks the pinned dependency and its clean state
+as well as source/corpus fingerprints. Primary unit663925 remains untouched.
+
+### 2026-11-14 — Codex — share the array contract with IR
+
+Read-only audit found IR's array_families/is_array_family_struct still use a
+separate spelling/fixpoint classifier and ignore aliased/applied bases. That
+would leave the new frontend and native layout consumers disagreeing. Before
+any test started, stopped only isolated waiter736491 after confirming blocked
+flock/no children/zero-byte log. It is not pass evidence; primary663925 and
+peer573402 are untouched. Own ir/lower_helpers/types.rs and its identity tests
+in THIS isolated worktree. Replace that classifier with the same borrowed
+DeclarationIndex array-representation query, preserving public metadata names
+only at the output boundary and adding alias/applied/module-order coverage.
+Keep all existing native assertions and the full gate; no runtime/LLVM bypass.
+
+Also own ir/lower/layout.rs for the representation boundary exposed by the
+same native regression. A fieldless newtype over Char[]/integer[]/real[] is
+not one bit per element: retain its ordinary element layout and written labels
+instead of treating every array family as packed logic. Preserve the packed
+enum/logic route. Use the shared array query for transitive ranges and enum
+element lookup, and add LLVM-free layout assertions before the unchanged
+Unicode/native test. Existing source-layout cycle guards still apply.
+
+The IR adapter now uses the shared query, and the source-layout boundary
+retains known ordinary scalar/aggregate array elements while preserving packed
+enum families and leaving unknown element layouts unknown. Transitive range
+and enum-element queries also normalize aliases. Added IR groups assert family
+selection and exact character/integer/real element domains, widths, labels and
+packed-enum metadata. The existing native Unicode/source-order/debug assertions
+remain unchanged. These changes have not executed any compiler test yet;
+format/diff checks pass. Queue the corrected isolated snapshot on the normal
+shared lock, without modifying primary663925 or its source/corpus inputs.
+
+The shared type-path identity query now also accepts an explicit declaration
+span used by internal layout metadata, as FunctionIndex already does; otherwise
+those generated layout paths cannot normalize even with the correct owner ID.
+This consults only the existing use/declaration facts, never leaf spelling.
+Coverage checks declaration-anchored arrays borrow the same source base and a
+familiar name at an unregistered span remains unresolved. Generated tuple
+producer IDs and the original span invariant are retained. No test pass is
+claimed before the guarded checks execute.
+
+### 2026-11-14 — Codex — nominal array field-access regression
+
+Precommit source review found a missing negative case in the primary's retained
+array-family field fallback: Family(Record[]) can reach Record's field names
+without indexing, while its old privacy check has been removed. The isolated
+registry removal already replaces that fallback with an unknown-field error.
+Own this worktree's visibility regression to pin direct secret/public fields,
+valid indexed public access and indexed private rejection in both module orders.
+Run a retained old-binary probe under the shared guard to verify the baseline
+behavior before rebuilding this isolated compiler. Do not accept/commit the
+primary separately if that probe confirms the hole, even if its older matrix
+is green. Keep the complete isolated gate and all native assertions required.
+
+Stopped only unstarted isolated waiter791349 after confirming blocked flock,
+no children and a zero-byte log; it supplies no pass evidence. Primary663925 is
+still running unchanged. No peer or ACTUAL corpus file is modified.
+
+The same root boundary must stop borrowed field ancestry at an array base:
+Family(Record[]) stores records but does not inherit Record's fields. Own
+collect.rs::struct_base_id's shape guard and visibility/borrowed-field tests,
+including an invalid view exposing element fields without an index. Preserve
+normal path/generic struct ancestry and explicit per-element views. Before
+editing, stopped only blocked/no-child/zero-log waiter903047; no test ran in
+it. Primary663925 and the ACTUAL corpus remain unchanged. The baseline probe,
+all focused cases and the full gate remain required before acceptance.
+
+### 2026-11-14 — Codex — baseline matrix green; correct isolated fixtures
+
+Primary unit1794682069805603352-663925 is terminal exited/success/0 at
+21:28:16 CET, peak1,612,697,600 bytes. Both complete Rust suites (854/833
+library cases, every integration and all46 debugger tests), strict all-target
+Clippy, both ACTUAL274 corpora,71 UI/71 JSON/56codes/2 migrations per mode,
+70 runner tests,12 artifacts,72 direct native/debug binaries and4 aggregate
+VCD/parity runs pass. Compiler7ab1cdda and ACTUAL corpus04c35557 fingerprints
+match before/after. This is complete gate evidence, not separate acceptance
+of the field fallback identified during review; the followup/probe is pending.
+
+Isolated unit1794688115900103510-944676 is terminal failed/101, peak713,592,832
+bytes. Its baseline probe rejected an INVALID one-segment module alias import,
+so it supplies no evidence about array-field checking. The Rust tests then
+failed to compile because the new fixture treats FnParam.name (Option<Ident>)
+as Ident at three sites. No focused tests executed. Own those fixture fixes:
+use a valid model::Family import and borrow the known named probe parameter.
+Retain every field/shape/native assertion and rerun the baseline plus complete
+isolated gate under the same normal guard. No commit, push or estimate change.
+
+### 2026-11-14 — Codex — retain existing array-newtype semantics
+
+Unit1794688414157465312-952056 is terminal failed/101: five focused cases
+pass and four fail. The corrected baseline probe rejects Family(Record[])
+with E-P003 before emitting metadata. It does NOT confirm a privacy hole in
+the primary; withdraw that provisional finding. The negative recovery tests
+must also assert the existing declaration rejection, rather than pretending
+record-array newtypes are valid. The source type checker also rejects bases
+derived from an unknown type parameter. No language expansion is approved by
+this foundations refactor.
+
+Own the same isolated layout/identity/declaration/visibility/native tests and
+proposal notes. Remove the speculative non-enum nominal-array layout route;
+keep ordinary arrays ordinary and nominal enum families packed. Use known
+enum bases with value parameters for applied-base coverage, retaining aliases,
+same-leaf identity, exact labels, source-owned enum metadata, reversed imports,
+reactive indexing and generated-debug waveform parity. Ordinary Unicode-array
+coverage remains in string_constant_contexts. Keep defensive array-field
+recovery checks without claiming the rejected declaration is valid. Correct
+the metadata test's collision setup rather than requiring fully-qualified
+display names for declarations with unique leaves. Rerun focused checks and
+the full unchanged gate under the normal shared guard. All five foundations
+sections remain required; no estimate increase or push.
+
+Corrected unit1794688980233580026-965190 is terminal failed/101, peak
+1,174,228,992 bytes. All focused nominal-array/borrowed-declaration/cycle and
+negative-recovery checks pass. The valid Logic-family native test compiles,
+but its emitted executable reports incomplete direct Process IR for block0.
+Keep that native fixture and all assertions. Add failure-only retained IR
+evidence, then fix the common alias/nominal-array lowering boundary rather
+than removing the process-local constructor, dynamic indices or meta-values.
+The bitpack/full phases did not run and are not passes.
+
+### 2026-11-15 — Codex — shared nominal-array Process contracts
+
+Diagnostic unit1794689066158458715-969094 is terminal failed/101, peak
+211,804,160 bytes. The retained dump at
+~/.cache/siox-jobs/tmp/siox-borrowed-structs-969452-false-false/failure-ir.txt
+shows the fixed three-element Chained constructor becoming96 bits of text,
+and local shape attributes using0..95. Process declaration recovery only
+recognizes a directly indexed struct base, losing aliases/transitive bases;
+its packed constructor also strips the nominal string context and infers
+width from that text. Own source_processes.rs and associated frontend/native
+regressions. Reuse DeclarationIndex's cycle-safe array representation for
+nominal shape and ranges, and preserve packed string context through the
+existing native enum/meta encoding path. Keep all native assertions and the
+normal full gate; no LLVM/runtime workaround or hardcoded enum values.
+
 ### 2026-11-14 — Codex — local acceptance of generic/field/string batch
 
 Full unit1794682069805603352-663925 is terminal exited/success/0 at
@@ -5577,3 +5325,41 @@ of the isolated followup. Estimate stays about86% of compiler foundations,
 not whole-compiler progress. All five proposal sections remain required,
 including applied generic/associated contexts, remaining typed values and
 defaults, suffix-oracle migration, remaining registries and residual hooks.
+
+### 2026-11-19 — Codex — accept borrowed struct and array contracts locally
+
+Registry unit1794709495191787889-1083259 completed exited/success/0 on
+November15,03:24:55–04:30:29 CET, peak1,612,738,560 bytes under normal
+2GiB/1.5GiB caps. All804 frontend/14 import tests, both COMPLETE Rust suites
+(861/default,840/bitpack library cases, every integration/doc-test and23
+GDB/DWARF tests per mode), strict all-target/all-feature Clippy,70 runner
+tests,12 artifacts,72 direct native/debug binaries,4 aggregate VCD/parity
+cases and BOTH ACTUAL274/274 corpora pass. Each mode passes71 UI/71 JSON/
+56codes/2 apply-recompile migrations. New family native coverage passes both
+storage modes/import orders/debug settings, exact labels, reactive binary/Z/X
+indices and exact ordinary/debug waveform parity.
+
+Full sourceff2b254a0f51b24fa7478d6b3539fded74b88bb8f1b71c8a54d876facb989756
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent review. Code-only fingerprint excluding
+Markdown is80bbb41db520a7125c9228bb91b259a12cc0770fc2b60d41346e73f77938bc24.
+Corpus HEAD38f4e01/all20 peer files and clean pinned libfst are unchanged.
+Both retained services are terminal. With an empty index, moved only this
+owned branch/index baseline to accepted abcbfe5 using a mixed reset; no
+worktree source changed and its full fingerprint remained identical.
+
+Accept Checker.structs removal, borrowed DefId-selected struct contracts,
+shared alias/applied/transitive array representations, cycle-safe field
+ancestry and Process shape/literal corrections. No new language feature,
+std encoding or LLVM/runtime workaround. Own acceptance Markdown/logs only
+after proof. Restore the primary's accepted Nov14 log/doc entry, retain all
+newer handoffs and prune entries older than October19 under the retention rule.
+
+Primary integer-binding unit1794710047903539993-1107184 failed101: the new
+test passed but two existing tests deliberately reject out-of-ABI declared
+integers. language.md defines integer as signed64. Blanket widening is NOT
+accepted or included here; withdraw it without weakening existing contracts.
+Unsigned suffix compatibility and its full successful-answer oracle remain
+required. LOCAL checkpoint only; no push/PR/wiki publication. All five
+sections remain required; estimate stays about86% of foundations, not the
+whole compiler. No acceptance of the separate integer-binding WIP.

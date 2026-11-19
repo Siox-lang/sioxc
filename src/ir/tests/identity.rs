@@ -695,6 +695,150 @@ fn nominal_array_shape_selects_array_family_not_a_trait_name() {
 }
 
 #[test]
+fn nominal_array_families_share_alias_and_applied_declaration_contracts() {
+    let mut sources = [
+        "module left;
+         pub enum Digit { '0' = 5, '1' = 17 }
+         pub type Storage = Digit[9..7];
+         pub struct Words(Storage);
+         pub struct Chained(Words);
+         pub struct Array<N: integer>(Digit[N]);
+         pub struct Applied(Array<3>);",
+        "module right;
+         pub struct Words { pub payload: real }
+         pub struct Chained(integer);
+         pub struct Array(integer);
+         pub struct Applied(real);",
+    ];
+    for _ in 0..2 {
+        let mut sink = DiagnosticSink::default();
+        let modules: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let functions = FunctionIndex::new(&resolved);
+        assert_eq!(
+            array_families(&modules, &functions),
+            [
+                "left::Words",
+                "left::Chained",
+                "left::Array",
+                "left::Applied"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::HashSet<_>>(),
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
+fn nominal_array_layouts_keep_scalar_elements_and_packed_enum_metadata() {
+    let mut sink = DiagnosticSink::default();
+    let modules = vec![
+        crate::syntax::parse_module(
+            FileId(0),
+            "module model;
+         enum Digit { '0' = 5, '1' = 17 }
+         type TextStorage = Char[9..7];
+         type NumberStorage = integer[6..4];
+         type RateStorage = real[12..10];
+         type DigitStorage = Digit[7..5];
+         struct Digits(DigitStorage);
+         struct DigitChain(Digits);
+         struct Store<N: integer>(Digit[N]);
+         struct Applied(Store<3>);
+         entity Top { text: TextStorage in, numbers: NumberStorage in,
+                      rates: RateStorage in, digits: DigitChain in, applied: Applied in }",
+            &mut sink,
+        ),
+        crate::syntax::parse_module(
+            FileId(1),
+            "module other; pub enum Digit { A = 31, B = 49 }",
+            &mut sink,
+        ),
+    ];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = crate::types::check(&modules, &resolved, &mut sink);
+    let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut checked = 0;
+    for item in &modules[0].items {
+        let ast::Item::Struct(structure) = item else {
+            continue;
+        };
+        if !structure.params.params.is_empty() {
+            continue;
+        }
+        let owner = resolved.declared(structure.name.span).unwrap();
+        let layout = &design.type_layouts[&owner];
+        let expected_range = match structure.name.text.as_str() {
+            "Digits" | "DigitChain" => LayoutRange { left: 7, right: 5 },
+            "Applied" => LayoutRange { left: 0, right: 2 },
+            name => panic!("unexpected structure {name}"),
+        };
+        assert!(
+            matches!(&layout.kind, LayoutKind::Packed {
+                width: 3,
+                range: Some(range),
+                element_enum: Some(element), ..
+            } if element == "model::Digit" && range == &expected_range),
+            "{layout:?}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    for (name, range, domain, element_width) in [
+        (
+            "text",
+            LayoutRange { left: 9, right: 7 },
+            ScalarDomain::Character,
+            32,
+        ),
+        (
+            "numbers",
+            LayoutRange { left: 6, right: 4 },
+            ScalarDomain::Integer,
+            64,
+        ),
+        (
+            "rates",
+            LayoutRange {
+                left: 12,
+                right: 10,
+            },
+            ScalarDomain::Real,
+            64,
+        ),
+    ] {
+        let layout = &design.source_layouts[&format!("Top.{name}")];
+        let LayoutKind::Array {
+            range: actual,
+            element,
+        } = &layout.kind
+        else {
+            panic!("ordinary arrays must keep their scalar elements: {layout:?}")
+        };
+        assert_eq!(*actual, Some(range));
+        assert_eq!(layout.packed_width(), Some(element_width * 3));
+        assert!(
+            matches!(&element.kind, LayoutKind::Scalar {
+                width, domain: actual_domain, ..
+            } if *width == element_width && actual_domain == &domain),
+            "{element:?}"
+        );
+    }
+}
+
+#[test]
 /// An operator with same-leaf operand types selects the resolved overload.
 fn equal_operator_operand_leaves_select_the_resolved_overload() {
     let sources = [

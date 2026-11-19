@@ -28,6 +28,249 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn borrowed_struct_classification_and_array_bases_keep_aliases_labels_and_scope() {
+    let mut sources = [
+        "module left;
+         pub enum Level { Low = 9, High = 21 }
+         pub type Storage = Level[9..7];
+         pub struct Words(Storage);
+         pub struct Chained(Words);
+         pub struct Generic<N: integer>(Level[N]);
+         pub struct Applied(Generic<3>);
+         pub struct Packet { pub payload: integer }
+         pub struct Scalar(integer);
+         pub struct Empty {}
+         pub type EmptyAlias = Empty;
+         fn probe(words: Words, chained: Chained, applied: Applied,
+                  packet: Packet, scalar: Scalar, empty: EmptyAlias) {}",
+        "module right;
+         pub enum Level { Low = 4, High = 13 }
+         pub struct Words(Level[4..2]);
+         pub struct Chained(Words);
+         pub struct Packet { pub payload: real }
+         pub struct Scalar(real);
+         pub struct Empty { pub data: real }
+         pub type EmptyAlias = Empty;
+         fn probe(words: Words, chained: Chained, packet: Packet,
+                  scalar: Scalar, empty: EmptyAlias) {}",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let mut sink = DiagnosticSink::default();
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        for module in &modules {
+            let left = module.path.segments[0].text == "left";
+            let Item::Fn(probe) = module.items.last().unwrap() else {
+                panic!("probe")
+            };
+            for parameter in &probe.params {
+                let name = parameter.name.as_ref().unwrap().text.as_str();
+                let declared = parameter.ty.as_ref().unwrap();
+                let checked = checker.ast_ty(declared);
+                assert!(checker.is_struct_ty(&checked), "{name}");
+                let representation = checker.declarations.array_representation(declared);
+                match name {
+                    "words" | "chained" => {
+                        assert!(matches!(
+                            representation,
+                            Some(std::borrow::Cow::Borrowed(_))
+                        ));
+                        let element = {
+                            let level = module
+                                .items
+                                .iter()
+                                .find_map(|item| match item {
+                                    Item::Enum(level) => resolved.declared(level.name.span),
+                                    _ => None,
+                                })
+                                .unwrap();
+                            assert!(!checker.is_struct_ty(&Ty::Named(level)));
+                            Ty::Named(level)
+                        };
+                        let family = format!(
+                            "{}::{}",
+                            module.path.segments[0].text,
+                            if name == "words" { "Words" } else { "Chained" }
+                        );
+                        assert_eq!(
+                            checked,
+                            Ty::Array {
+                                elem: Box::new(element),
+                                family: Some(family),
+                                len: 3,
+                                low: if left { 7 } else { 2 },
+                            }
+                        );
+                        let structure = module
+                            .items
+                            .iter()
+                            .find_map(|item| match item {
+                                Item::Struct(structure) if structure.name.text == "Words" => {
+                                    Some(structure)
+                                }
+                                _ => None,
+                            })
+                            .unwrap();
+                        let base = checker
+                            .declarations
+                            .normalize_type(structure.base.as_ref().unwrap())
+                            .unwrap();
+                        assert!(std::ptr::eq(
+                            representation.as_ref().unwrap().as_ref(),
+                            base.as_ref()
+                        ));
+                        let internal = Type::Path(Path {
+                            segments: vec![structure.name.clone()],
+                            span: structure.name.span,
+                        });
+                        assert!(resolved.resolved(structure.name.span).is_none());
+                        let internal_representation = checker
+                            .declarations
+                            .array_representation(&internal)
+                            .unwrap();
+                        assert!(std::ptr::eq(
+                            internal_representation.as_ref(),
+                            base.as_ref()
+                        ));
+                    }
+                    "applied" => {
+                        assert!(matches!(representation, Some(std::borrow::Cow::Owned(_))));
+                        let Type::Indexed { base, .. } = representation.as_ref().unwrap().as_ref()
+                        else {
+                            panic!("{representation:?}")
+                        };
+                        assert_eq!(
+                            checked,
+                            Ty::Array {
+                                elem: Box::new(checker.ast_ty(base)),
+                                family: Some("left::Applied".into()),
+                                len: 3,
+                                low: 0,
+                            }
+                        );
+                    }
+                    "empty" => {
+                        assert!(representation.is_none());
+                        checker.check_storable(declared);
+                    }
+                    _ => assert!(representation.is_none()),
+                }
+            }
+        }
+        assert!(!checker.is_struct_ty(&Ty::Integer));
+        let missing = Span::new(FileId(u32::MAX), 0..5);
+        assert!(
+            checker
+                .declarations
+                .array_representation(&Type::Path(Path {
+                    segments: vec![Ident {
+                        text: "Words".into(),
+                        span: missing
+                    }],
+                    span: missing,
+                }))
+                .is_none(),
+            "a familiar spelling must not replace missing identity"
+        );
+        assert!(!checker.is_struct_ty(&Ty::Array {
+            elem: Box::new(Ty::Integer),
+            family: None,
+            len: 3,
+            low: 7,
+        }));
+        assert_eq!(
+            checker.sink.error_count(),
+            1,
+            "{:?}",
+            checker.sink.diagnostics()
+        );
+        let error = checker
+            .sink
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .unwrap();
+        assert_eq!(error.code, Some(codes::TYPE_MISMATCH));
+        assert!(error.message.contains("Empty") && error.message.contains("no fields"));
+        sources.reverse();
+    }
+}
+
+#[test]
+fn borrowed_array_representations_stop_at_invalid_source_cycles() {
+    for source in [
+        "module invalid;
+         struct Left(Right); struct Right(Left);
+         fn probe(value: Left) {}",
+        "module invalid;
+         struct Loop<T>(Loop<T>);
+         fn probe(value: Loop<integer>) {}",
+        "module invalid;
+         type Left = Right; type Right = Left;
+         fn probe(value: Left) {}",
+    ] {
+        let mut sink = DiagnosticSink::default();
+        let modules = vec![crate::syntax::parse_module(FileId(0), source, &mut sink)];
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let errors = sink.error_count();
+        assert!(
+            errors > 0,
+            "a malformed cycle needs its resolver diagnostic"
+        );
+        let mut checker = Checker::new(&mut sink, &resolved, &modules);
+        checker.collect(&modules);
+        let Item::Fn(probe) = modules[0].items.last().unwrap() else {
+            panic!("probe")
+        };
+        let declared = probe.params[0].ty.as_ref().unwrap();
+        assert!(checker
+            .declarations
+            .array_representation(declared)
+            .is_none());
+        assert!(checker.array_families.is_empty());
+        assert!(checker.array_elements.is_empty());
+        for (_, structure) in checker.declarations.structures() {
+            assert!(structure.base.is_some(), "never erase the source cycle");
+        }
+        assert_eq!(checker.sink.error_count(), errors);
+    }
+}
+
+#[test]
+fn borrowed_struct_fields_stop_at_array_storage_instead_of_its_element() {
+    let (modules, resolved) = parse(&["module model;
+        struct Record { pub value: integer }
+        type Storage = Record[];
+        struct Family(Storage);
+        struct Chained(Family);"]);
+    let mut sink = DiagnosticSink::default();
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    for item in &modules[0].items {
+        let Item::Struct(structure) = item else {
+            continue;
+        };
+        let owner = resolved.declared(structure.name.span).unwrap();
+        if structure.name.text == "Record" {
+            assert_eq!(checker.struct_field_count(owner), Some(1));
+            assert!(checker.field_decl_ty(owner, "value").is_some());
+        } else {
+            assert_eq!(checker.struct_field_count(owner), Some(0));
+            assert!(checker.base_struct_fields_of(owner).is_empty());
+            assert!(checker.field_decl_ty(owner, "value").is_none());
+            assert!(checker.field_visibility_for(owner, "value").is_none());
+        }
+    }
+    assert!(
+        !checker.sink.has_errors(),
+        "{:?}",
+        checker.sink.diagnostics()
+    );
+}
+
+#[test]
 fn field_contracts_borrow_resolved_source_without_legacy_struct_maps() {
     let mut sources = [
         "module left;
@@ -45,7 +288,6 @@ fn field_contracts_borrow_resolved_source_without_legacy_struct_maps() {
         let mut sink = DiagnosticSink::default();
         let mut checker = Checker::new(&mut sink, &resolved, &modules);
         checker.collect(&modules);
-        checker.structs.clear();
         for module in &modules {
             let structure = |name: &str| {
                 module
@@ -124,7 +366,6 @@ fn borrowed_field_contracts_stop_on_invalid_base_cycles() {
     assert!(sink.has_errors());
     let mut checker = Checker::new(&mut sink, &resolved, &modules);
     checker.collect(&modules);
-    checker.structs.clear();
     for item in &modules[0].items {
         let Item::Struct(structure) = item else {
             continue;
@@ -545,8 +786,6 @@ fn checker_struct_conversion_ancestry_uses_normalized_borrowed_declarations() {
                 _ => None,
             })
             .collect();
-        // The conversion contract must not depend on the copied compatibility map.
-        checker.structs.clear();
         let packet = &owners["left::Packet"];
         for name in ["left::Wrapped", "left::Top"] {
             assert!(checker.conversion_exists(&owners[name], packet), "{name}");

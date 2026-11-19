@@ -5,7 +5,7 @@ use super::*;
 impl<'a> Checker<'a> {
     /// Field names and values in a struct literal, against the declared type.
     /// Instance construction reuses `Construct`, so this only fires when the
-    /// target names a known struct — an entity is not in `structs`.
+    /// target names a resolved struct, rather than an entity.
     pub(super) fn check_struct_literal_fields(&mut self, l: &LetDecl, sym: &HashMap<String, Ty>) {
         let Some(ty) = &l.ty else { return };
         let Some(value) = &l.value else { return };
@@ -32,7 +32,7 @@ impl<'a> Checker<'a> {
         let Some(head) = self.type_key(&ty) else {
             return;
         };
-        if !self.structs.contains_key(&head) {
+        if self.struct_type_id(&ty).is_none() {
             return;
         }
         let expected = self.ast_ty(&ty);
@@ -59,7 +59,7 @@ impl<'a> Checker<'a> {
         let Some(head) = self.definition_key(*id) else {
             return false;
         };
-        if !self.structs.contains_key(&head) {
+        if self.declarations.structure(*id).is_none() {
             return false;
         }
         self.check_struct_literal_for_head(expected, &head, value, sym);
@@ -255,11 +255,7 @@ impl<'a> Checker<'a> {
         // A name-less nested literal gets its type from this field. Recurse so
         // every nested leaf is contextualized, instead of accepting it merely
         // because an unknown expression type suppresses compatibility checks.
-        let nested_struct = self
-            .declarations
-            .normalize_type(declared)
-            .and_then(|ty| self.type_key(&ty))
-            .is_some_and(|head| self.structs.contains_key(&head));
+        let nested_struct = self.struct_type_id(declared).is_some();
         if nested_struct && matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
             self.check_struct_literal_value(declared, value, sym);
             return;

@@ -185,7 +185,13 @@ impl<'a> Checker<'a> {
             // unsigned[8])`) gives it its length: unsized, a `Word` took or
             // gave any width (#244).
             true => {
-                let sized = match self.structs.get(&key).and_then(|(base, _)| base.as_ref()) {
+                let base = self
+                    .resolved
+                    .resolved(path.span)
+                    .and_then(|owner| self.declarations.structure(owner))
+                    .and_then(|structure| structure.base.as_ref())
+                    .and_then(|base| self.declarations.array_representation(base));
+                let sized = match base.as_deref() {
                     Some(Type::Indexed {
                         index: Some(index), ..
                     }) => match index.as_ref() {

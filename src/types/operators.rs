@@ -417,7 +417,7 @@ impl<'a> Checker<'a> {
         let (Some(owner), Some(rhs)) = (self.ty_head(left), self.ty_head(right)) else {
             return false;
         };
-        let nominal = self.structs.contains_key(&owner) || self.is_enum_ty(left);
+        let nominal = self.is_struct_ty(left) || self.is_enum_ty(left);
         if owner == rhs
             || !nominal
             || self

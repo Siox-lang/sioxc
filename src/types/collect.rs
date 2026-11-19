@@ -86,7 +86,6 @@ impl<'a> Checker<'a> {
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
             conversion_sigs: HashSet::new(),
-            structs: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             array_families: HashSet::new(),
@@ -258,7 +257,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        self.break_derivation_cycles();
     }
 
     /// Collect one non-entity type declaration.
@@ -633,14 +631,6 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::Struct(st) => {
-                let Some(struct_key) = self.declaration_key(st.name.span) else {
-                    return;
-                };
-                let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
-                self.structs
-                    .insert(struct_key.clone(), (st.base.clone(), fields));
-            }
             Item::View(v) => {
                 let Some(key) = self
                     .declaration_key(v.name.span)
@@ -705,41 +695,6 @@ impl<'a> Checker<'a> {
                  return type) and convert there"
             ),
         );
-    }
-
-    /// Drop the base of any struct that (transitively) derives from itself.
-    /// Resolve reports the cycle; this makes the table *acyclic* so the many
-    /// walkers over it — field collection, width, vector-family fixpoint —
-    /// terminate. Guarding each one individually was whack-a-mole: the crash
-    /// was a stack overflow that aborted the process, so any missed walker is
-    /// another core dump.
-    pub(super) fn break_derivation_cycles(&mut self) {
-        let names: Vec<String> = self.structs.keys().cloned().collect();
-        let mut cyclic: Vec<String> = Vec::new();
-        for name in names {
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut cur = name.clone();
-            while seen.insert(cur.clone()) {
-                let Some(next) = self
-                    .structs
-                    .get(&cur)
-                    .and_then(|(b, _)| b.as_ref())
-                    .and_then(|ty| self.type_key(ty))
-                else {
-                    break;
-                };
-                if next == name {
-                    cyclic.push(name.clone());
-                    break;
-                }
-                cur = next;
-            }
-        }
-        for name in cyclic {
-            if let Some((base, _)) = self.structs.get_mut(&name) {
-                *base = None;
-            }
-        }
     }
 
     /// Fields retain their original declaration order and resolved owner.
@@ -818,7 +773,11 @@ impl<'a> Checker<'a> {
 
     fn struct_base_id(&self, owner: DefId) -> Option<DefId> {
         let structure = self.declarations.structure(owner)?;
-        self.struct_type_id(structure.base.as_ref()?)
+        let base = self.declarations.normalize_type(structure.base.as_ref()?)?;
+        match base.as_ref() {
+            Type::Path(_) | Type::Generic { .. } => self.struct_type_id(&base),
+            _ => None,
+        }
     }
 
     pub(super) fn struct_type_id(&self, ty: &Type) -> Option<DefId> {
@@ -839,40 +798,21 @@ impl<'a> Checker<'a> {
         self.array_families.contains(name)
     }
 
-    /// Fixpoint: a newtype directly over `T[]`, or over an already-known array
-    /// family, is itself an array family. `struct Byte(unsigned[8])` therefore
-    /// inherits unsigned's representation without a marker trait.
+    /// Fieldless nominal bases borrow their array representation, independent
+    /// of collection order and without a marker trait.
     pub(super) fn resolve_array_families(&mut self) {
-        loop {
-            let mut changed = false;
-            let names: Vec<String> = self.structs.keys().cloned().collect();
-            for name in names {
-                if self.array_families.contains(&name) {
-                    continue;
-                }
-                let Some((base, fields)) = self.structs.get(&name) else {
-                    continue;
-                };
-                if !fields.is_empty() {
-                    continue;
-                }
-                let is_array = match base {
-                    // The indexed type is the representation itself. Its
-                    // element may be scalar or aggregate; lowering preserves
-                    // that base shape.
-                    Some(Type::Indexed { .. }) => true,
-                    Some(Type::Path(p)) => self
-                        .path_key(p)
-                        .is_some_and(|head| self.array_families.contains(&head)),
-                    _ => false,
-                };
-                if is_array {
-                    self.array_families.insert(name);
-                    changed = true;
-                }
+        for (owner, structure) in self.declarations.structures() {
+            if !structure.fields.is_empty()
+                || structure
+                    .base
+                    .as_ref()
+                    .and_then(|base| self.declarations.array_representation(base))
+                    .is_none()
+            {
+                continue;
             }
-            if !changed {
-                break;
+            if let Some(name) = self.definition_key(owner) {
+                self.array_families.insert(name);
             }
         }
     }
@@ -880,24 +820,37 @@ impl<'a> Checker<'a> {
     /// Resolve each array family's element type, following newtype chains to the
     /// underlying element.
     pub(super) fn resolve_array_elements(&mut self) {
-        for family in self.array_families.clone() {
-            let mut current = family.clone();
+        for (owner, _) in self.declarations.structures() {
+            let Some(family) = self.definition_key(owner) else {
+                continue;
+            };
+            if !self.array_families.contains(&family) {
+                continue;
+            }
+            let mut current = owner;
             let mut seen = HashSet::new();
-            while seen.insert(current.clone()) {
-                let Some((base, _)) = self.structs.get(&current) else {
+            while seen.insert(current) {
+                let Some(base) = self
+                    .declarations
+                    .structure(current)
+                    .and_then(|structure| structure.base.as_ref())
+                    .and_then(|base| self.declarations.array_representation(base))
+                else {
                     break;
                 };
-                let Some(base) = base else {
+                let Some(head) = self.type_key(&base) else {
                     break;
                 };
-                let Some(head) = self.type_key(base) else {
-                    break;
-                };
-                if matches!(base, Type::Indexed { .. }) && !self.array_families.contains(&head) {
+                if matches!(base.as_ref(), Type::Indexed { .. })
+                    && !self.array_families.contains(&head)
+                {
                     self.array_elements.insert(family.clone(), head);
                     break;
                 }
-                current = head;
+                let Some(parent) = self.struct_type_id(&base) else {
+                    break;
+                };
+                current = parent;
             }
         }
     }

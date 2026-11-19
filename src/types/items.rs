@@ -416,13 +416,10 @@ impl<'a> Checker<'a> {
             .as_ref()
             .and_then(|path| path.segments.last())
             .is_some_and(|segment| segment.text == "Resolve");
-        let Some(key) = self.type_key(&implementation.target) else {
-            return;
-        };
         let record = self
-            .structs
-            .get(&key)
-            .is_some_and(|(base, fields)| base.is_none() && !fields.is_empty());
+            .struct_type_id(&implementation.target)
+            .and_then(|owner| self.declarations.structure(owner))
+            .is_some_and(|structure| structure.base.is_none() && !structure.fields.is_empty());
         if !is_resolve || !record {
             return;
         }
@@ -446,13 +443,14 @@ impl<'a> Checker<'a> {
         match ty {
             Type::Indexed { base, .. } => self.check_storable(base),
             Type::Path(_) | Type::Generic { .. } => {
-                let Some(key) = self.type_key(ty) else { return };
-                if self
-                    .structs
-                    .get(&key)
-                    .is_some_and(|(base, fields)| base.is_none() && fields.is_empty())
-                {
-                    let name = key.rsplit("::").next().unwrap_or(&key).to_string();
+                let Some(structure) = self
+                    .struct_type_id(ty)
+                    .and_then(|owner| self.declarations.structure(owner))
+                else {
+                    return;
+                };
+                if structure.base.is_none() && structure.fields.is_empty() {
+                    let name = &structure.name.text;
                     self.error_with_help(
                         codes::TYPE_MISMATCH,
                         crate::syntax::ast::type_span(ty),
@@ -845,7 +843,6 @@ mod tests {
             assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
             let mut checker = Checker::new(&mut sink, &resolved, &modules);
             checker.collect(&modules);
-            checker.structs.clear();
             let mut checked = 0;
             for function in modules
                 .iter()

@@ -18,6 +18,17 @@ impl<'a> Checker<'a> {
         matches!(ty, Ty::Named(owner) if self.enum_values.members(*owner).is_some())
     }
 
+    pub(super) fn is_struct_ty(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named(owner) => self.declarations.structure(*owner).is_some(),
+            Ty::Array {
+                family: Some(family),
+                ..
+            } => self.is_array_family(family),
+            _ => false,
+        }
+    }
+
     /// A checked entity type already carries its resolver-selected identity.
     pub(super) fn entity_id(&self, ty: &Ty) -> Option<DefId> {
         match ty {
@@ -350,10 +361,6 @@ impl<'a> Checker<'a> {
     /// the backend's intrinsic arithmetic fallback.
     pub(super) fn is_packed_array_newtype(&self, name: &str) -> bool {
         self.array_families.contains(name)
-            && self
-                .structs
-                .get(name)
-                .is_some_and(|(_, fields)| fields.is_empty())
     }
 
     /// A constant initializer must lie inside a value-range-constrained

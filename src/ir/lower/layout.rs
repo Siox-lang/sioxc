@@ -366,12 +366,18 @@ impl<'a> Lowering<'a> {
         }
 
         if let Some(family) = self.packed_family(&ty, env) {
-            let width = type_width(&ty, env, &self.free_fns, &self.structs, &self.const_ranges);
+            let range = self.layout_range(&ty, env);
+            let width = range
+                .and_then(|range| range.len())
+                .and_then(|width| u32::try_from(width).ok())
+                .unwrap_or_else(|| {
+                    type_width(&ty, env, &self.free_fns, &self.structs, &self.const_ranges)
+                });
             return SourceLayout {
                 span,
                 kind: LayoutKind::Packed {
                     width,
-                    range: self.layout_range(&ty, env, &mut HashSet::new()),
+                    range,
                     element_enum: self.array_element_enum(&family),
                     family,
                 },
@@ -498,29 +504,35 @@ impl<'a> Lowering<'a> {
             ast::Type::Path(_) => {
                 let name = self.free_fns.type_head_key(ty)?;
                 (self.array_families.contains(&name)
-                    && type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges) != 0)
-                    .then_some(name)
+                    && self
+                        .layout_range(ty, env)
+                        .and_then(|range| range.len())
+                        .is_some_and(|length| length > 0))
+                .then_some(name)
             }
             _ => None,
         }
     }
 
-    /// The declared index range of a type, guarding against an alias cycle.
+    /// Written labels through the same checked nominal/alias representation.
     pub(super) fn layout_range(
         &self,
         ty: &ast::Type,
         env: &HashMap<String, i64>,
-        seen: &mut HashSet<String>,
     ) -> Option<LayoutRange> {
-        if let Some((left, right)) = self.declared_range(ty, env) {
-            return Some(LayoutRange { left, right });
-        }
-        let name = self.free_fns.type_head_key(ty)?;
-        if !seen.insert(name.clone()) {
+        let representation = self.free_fns.declarations().array_representation(ty)?;
+        if type_width(
+            &representation,
+            env,
+            &self.free_fns,
+            &self.structs,
+            &self.const_ranges,
+        ) == 0
+        {
             return None;
         }
-        let base = self.structs.get(&name)?.base.as_ref()?;
-        self.layout_range(base, env, seen)
+        let (left, right) = self.declared_range(&representation, env)?;
+        Some(LayoutRange { left, right })
     }
 
     /// The element enum of an array family, so companions can render variants.
@@ -529,9 +541,14 @@ impl<'a> Lowering<'a> {
         let mut seen = HashSet::new();
         while seen.insert(current.clone()) {
             let base = self.structs.get(&current)?.base.as_ref()?;
-            let element = match base {
+            let representation = self
+                .free_fns
+                .declarations()
+                .array_representation(base)
+                .or_else(|| self.free_fns.normalize_type(base))?;
+            let element = match representation.as_ref() {
                 ast::Type::Indexed { base, .. } => base.as_ref(),
-                ast::Type::Path(_) => base,
+                base @ ast::Type::Path(_) => base,
                 _ => return None,
             };
             if let ast::Type::Path(path) = element {

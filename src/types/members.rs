@@ -131,11 +131,7 @@ impl<'a> Checker<'a> {
         {
             return;
         }
-        // Array-family compatibility facts still use layout names; ordinary
-        // structs and unambiguous view targets use their resolved declarations.
-        let mut seen = HashSet::new();
-        let mut cur = Some(head.clone());
-        if let Some(owner) = borrowed_owner {
+        let fields = if let Some(owner) = borrowed_owner {
             if self.field_declaration(owner, &field.text).is_some() {
                 if through_view.is_none() {
                     self.check_field_visibility(owner, field);
@@ -146,37 +142,12 @@ impl<'a> Checker<'a> {
             if self.struct_field_count(owner).is_none() {
                 return;
             }
-            cur = None;
-        }
-        while let Some(name) = cur {
-            if !seen.insert(name.clone()) {
-                return; // cyclic derivation: already diagnosed elsewhere
-            }
-            let Some((base_ty, fields)) = self.structs.get(&name) else {
-                // A newtype over a scalar (`struct Number(integer)`) ends
-                // the walk with no such field: `n.xyz` passed (#221). Only
-                // an unknown starting type is someone else's to report.
-                if name == head {
-                    return;
-                }
-                break;
-            };
-            if fields.contains(&field.text) {
-                // Applying a view is the explicit structural interface for
-                // its backing storage. It exposes the fields it names without
-                // making raw `Struct.field` access public everywhere.
-                return;
-            }
-            cur = base_ty.as_ref().and_then(|ty| self.type_key(ty));
-        }
-        let fields = borrowed_owner
-            .map(|owner| self.base_struct_fields_of(owner))
-            .unwrap_or_else(|| {
-                self.structs
-                    .get(&head)
-                    .map(|(_, fields)| fields.clone())
-                    .unwrap_or_default()
-            });
+            self.base_struct_fields_of(owner)
+        } else if self.is_array_family(&head) {
+            Vec::new()
+        } else {
+            return;
+        };
         let mut d = Diagnostic::error(format!(
             "`{}` has no field `{}`",
             self.key_leaf(&head),
@@ -355,7 +326,7 @@ impl<'a> Checker<'a> {
         // methods, or a declared struct or enum, which has none without an
         // impl (`p.foo()` on a bare struct passed and did not lower, #222).
         if !self.methods.keys().any(|(h, _)| *h == head)
-            && !self.structs.contains_key(&head)
+            && !self.is_struct_ty(&recv)
             && !self.is_enum_ty(&recv)
             && !matches!(head.as_str(), "integer" | "natural" | "real" | "Char")
         {

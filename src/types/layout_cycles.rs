@@ -234,7 +234,6 @@ mod tests {
         assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
         let mut checker = Checker::new(&mut sink, &resolved, &modules);
         checker.collect(&modules);
-        checker.structs.clear();
         checker.check_struct_field_cycles();
         drop(checker);
         sink.diagnostics()

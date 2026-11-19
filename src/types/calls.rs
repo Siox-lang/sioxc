@@ -23,7 +23,7 @@ impl<'a> Checker<'a> {
         let Some(target) = self.type_kind_name(&target_ty) else {
             return;
         };
-        if !self.structs.contains_key(&target) && !self.is_enum_ty(&target_ty) {
+        if !self.is_struct_ty(&target_ty) && !self.is_enum_ty(&target_ty) {
             return;
         }
         // Nominal packed-array newtypes use the same explicit raw-resize
@@ -112,11 +112,10 @@ impl<'a> Checker<'a> {
         let source = match &source_ty {
             Ty::Named(id) => {
                 let key = self.definition_key(*id);
-                let record = key.as_ref().is_some_and(|key| {
-                    self.structs
-                        .get(key)
-                        .is_some_and(|(_, fields)| !fields.is_empty())
-                });
+                let record = self
+                    .declarations
+                    .structure(*id)
+                    .is_some_and(|structure| !structure.fields.is_empty());
                 if !record {
                     return;
                 }

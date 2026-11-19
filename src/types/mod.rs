@@ -433,8 +433,6 @@ struct Checker<'a> {
     /// source in the key prevents an unrelated `From` implementation from
     /// making every one-argument constructor appear legal.
     conversion_sigs: HashSet<(String, String)>,
-    /// Struct name -> (derivation base, own field names) for inheritance.
-    structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
     /// Nominal newtypes whose representation is an array (`struct F(T[])`).

@@ -255,7 +255,14 @@ impl<'a> DeclarationIndex<'a> {
         let Type::Path(path) = normalized.as_ref() else {
             return None;
         };
-        self.resolved.resolved(path.span)
+        self.type_path_id(path)
+    }
+
+    fn type_path_id(&self, path: &Path) -> Option<DefId> {
+        // Internal layout types may carry the declaration span, not a source use.
+        self.resolved
+            .resolved(path.span)
+            .or_else(|| self.resolved.declared(path.span))
     }
 
     /// Keep the selected nominal enum, while transparent aliases name its domain.
@@ -454,6 +461,43 @@ impl<'a> DeclarationIndex<'a> {
         self.normalize_type_inner(ty, &mut Expansion::default())
     }
 
+    /// The first array representation reached through fieldless nominal bases.
+    pub(crate) fn array_representation<'t>(&self, ty: &'t Type) -> Option<Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        let mut representation = self.normalize_type(ty)?;
+        let mut seen = HashSet::new();
+        loop {
+            let (owner, arguments) = match representation.as_ref() {
+                Type::Indexed { .. } => return Some(representation),
+                Type::Path(path) => (self.type_path_id(path)?, None),
+                Type::Generic { base, args, .. } => {
+                    let Type::Path(path) = base.as_ref() else {
+                        return None;
+                    };
+                    (self.type_path_id(path)?, Some(args.as_slice()))
+                }
+                _ => return None,
+            };
+            if !seen.insert(owner) {
+                return None;
+            }
+            let declaration = self.structure(owner)?;
+            if !declaration.fields.is_empty() {
+                return None;
+            }
+            let base = declaration.base.as_ref()?;
+            representation = match arguments {
+                Some(arguments) => {
+                    let arguments = self.arguments(&declaration.params, arguments).ok()?;
+                    self.instantiate_type(&arguments, base)?
+                }
+                None => self.normalize_type(base)?,
+            };
+        }
+    }
+
     /// Report only a cycle actually encountered during shared normalization.
     pub(crate) fn alias_cycle(&self, target: &Type) -> Option<DefId> {
         let mut expansion = Expansion::default();
@@ -488,7 +532,7 @@ impl<'a> DeclarationIndex<'a> {
     {
         match ty {
             Type::Path(path) => {
-                let id = self.resolved.resolved(path.span)?;
+                let id = self.type_path_id(path)?;
                 let Some(Declaration::Alias(params, target)) = self.declarations.get(&id) else {
                     return Some(Cow::Borrowed(ty));
                 };
@@ -524,7 +568,7 @@ impl<'a> DeclarationIndex<'a> {
                 }
                 let args = rewritten.as_ref().unwrap_or(args);
                 if let Type::Path(path) = base.as_ref() {
-                    let id = self.resolved.resolved(path.span)?;
+                    let id = self.type_path_id(path)?;
                     if self.resolved.def(id).is_some_and(|d| {
                         d.kind == DefKind::Builtin && d.name == crate::syntax::ast::TUPLE_POSITION
                     }) {

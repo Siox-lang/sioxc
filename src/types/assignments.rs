@@ -483,9 +483,7 @@ impl<'a> Checker<'a> {
             // Suggest `T(...)` only where that conversion is defined: a named
             // type without a route from the value's type would reject it.
             let route = match (self.type_kind_name(&lhs), self.type_kind_name(&rhs)) {
-                (Some(target), Some(_))
-                    if self.structs.contains_key(&target) || self.is_enum_ty(&lhs) =>
-                {
+                (Some(_), Some(_)) if self.is_struct_ty(&lhs) || self.is_enum_ty(&lhs) => {
                     self.conversion_exists(&lhs, &rhs)
                 }
                 _ => true,

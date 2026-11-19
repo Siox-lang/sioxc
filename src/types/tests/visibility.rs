@@ -3,6 +3,90 @@
 use super::*;
 
 #[test]
+fn rejected_record_array_newtypes_do_not_inherit_element_fields_during_recovery() {
+    let model = "module model;
+        pub struct Record { secret: integer, pub visible: real }
+        pub struct Family(Record[]);";
+    let client = "module client;
+        fn direct_secret(value: model::Family) -> integer { return value.secret; }
+        fn direct_public(value: model::Family) -> real { return value.visible; }
+        fn indexed_public(value: model::Family) -> real { return value[0].visible; }
+        fn indexed_private(value: model::Family) -> integer { return value[0].secret; }";
+    let mut sources = [(model, FileId(0)), (client, FileId(1))];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 4, "{:?}", sink.diagnostics());
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    && diagnostic.message.contains("elements must be an enum")
+            }),
+            "{errors:?}"
+        );
+        let missing: Vec<_> = errors
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::UNKNOWN_NAME))
+            .collect();
+        assert_eq!(missing.len(), 2, "{errors:?}");
+        for field in ["secret", "visible"] {
+            assert!(
+                missing.iter().any(|diagnostic| diagnostic
+                    .message
+                    .contains(&format!("has no field `{field}`"))),
+                "{errors:?}"
+            );
+        }
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+                .count(),
+            1,
+            "{errors:?}"
+        );
+        sources.reverse();
+    }
+}
+
+#[test]
+fn rejected_record_array_views_do_not_expose_element_fields_during_recovery() {
+    let sink = check_modules(&[(
+        "module model;
+         struct Record { pub value: integer }
+         struct Family(Record[]);
+         view Invalid for Family { value out }
+         view Valid for Record { value out }",
+        FileId(0),
+    )]);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 2, "{:?}", sink.diagnostics());
+    assert!(errors
+        .iter()
+        .all(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)));
+    assert!(
+        errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("elements must be an enum")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("has no field `value`")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn borrowed_field_checks_do_not_add_missing_members_to_derivation_cycles() {
     let sink = check_modules(&[(
         "module model;

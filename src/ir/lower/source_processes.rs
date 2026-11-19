@@ -379,21 +379,15 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
 fn sized_struct_base<'a>(
     definition: crate::resolve::DefId,
     context: &LoweringContext<'a>,
-) -> Option<&'a ast::Type> {
-    context
-        .modules
-        .iter()
-        .flat_map(|module| &module.items)
-        .find_map(|item| {
-            let ast::Item::Struct(declaration) = item else {
-                return None;
-            };
-            (declaration.fields.is_empty()
-                && context.resolved.declared(declaration.name.span) == Some(definition))
-            .then_some(declaration.base.as_ref())
-            .flatten()
-            .filter(|base| matches!(base, ast::Type::Indexed { index: Some(_), .. }))
-        })
+) -> Option<std::borrow::Cow<'a, ast::Type>> {
+    let declarations = context.functions.declarations();
+    let structure = declarations.structure(definition)?;
+    if !structure.fields.is_empty() {
+        return None;
+    }
+    declarations
+        .array_representation(structure.base.as_ref()?)
+        .filter(|base| matches!(base.as_ref(), ast::Type::Indexed { index: Some(_), .. }))
 }
 
 fn process_declared_type(
@@ -408,6 +402,36 @@ fn process_declared_type_inner(
     context: &LoweringContext<'_>,
     aliases: &mut std::collections::HashSet<crate::resolve::DefId>,
 ) -> Option<crate::types::Ty> {
+    if matches!(ty, ast::Type::Path(_) | ast::Type::Generic { .. }) {
+        let declarations = context.functions.declarations();
+        if let Some(representation) = declarations.array_representation(ty) {
+            let normalized = declarations.normalize_type(ty)?;
+            let head = match normalized.as_ref() {
+                ast::Type::Generic { base, .. } => base.as_ref(),
+                head => head,
+            };
+            if let ast::Type::Path(path) = head {
+                let owner = context
+                    .resolved
+                    .resolved(path.span)
+                    .or_else(|| context.resolved.declared(path.span))?;
+                let family = context.functions.nominal_type_key(owner)?;
+                if declarations.structure(owner).is_some() {
+                    let crate::types::Ty::Array { elem, len, low, .. } =
+                        process_declared_type_inner(&representation, context, aliases)?
+                    else {
+                        return None;
+                    };
+                    return Some(crate::types::Ty::Array {
+                        elem,
+                        len,
+                        low,
+                        family: Some(family),
+                    });
+                }
+            }
+        }
+    }
     match ty {
         ast::Type::Path(path) => {
             if let Some((definition, aliased)) =
@@ -425,54 +449,8 @@ fn process_declared_type_inner(
                 aliases.remove(&definition);
                 return result;
             }
-            let name = context
-                .resolved
-                .resolved(path.span)
-                .and_then(|definition| context.resolved.qualified_name(definition))
-                .unwrap_or_else(|| path_name(path));
-            let exact = context
-                .design
-                .array_element_of_family
-                .keys()
-                .find(|family| family.as_str() == name)
-                .cloned();
-            let family = exact.or_else(|| {
-                let leaf = name.rsplit("::").next()?;
-                let mut candidates = context
-                    .design
-                    .array_element_of_family
-                    .keys()
-                    .filter(|family| family.rsplit("::").next() == Some(leaf));
-                let first = candidates.next()?.clone();
-                candidates.next().is_none().then_some(first)
-            });
-            // A struct over a sized vector has that vector's length.
-            let len = context
-                .resolved
-                .resolved(path.span)
-                .and_then(|definition| sized_struct_base(definition, context))
-                .and_then(|base| process_declared_type_inner(base, context, aliases))
-                .and_then(|base| match base {
-                    crate::types::Ty::Array { len, .. } => Some(len),
-                    _ => None,
-                })
-                .unwrap_or(0);
-            family.map(|family| {
-                let element = context
-                    .design
-                    .array_element_of_family
-                    .get(&family)
-                    .and_then(|element| nominal_type_from_name(element, context.resolved))
-                    .unwrap_or(crate::types::Ty::Error);
-                crate::types::Ty::Array {
-                    elem: Box::new(element),
-                    len,
-                    family: Some(family),
-                    low: 0,
-                }
-            })
+            declared_process_type(ty, context.resolved)
         }
-        .or_else(|| declared_process_type(ty, context.resolved)),
         ast::Type::Indexed { base, index, .. } => {
             let base = process_declared_type_inner(base, context, aliases)?;
             let (length, low) = match index.as_deref() {
@@ -6552,7 +6530,7 @@ fn apply_process_declared_ranges(
                 if !aliases.insert(definition) {
                     return None;
                 }
-                apply_process_declared_ranges(layout, base, context, aliases)?;
+                apply_process_declared_ranges(layout, &base, context, aliases)?;
                 aliases.remove(&definition);
             }
         }
@@ -7422,6 +7400,11 @@ fn lower_process_raw_resize(
         return None;
     }
     let declared = crate::ir::lower_helpers::expr_to_type(callee)?;
+    let declared_target = process_declared_type(&declared, context);
+    let target = declared_target
+        .as_ref()
+        .filter(|ty| matches!(ty, crate::types::Ty::Array { len, .. } if *len > 0))
+        .or(target);
     let target = match callee.as_ref() {
         ast::Expr::Index { base, index, .. } => {
             let ast::Expr::Path(path) = base.as_ref() else {
@@ -7490,12 +7473,21 @@ fn lower_process_raw_resize(
                 // for `struct B(Bit[4])` lowered "0110" as text.
                 let operand_type = match (&args[0], target) {
                     (
-                        ast::Expr::StrLit { .. },
-                        Some(crate::types::Ty::Array { elem, len, low, .. }),
+                        ast::Expr::StrLit { text, .. },
+                        Some(crate::types::Ty::Array {
+                            elem,
+                            len,
+                            family,
+                            low,
+                        }),
                     ) => Some(crate::types::Ty::Array {
                         elem: elem.clone(),
-                        len: *len,
-                        family: None,
+                        len: if *len == 0 {
+                            u32::try_from(text.chars().count()).ok()?
+                        } else {
+                            *len
+                        },
+                        family: family.clone(),
                         low: *low,
                     }),
                     _ => context
@@ -7507,6 +7499,18 @@ fn lower_process_raw_resize(
                 let operand =
                     value_ref_with_type(&args[0], process, context, operand_type.as_ref());
                 let width = context.process_ir.values[operand.0 as usize].bit_width?;
+                if matches!(&args[0], ast::Expr::StrLit { .. }) {
+                    // The contextual literal already has this nominal representation; a raw
+                    // resize would turn its packed enum/meta encoding back into scalar text.
+                    if let Some(layout) =
+                        process_binding_layout(Some(&declared), *span, operand, process, context)
+                            .filter(|layout| layout.packed_width() == Some(width))
+                    {
+                        context.process_ir.value_layouts[operand.0 as usize] = Some(layout);
+                    }
+                    context.process_ir.values[operand.0 as usize].span = *span;
+                    return Some(operand);
+                }
                 let (elem, len) = match process_value_type(operand, context) {
                     Some(crate::types::Ty::Array { elem, len, .. }) if len > 0 => (elem, len),
                     _ => (Box::new(crate::types::Ty::Error), width),
@@ -7517,13 +7521,20 @@ fn lower_process_raw_resize(
                     len,
                     low: 0,
                 };
-                return Some(push_converted(
+                let value = push_converted(
                     *span,
                     target,
                     width,
                     ProcessValueKind::RawResize { operand },
                     context,
-                ));
+                );
+                if let Some(layout) =
+                    process_binding_layout(Some(&declared), *span, value, process, context)
+                        .filter(|layout| layout.packed_width() == Some(width))
+                {
+                    context.process_ir.value_layouts[value.0 as usize] = Some(layout);
+                }
+                return Some(value);
             }
             match target {
                 Some(crate::types::Ty::Named(target_definition))

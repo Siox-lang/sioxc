@@ -9,7 +9,45 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-14): full guarded unit
+Latest local acceptance (2026-11-15, reviewed 2026-11-19): full guarded unit
+`1794709495191787889-1083259` completed `exited/success/0`, 03:24:55–04:30:29
+CET, peak 1,612,738,560 bytes under normal 2 GiB hard/1.5 GiB soft limits.
+It passes 804 frontend/14 import tests, both complete Rust suites (861 default /
+840 bitpack library tests, every integration/doc-test and 23 GDB/DWARF tests per
+mode), strict all-target/all-feature Clippy, 70 runner tests and 12 artifacts.
+Both ACTUAL 274-program corpora pass. Each mode passes 71 UI/71 JSON cases,
+56/56 active codes and both apply/recompile migrations. All 72 direct native/
+debug binaries and four aggregate VCD/parity checks pass. The new family
+native case passes both storage modes/import orders/debug settings, exact
+labels, reactive binary/Z/X indexing and exact ordinary/debug waveform parity.
+
+Source `ff2b254a0f51b24fa7478d6b3539fded74b88bb8f1b71c8a54d876facb989756`
+and ACTUAL corpus
+`04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after and independent review. Code-only fingerprint excluding
+Markdown stays
+`80bbb41db520a7125c9228bb91b259a12cc0770fc2b60d41346e73f77938bc24`.
+Only acceptance Markdown/logs change afterward; Rust 1.90/one Cargo job/host
+debug1, generated debug assertions, corpus and pinned dependencies are unchanged.
+
+This accepts Checker.structs removal and cycle-safe borrowed declaration-ID
+contracts, plus shared alias/applied/transitive array representation queries in
+the frontend, IR and Process lowerer. Constructors and locals retain fixed
+dimensions, labels and source-owned enum metadata without an unnecessary raw
+resize around an already-contextualized packed literal. No arbitrary scalar/
+record-array newtype feature, std encoding or LLVM/runtime change is introduced.
+The provisional privacy finding was not confirmed: the baseline already rejects
+the invalid declaration before producing metadata.
+
+Blanket integer-binding widening is NOT accepted: existing tests and
+language.md require declared integers to fit signed64 even when analysis
+intermediates are wider. Preserve those contracts during suffix migration.
+All five sections remain required; estimate stays about **86% of foundations**,
+not the whole compiler. Typed values/defaults/applied contexts, suffix-oracle
+migration, remaining registries/boundary guard and residual hooks remain open.
+No push, PR or wiki publication.
+
+Previous local acceptance (2026-11-14): full guarded unit
 `1794682069805603352-663925` completed `exited/success/0` at 21:28:16 CET,
 peak 1,612,697,600 bytes under the normal 2 GiB hard/1.5 GiB soft caps.
 It passes 797 frontend/14 import tests, both complete Rust suites (854 default /
@@ -212,6 +250,65 @@ Span invariants, source identities, shared evaluation and native assertions are
 unchanged. That correction and the complete Rust/integration/DWARF, ACTUAL
 corpus, UI/JSON, native and waveform matrix require a fresh gate. No completion
 estimate increase, commit or push is claimed; all five sections remain in scope.
+
+Isolated followup (2026-11-14, not yet verified):
+`/home/max/siox-foundations-structs-next` removes the checker's copied
+`structs` registry entirely. Construction, conversion, nominal classification,
+member diagnostics, storage checks and struct-Resolve restrictions borrow the
+original declarations by resolver identity. Field/base walkers retain cycle
+guards instead of clearing a copied cyclic base. The shared declaration index
+now queries array representations through aliases and applied/transitive
+fieldless bases, reusing existing parameter-ID substitution. Family discovery,
+element discovery and width/label reading consume that query; direct bases
+remain borrowed. The separate semantic array-family/element compatibility maps
+still exist and need their own identity migration.
+
+Two new frontend groups cover same-leaf declarations, reversed module order,
+direct/aliased/transitive array labels, applied generic bases, exact source
+borrowing, empty-alias storage rejection and invalid source cycles. A native
+regression exercises two same-named imported logic-array families,
+descending labels, meta-value reads and reactive projections in both import
+orders and ordinary/generated-debug builds. Ordinary Unicode arrays retain
+their separate native regression. Existing privacy/conversion/cycle
+coverage is retained. No native result is claimed before those tests run.
+This isolated work neither modifies nor accepts the primary's span-fix
+snapshot, whose full gate is now terminal green. No syntax, runtime, dependency
+or std encoding changes are involved.
+The complete acceptance gate and all remaining five-section requirements still
+apply; no estimate increase, commit or push yet.
+
+The isolated IR array-family adapter also consumes the same borrowed query.
+Its duplicate spelling/fixpoint classifier is removed, so aliases and applied
+bases do not acquire one classification during checking and another during
+lowering. Legacy metadata names are serialized only after selecting each
+declaration ID. An IR regression checks alias/applied families, unrelated
+same-leaf scalar/record types and reversed module order. That addition, like
+the native regression and the rest of this isolated batch, remains unverified.
+
+The isolated representation boundary preserves the existing distinction:
+ordinary character/integer/real arrays retain their element layouts; nominal
+enum/logic families remain packed with source-owned enum metadata. Transitive
+labels and enum element lookup reuse the shared query. A separate LLVM-free
+IR regression asserts exact ordinary element domains, widths and labels,
+plus alias-derived and value-parameterized packed-enum metadata. Earlier test
+fixtures wrongly assumed arbitrary scalar/record-array and unknown-type-
+parameter newtype bases were legal; they are not. The speculative ordinary
+nominal-array lowering branch is withdrawn rather than expanding the language
+as part of an internal refactor. These changes need focused and full testing.
+Internal layout paths retain their explicit declaration identities during shared
+normalization. Tests also pin that borrowing and reject unresolved familiar
+spellings; this does not introduce a name-based recovery path.
+
+The retained baseline probe rejects `Family(Record[])` with E-P003 before
+emitting metadata, so it does **not** confirm the provisional primary privacy
+finding. Recovery tests retain that declaration error while checking that the
+rejected nominal array cannot inherit its element's fields, that indexed
+private access is still diagnosed, and that a view cannot expose unindexed
+element fields. These are defensive recovery checks, not support for such a
+declaration or evidence of an accepted-program privacy regression.
+Borrowed field ancestry also stops at indexed storage rather than inheriting
+an array element's fields. Added helper/view regressions distinguish that
+boundary from normal path/generic ancestry and explicit per-element access.
 
 The normal bounded launcher now has optional `--wait` lock acquisition inside
 the service, fixing observed starvation between an external waiter's unlock

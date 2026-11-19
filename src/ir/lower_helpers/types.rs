@@ -36,53 +36,20 @@ pub fn array_families(
     modules: &[Module],
     fns: &FunctionIndex<'_>,
 ) -> std::collections::HashSet<String> {
-    // A nominal newtype directly over `T[]` is an array family. Compute
-    // inheritance to a fixpoint so `struct Byte(unsigned[8])` joins it too,
-    // without a representation marker trait.
-    let structs: Vec<&ast::StructDecl> = modules
-        .iter()
-        .flat_map(|m| &m.items)
-        .filter_map(|it| match it {
-            ast::Item::Struct(st) => Some(st),
-            _ => None,
+    let declarations =
+        crate::resolve::declarations::DeclarationIndex::collect(fns.resolved(), modules);
+    declarations
+        .structures()
+        .filter(|(_, structure)| {
+            structure.fields.is_empty()
+                && structure
+                    .base
+                    .as_ref()
+                    .and_then(|base| declarations.array_representation(base))
+                    .is_some()
         })
-        .collect();
-    let mut out = std::collections::HashSet::new();
-    loop {
-        let mut changed = false;
-        for st in &structs {
-            let key = fns.struct_decl_key(&st.name);
-            if !out.contains(&key) && is_array_family_struct(st, &out, fns) {
-                out.insert(key);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    out
-}
-
-/// A nominal newtype directly over `T[]`, or deriving from an already-known
-/// nominal array family, inherits the base array representation.
-pub(in crate::ir) fn is_array_family_struct(
-    st: &ast::StructDecl,
-    families: &std::collections::HashSet<String>,
-    fns: &FunctionIndex<'_>,
-) -> bool {
-    if !st.fields.is_empty() {
-        return false;
-    }
-    match &st.base {
-        Some(ast::Type::Indexed { .. }) => true,
-        // A bare derived base (`struct Byte(unsigned)`) reuses the base family.
-        Some(ast::Type::Path(p)) => fns
-            .struct_path_key(p)
-            .or_else(|| p.segments.last().map(|segment| segment.text.clone()))
-            .is_some_and(|head| families.contains(&head)),
-        _ => false,
-    }
+        .filter_map(|(owner, _)| fns.nominal_type_key(owner))
+        .collect()
 }
 
 /// Every enum's `variant -> discriminant` map, *including inherited variants*
