@@ -5363,3 +5363,56 @@ Unsigned suffix compatibility and its full successful-answer oracle remain
 required. LOCAL checkpoint only; no push/PR/wiki publication. All five
 sections remain required; estimate stays about86% of foundations, not the
 whole compiler. No acceptance of the separate integer-binding WIP.
+
+### 2026-11-15 — Codex — preserve the selected integer analysis domain
+
+Primary checkpoint abcbfe5 is clean and accepted locally; isolated registry
+unit1794709495191787889-1083259 is live with compiler work observed, source
+ff2b254a/corpus04c35557 frozen. Its new native regression passes both storage
+modes/import orders/debug settings,804 frontend/14 import tests and frontend
+Clippy pass; the full gate is not complete. Do not modify that worktree or
+its cached drivers while it runs.
+
+Own consteval/source.rs::bind_value, its two aggregate-binding callers and
+numeric interpreter tests in THIS primary checkout. Analysis already uses
+i128 integer values while native-word consumers explicitly select their
+checked domain. The source binding helper currently narrows every declared
+integer to i64 regardless of that choice, losing wide function parameters,
+locals, constants and derived bases before the requesting consumer sees them.
+Pass the existing domain into that shared binding boundary. Preserve strict
+native-word rejection, typed natural/real separation and checked word
+projection; do not add a new global width, ABI, source-name fallback or
+change explicit conversion behavior. Cover aliases, both source orders,
+positive/negative wide values, source parameter identity and nominal records.
+This is a prerequisite for migrating the old u64 suffix folder without
+breaking timeline_edge_test; the old folders/oracle requirement stay open.
+Queue checks on the same global guard, and retain the full combined acceptance
+matrix before accepting any new code. All five foundation sections remain
+required. Remove the October14 entry under the one-month retention rule.
+
+### 2026-11-19 — Codex — withdraw integer binding widening; resume suffix migration
+
+Retained service1794710047903539993-1107184 is terminal failed/101, peak
+1,090,969,600 bytes. Its new positive fixture passed, but the shared suite
+was51 passed/2 failed: existing numeric and derived-representation tests
+deliberately reject declared integer values beyond signed64 in BOTH analysis
+and native-word contexts. language.md's kernel definition confirms that
+contract. Revert ONLY my blanket bind_value domain change, its two caller
+edits and invalid positive fixture. Preserve all existing tests and checks;
+the failure evidence/log remains retained. This is a withdrawn approach,
+not completed suffix migration or a new language feature.
+
+Saved the owned Nov15 attempt entry above before removing its WIP, restored
+the primary exactly to accepted abcbfe5, then fast-forwarded to independently
+green0d7dc85. No peer work was overwritten; no stash, force-push or reset-hard
+was used. Code-only hash must remain the accepted80bbb41d fingerprint.
+Current source preserves the signed ABI contract; wider raw analysis answers
+still exist before typed binding. Existing suffix u64/real folders, fractional
+source contracts, candidate selection and the required full old-success
+comparison remain open. Own the suffix migration's existing borrowed contracts
+and shared-evaluator adapter next; do not bypass declared types or weaken
+timeline_edge_test's u64::MAX fs/saturation assertion.
+
+All five foundations sections remain required; no push/PR/wiki publication
+and no estimate increase. Only this historical log changes after the green
+checkpoint until the next explicitly recorded implementation begins.
