@@ -82,6 +82,7 @@ struct ConstantSuffix<'a> {
     body: &'a ast::Block,
     /// The impl's `suffix`, inlined when the body builds a struct.
     function: &'a ast::FnDecl,
+    implementation: &'a ast::ImplDecl,
 }
 
 impl ConstantSuffix<'_> {
@@ -1009,6 +1010,7 @@ fn constant_suffixes<'a>(
                     domain,
                     body,
                     function,
+                    implementation,
                 });
         }
     }
@@ -1120,97 +1122,26 @@ fn real_literal(text: &str) -> Option<f64> {
     text.replace('_', "").parse().ok()
 }
 
-fn eval_real_suffix_expr(
-    expression: &ast::Expr,
-    suffix: &ConstantSuffix<'_>,
-    input: f64,
-) -> Option<f64> {
-    match expression {
-        ast::Expr::Int { text, .. } => real_literal(text),
-        ast::Expr::Path(path)
-            if path.segments.len() == 1 && path.segments[0].text == suffix.parameter =>
-        {
-            Some(input)
-        }
-        ast::Expr::Call { callee, args, .. }
-            if suffix.constructs_target(callee) && args.len() == 1 =>
-        {
-            eval_real_suffix_expr(&args[0], suffix, input)
-        }
-        ast::Expr::IfExpr {
-            cond, then, els, ..
-        } => {
-            if eval_real_suffix_expr(cond, suffix, input)? != 0.0 {
-                eval_real_suffix_expr(then, suffix, input)
-            } else {
-                eval_real_suffix_expr(els, suffix, input)
-            }
-        }
-        ast::Expr::Unary {
-            op: ast::UnOp::Neg,
-            rhs,
-            ..
-        } => Some(-eval_real_suffix_expr(rhs, suffix, input)?),
-        ast::Expr::Unary {
-            op: ast::UnOp::Not,
-            rhs,
-            ..
-        } => Some(f64::from(u8::from(
-            eval_real_suffix_expr(rhs, suffix, input)? == 0.0,
-        ))),
-        ast::Expr::Binary { op, lhs, rhs, .. } => {
-            let left = eval_real_suffix_expr(lhs, suffix, input)?;
-            let right = eval_real_suffix_expr(rhs, suffix, input)?;
-            match op {
-                ast::BinOp::Add => Some(left + right),
-                ast::BinOp::Sub => Some(left - right),
-                ast::BinOp::Mul => Some(left * right),
-                ast::BinOp::Div => Some(left / right),
-                ast::BinOp::Rem => Some(left % right),
-                ast::BinOp::Eq => Some(f64::from(u8::from(left == right))),
-                ast::BinOp::Ne => Some(f64::from(u8::from(left != right))),
-                ast::BinOp::Lt => Some(f64::from(u8::from(left < right))),
-                ast::BinOp::Le => Some(f64::from(u8::from(left <= right))),
-                ast::BinOp::Gt => Some(f64::from(u8::from(left > right))),
-                ast::BinOp::Ge => Some(f64::from(u8::from(left >= right))),
-                ast::BinOp::And => Some(f64::from(u8::from(left != 0.0 && right != 0.0))),
-                ast::BinOp::Or => Some(f64::from(u8::from(left != 0.0 || right != 0.0))),
-                ast::BinOp::Shl | ast::BinOp::Shr | ast::BinOp::Custom { .. } => None,
-            }
-        }
-        _ => None,
+fn shared_real_suffix(suffix: &ConstantSuffix<'_>, input: f64) -> Option<f64> {
+    use crate::types::consteval::{evaluate_impl_function, Source, Value};
+    let source = Source::new(suffix.declarations);
+    let value = evaluate_impl_function(
+        suffix.function,
+        suffix.implementation,
+        vec![Value::Real(input)],
+        &source,
+        0,
+    )
+    .ok()?;
+    if !matches!(&value, Value::Record { owner, .. } if *owner == suffix.target) {
+        return None;
     }
-}
-
-fn eval_real_suffix_block(
-    block: &ast::Block,
-    suffix: &ConstantSuffix<'_>,
-    input: f64,
-) -> Option<f64> {
-    for statement in &block.stmts {
-        match statement {
-            ast::Stmt::Return {
-                value: Some(value), ..
-            } => return eval_real_suffix_expr(value, suffix, input),
-            ast::Stmt::If(branch) => {
-                let selected = if eval_real_suffix_expr(&branch.cond, suffix, input)? != 0.0 {
-                    Some(&branch.then)
-                } else {
-                    match branch.else_.as_deref() {
-                        Some(ast::ElseBranch::Block(block)) => Some(block),
-                        _ => None,
-                    }
-                };
-                if let Some(value) =
-                    selected.and_then(|block| eval_real_suffix_block(block, suffix, input))
-                {
-                    return Some(value);
-                }
-            }
-            _ => return None,
-        }
-    }
-    None
+    let projected =
+        source.project_derived(&value, suffix.declarations.resolved().builtin("real")?)?;
+    let Value::Real(value) = projected.as_ref() else {
+        return None;
+    };
+    Some(*value)
 }
 
 fn normalized_suffix(
@@ -1242,7 +1173,7 @@ fn normalized_suffix(
         SuffixDomain::Real => {
             let input = real_literal(text)?;
             Some(ProcessNumber::Real(
-                eval_real_suffix_block(suffix.body, suffix, input)?.to_bits(),
+                shared_real_suffix(suffix, input)?.to_bits(),
             ))
         }
     }
@@ -15120,10 +15051,7 @@ mod tests {
                 panic!("one real suffix implementation");
             };
             assert!(matches!(cycles.domain, SuffixDomain::Real));
-            assert_eq!(
-                eval_real_suffix_block(cycles.body, cycles, 2.5),
-                Some(2500.0)
-            );
+            assert_eq!(shared_real_suffix(cycles, 2.5), Some(2500.0));
             for input in [0.0, -0.0, 2.5, -1.25, f64::INFINITY] {
                 let value = crate::types::consteval::evaluate_function(
                     cycles.function,
@@ -15141,9 +15069,7 @@ mod tests {
                 };
                 assert_eq!(
                     value.to_bits(),
-                    eval_real_suffix_block(cycles.body, cycles, input)
-                        .unwrap()
-                        .to_bits()
+                    shared_real_suffix(cycles, input).unwrap().to_bits()
                 );
             }
             let [helper] = suffixes["helper"].as_slice() else {
@@ -15165,6 +15091,77 @@ mod tests {
                 fields.as_ref(),
                 [crate::types::consteval::Value::Integer(111)]
             );
+        }
+    }
+
+    #[test]
+    fn shared_real_suffixes_keep_self_helpers_and_nominal_scope() {
+        let mut sources = [
+            "module left;
+             pub struct Rate(real); type Scalar = real; type Target = Rate;
+             fn adjust(value: Scalar) -> Scalar { return value + 1.0; }
+             impl Suffix<\"linear\", real> for Target {
+                 static fn suffix(value: Scalar) -> Self { return Self(value * 37.0); }
+             }
+             impl Suffix<\"helper_real\", real> for Target {
+                 static fn suffix(value: Scalar) -> Self {
+                     let local: Scalar = value;
+                     return Self(adjust(local));
+                 }
+             }
+             impl Suffix<\"wrong_real\", real> for Target {
+                 static fn suffix(value: Scalar) -> Self { return right::Rate(value); }
+             }",
+            "module right;
+             pub struct Rate(real);
+             impl Suffix<\"other_real\", real> for Rate {
+                 static fn suffix(value: real) -> Self { return Self(value * 3.0); }
+             }",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::default();
+            let modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let mut functions = crate::ir::FunctionIndex::new(&resolved);
+            for item in modules.iter().flat_map(|module| &module.items) {
+                functions.insert_declaration(item);
+            }
+            let suffixes = constant_suffixes(&modules, &functions);
+            for input in [
+                0.0,
+                -0.0,
+                2.5,
+                -1.25,
+                f64::INFINITY,
+                f64::from_bits(0x7ff8_0000_0000_00ab),
+            ] {
+                for (symbol, expected) in [
+                    ("linear", input * 37.0),
+                    ("helper_real", input + 1.0),
+                    ("other_real", input * 3.0),
+                ] {
+                    let [suffix] = suffixes[symbol].as_slice() else {
+                        panic!("unique suffix")
+                    };
+                    assert_eq!(
+                        shared_real_suffix(suffix, input).map(f64::to_bits),
+                        Some(expected.to_bits()),
+                        "{symbol} for {input:?}"
+                    );
+                }
+            }
+            let [wrong] = suffixes["wrong_real"].as_slice() else {
+                panic!("wrong owner")
+            };
+            assert!(shared_real_suffix(wrong, 2.5).is_none());
+            sources.reverse();
         }
     }
 
@@ -15197,10 +15194,7 @@ mod tests {
             panic!("expected exactly one MHz suffix implementation");
         };
         assert!(matches!(suffix.domain, SuffixDomain::Real));
-        assert_eq!(
-            eval_real_suffix_block(suffix.body, suffix, 2.5),
-            Some(2_500_000.0)
-        );
+        assert_eq!(shared_real_suffix(suffix, 2.5), Some(2_500_000.0));
     }
 
     #[test]

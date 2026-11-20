@@ -700,18 +700,24 @@ impl<'a> Checker<'a> {
         let Some(view_name) = view.segments.last().map(|i| i.text.as_str()) else {
             return;
         };
-        let Some(key) = self.type_key(ty) else {
+        let Some(view_id) = self.resolved.resolved(view.span) else {
             return;
         };
-        if !self.views.contains_key(&key) {
+        let Some(target_id) = type_head_span(target).and_then(|span| self.resolved.resolved(span))
+        else {
+            return;
+        };
+        if self.declarations.applied_view(ty).is_none() {
             let target_name = type_head_name(target).unwrap_or("<error>");
             let msg = format!("view `{view_name}` is not declared for struct `{target_name}`");
             // The two names in the reverse order is the pre-migration spelling
             // (`impl Source Stream`). Naming that outright beats a message that
             // reads backwards from what was written.
             if self
-                .views
-                .contains_key(&format!("{target_name}@{view_name}"))
+                .declarations
+                .nominal_owner(view_id)
+                .and_then(|backing| self.declarations.view_for(target_id, backing))
+                .is_some()
             {
                 self.error_with_help(
                     codes::TYPE_MISMATCH,

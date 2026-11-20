@@ -310,7 +310,7 @@ struct PortInfo {
     /// directions come from `view` instead.
     dir: Option<Direction>,
     /// Named directional view when this port is view-typed.
-    view: Option<String>,
+    view: Option<DefId>,
     /// Declared bounds of a ranged numeric (`integer<0..10>`); `Ty` does not
     /// carry them, and an out-of-range constant otherwise wrapped at store
     /// time so the runtime range assert could never see it.
@@ -433,8 +433,6 @@ struct Checker<'a> {
     /// source in the key prevents an unrelated `From` implementation from
     /// making every one-argument constructor appear legal.
     conversion_sigs: HashSet<(String, String)>,
-    /// View name -> underlying struct type.
-    views: HashMap<String, Type>,
     /// Nominal newtypes whose representation is an array (`struct F(T[])`).
     array_families: HashSet<String>,
     /// Nominal array family -> element type, following derived array bases.
@@ -498,8 +496,6 @@ struct Checker<'a> {
     /// as a privacy violation instead of falling through as an unchecked
     /// field access.
     private_entity_members: HashMap<(DefId, String), Span>,
-    /// Named view -> per-field directions.
-    view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
     /// Per-statement memo table for [`Self::type_of`], keyed by `(expr_ptr, sym_ptr)`

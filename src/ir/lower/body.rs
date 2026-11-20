@@ -172,12 +172,19 @@ impl<'a> Lowering<'a> {
             while let ast::Type::Indexed { base, .. } = element {
                 element = base;
             }
-            let view = self.view_of(element).and_then(|k| self.view_dirs.get(&k));
+            let view = self
+                .free_fns
+                .declarations()
+                .applied_view(element)
+                .map(|(_, view)| view);
             for (k, &id) in &self.locals {
                 if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
                     let dir = match view {
-                        Some(m) => view_leaf(&k[p.name.text.len()..])
-                            .and_then(|field| m.get(field).copied())
+                        Some(view) => view_leaf(&k[p.name.text.len()..])
+                            .and_then(|name| {
+                                view.fields.iter().find(|field| field.name.text == name)
+                            })
+                            .map(|field| field.dir)
                             .or(p.dir),
                         None => p.dir,
                     };

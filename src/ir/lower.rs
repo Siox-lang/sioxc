@@ -307,10 +307,6 @@ struct Lowering<'a> {
     logic_encodings: HashMap<String, LogicEncoding>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
-    /// Named, storage-free directional views.
-    views: HashMap<String, &'a ast::ViewDecl>,
-    /// View name -> per-leaf directions.
-    view_dirs: HashMap<String, HashMap<String, ast::Direction>>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
     /// Enum name -> base enum name (derivation chain, enums only).
@@ -323,8 +319,8 @@ struct Lowering<'a> {
     /// Nominal array families forward these when their element satisfies the
     /// implementation's constraint.
     blanket_array_impls: HashMap<String, String>,
-    /// Literal suffix -> its source method. Typed carries the result's identity.
-    suffix_impls: HashMap<String, &'a ast::FnDecl>,
+    /// Literal suffix -> borrowed impl/method; the target supplies Self's layout.
+    suffix_impls: HashMap<String, (&'a ast::ImplDecl, &'a ast::FnDecl)>,
     /// Module-level and static associated functions, inlined at call sites /
     /// const-evaluated without collapsing namespaced free functions by leaf.
     free_fns: FunctionIndex<'a>,

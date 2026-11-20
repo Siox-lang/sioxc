@@ -9,7 +9,42 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-15, reviewed 2026-11-19): full guarded unit
+Latest local acceptance (2026-11-19, reviewed 2026-11-20): corrected full
+guarded unit `1795083437681592050-1555130` completed `exited/success/0`,
+11:17:17–12:18:53 CET, peak 1,612,705,792 bytes under unchanged normal limits.
+All 811 frontend/14 import tests, both complete Rust suites (868 default /
+847 bitpack library tests, 119 integration targets per mode and all 48
+GDB/DWARF cases), strict Clippy, 70 diagnostic-runner tests and 12 specified
+artifacts pass. Both ACTUAL 274-program corpora pass; each mode passes 71 UI /
+71 JSON cases, 56/56 codes and both apply/recompile migrations. All 72 direct
+native/debug programs and four aggregate timeline/VCD/parity runs pass.
+
+Source `6d8cc95773d64b69078816691a5bc0247a5ee2a5fa74a45a14ba4bb6093dad0c`
+and corpus `04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after and independent review. Code-only fingerprint excluding
+Markdown is `e481d79b9a13bdc1a51ba62a6fdad29df647a9aa7cd515aed0afd0195b9fca47`;
+only acceptance Markdown changes afterward. The clean libfst pin, Rust 1.90,
+one Cargo job/two test threads, host debug1 and generated debug checks remain
+unchanged.
+
+This accepts the shared checked real-suffix implementation-call adapter and
+deletion of its old AST walkers after the complete successful-answer oracle.
+Hardware still uses ordinary source-aware inlining: Self/aliased constructor
+identities and result layouts are resolved without discarding debugger frames.
+It also accepts borrowed view contracts, resolver-owned overload groups and
+removal of all four copied checker/IR view maps. Aliased/array views select
+their original backing/directions and preserve reactive wiring in both import
+orders and ordinary/debug builds, with exact waveform parity.
+
+The failed earlier combined attempt is retained below; its pending notes are
+superseded only for this corrected, fully checked scope. The separate prefix
+followup is NOT integrated or accepted. All five sections remain required;
+the estimate remains about **86% of compiler foundations**, not the whole
+compiler. Integer/fractional suffixes, typed/applied contexts, values/defaults,
+remaining registries/boundary guard and residual hooks stay open. No push,
+PR or wiki publication is implied.
+
+Previous local acceptance (2026-11-15, reviewed 2026-11-19): full guarded unit
 `1794709495191787889-1083259` completed `exited/success/0`, 03:24:55–04:30:29
 CET, peak 1,612,738,560 bytes under normal 2 GiB hard/1.5 GiB soft limits.
 It passes 804 frontend/14 import tests, both complete Rust suites (861 default /
@@ -46,6 +81,79 @@ All five sections remain required; estimate stays about **86% of foundations**,
 not the whole compiler. Typed values/defaults/applied contexts, suffix-oracle
 migration, remaining registries/boundary guard and residual hooks remain open.
 No push, PR or wiki publication.
+
+Real-suffix comparison passed (2026-11-19; production migration not accepted): a thin shared
+implementation-call entry retains the borrowed ImplDecl, Self owner and
+trait-argument substitutions. The existing derived projection exposes the
+checked real payload without erasing its nominal return contract. The old
+real folder stayed authoritative while every old successful answer was compared
+bit-for-bit against shared evaluation, including direct Rust-test calls. Full
+guarded unit `1795075962968146515-1411936` completed `exited/success/0` at
+10:18:21 CET, peak 1,612,599,296 bytes: 806 frontend/14 import tests, 863 default /
+842 bitpack library tests, all 118 integration targets per mode and 46 GDB tests,
+strict Clippy, both ACTUAL 274-program corpora, 71 UI/71 JSON cases and 56/56 codes
+per mode, both migrations, 72 direct native/debug cases and four aggregate
+waveform checks pass. Source `c843f242` and corpus `04c35557` match before/after;
+full fingerprints and retained evidence are in [chat.md](../../chat.md).
+
+That proof permits removing the old real-expression/block walkers and temporary
+oracle. The working production adapter now uses the shared checked impl call
+directly. Native coverage adds real-backed aliases with Self returns, locals
+and helper calls in hardware and processes, both import orders/debug settings
+with exact waveform parity. Tests also cover default trait arguments, nominal
+owner separation and exact IEEE payloads. The oracle-free version still needs
+the COMPLETE matrix before acceptance or commit. Integer/fractional suffix paths
+and all other requirements remain open; no signed binding or native-word check
+is weakened. The borrowed-view followup below is integrated locally after its
+focused proof; the full combined gate must still pass before acceptance.
+
+Oracle-free focused proof: unit `1795080213577614067-1492397` completed
+`exited/success/0`, peak 1,508,880,384 bytes, at source `fda72cb0`. Its four
+targeted groups, all 806 frontend tests and strict frontend Clippy pass. The
+extended native suffix test passes both storage modes, import orders and
+ordinary/debug settings (eight binaries), with exact waveform parity. An earlier
+native failure exposed hardware's remaining context-free suffix inliner; the
+first correction retained its original ImplDecl/FnDecl and folded real results.
+That focused proof did NOT establish debugger correctness: the subsequent full
+combined attempt below caught a lost suffix source frame. No old real AST
+evaluator is restored and no assertion is relaxed. Complete corrected acceptance
+is still required.
+
+Combined full attempt `1795080656664268298-1500304` at source `68940e0d`
+is NOT accepted: all 810 frontend tests and the native/waveform groups passed,
+but default GDB finished 22 passed/1 failed. The existing hardware-expression
+test could no longer stop at the real suffix's return line or inspect its local.
+The run was deliberately stopped after preserving that actual Cargo/GDB failure;
+its stopped `dead/success/0` is not a passing gate. Later corpus/debugger stages
+were not completed on that invalid snapshot.
+
+The working correction keeps normal source-aware hardware inlining instead of
+substituting a constant without provenance. Constructor queries follow impl
+Self's existing lexical owner DefId through aliases, and the borrowed suffix
+target supplies the return layout. Process constant folding continues to use
+the shared checked interpreter. A new owner-identity regression and GDB case
+cover same-leaf aliases, Self constructors and real helper/parameter/local source
+stops alongside the unchanged original assertion and native parity cases. This
+correction is not accepted until its focused debugger checks and the ENTIRE
+corrected combined Rust/native/ACTUAL-corpus/UI/JSON matrix pass.
+
+Corrected focused proof (2026-11-19): unit
+`1795082426085714670-1540418` completed `exited/success/0`, peak
+1,505,808,384 bytes, with source `597125b0` unchanged before/after. All
+811 frontend tests, strict frontend Clippy, both-mode suffix/view native
+fixtures and all 24 GDB tests per mode pass. The existing hardware return
+stop and new Self/helper/local-value test both pass without weaker assertions.
+The full corrected combined acceptance retry is pending; this focused result
+does not replace either complete Rust suite, ACTUAL corpus or diagnostic gates.
+
+Borrowed-view focused proof: isolated unit `1795080323550328579-1496036`
+completed `exited/success/0` at 10:28:28 CET, peak 1,610,874,880 bytes, source
+`f904ea76` unchanged before/after. Four new identity/layout/direction groups,
+all 808 frontend tests, 14 imports and strict frontend Clippy pass. The native
+alias-wiring fixture passes both storage modes, import orders and ordinary/debug
+settings (eight binaries), reactive parent/child behavior and exact waveform
+parity. It is now integrated with the oracle-free real-suffix change in the
+primary checkout; neither focused proof replaces full combined verification.
 
 Previous local acceptance (2026-11-14): full guarded unit
 `1794682069805603352-663925` completed `exited/success/0` at 21:28:16 CET,
@@ -1094,6 +1202,27 @@ Struct declarations now join that index for applied-layout queries. Bases,
 fields, ports, alias targets and parameter lists remain borrowed source nodes;
 pointer regressions pin the contract. Existing computed struct/member facts
 and other remaining registries still need their own identity migration.
+
+**Borrowed views (local integration 2026-11-19, full gate pending).**
+`Checker.views`, `Checker.view_dirs`, `Lowering.views` and `Lowering.view_dirs`
+are removed. Resolution records an overload-group ID on the actual view
+declaration path; same-name roles in separate modules remain separate groups.
+The shared declaration index borrows original ViewDecl/target/field nodes and
+selects an applied role by group and normalized backing owner, following
+`Indexed(View(...))` elements through aliases. Ports retain the selected view's
+DefId; input-write checks, persisted layout directions and actual native port
+wiring consume its source fields. Ambiguous bare roles remain unknown. Legacy
+method/output descriptors are rendered only after selection, not used as view
+contract lookup keys. Other method/trait/operator/IR registries and complete
+generic/value applications remain required; this is not all registry completion.
+
+Tests retain source-pointer assertions, reversed module/import order, overloaded
+groups, backing and whole-role aliases, generic/array shapes, duplicate normalized
+owners, input writes, layout metadata and native reactive wiring. Retained failed
+attempts caught the real resolver registration path and array-element AST shape;
+neither assertion was removed. Focused unit `1795080323550328579-1496036` is green
+as recorded above. Acceptance still requires the complete combined Rust/native/
+ACTUAL-corpus/debugger/UI/JSON matrix with unchanged input fingerprints.
 
 Local integration followup (2026-11-06, awaiting the full gate): affix tables
 borrow their implementation's target Type; suffix inference normalizes that

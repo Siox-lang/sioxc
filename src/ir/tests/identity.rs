@@ -63,6 +63,102 @@ fn equal_entity_leaves_lower_the_resolved_bodies() {
 }
 
 #[test]
+fn impl_self_constructor_keys_follow_lexical_alias_owners() {
+    let mut sources = [
+        "module left; pub struct Rate(real); type Alias = Rate;
+         impl Suffix<\"leftunit\", real> for Alias {
+             static fn suffix(value: real) -> Self { return Self(value); }
+         }
+         fn ordinary(value: real) -> real { return value; }",
+        "module right; pub struct Rate(real); type Alias = Rate;
+         impl Suffix<\"rightunit\", real> for Alias {
+             static fn suffix(value: real) -> Self { return Self(value); }
+         }
+         fn ordinary(value: real) -> real { return value; }",
+    ];
+    for _ in 0..2 {
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let mut functions = FunctionIndex::new(&resolved);
+        for item in modules.iter().flat_map(|module| &module.items) {
+            functions.insert_declaration(item);
+        }
+        let mut owners = Vec::new();
+        for module in &modules {
+            let structure = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ast::Item::Struct(declaration) => Some(declaration),
+                    _ => None,
+                })
+                .unwrap();
+            let expected = functions.struct_decl_key(&structure.name);
+            owners.push(expected.clone());
+            let suffix = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ast::Item::Impl(implementation) => {
+                        implementation.items.iter().find_map(|item| match item {
+                            ast::ImplItem::Fn(function) => Some(function),
+                            _ => None,
+                        })
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let ast::Type::Path(result) = suffix.ret.as_ref().unwrap() else {
+                panic!("Self result");
+            };
+            let ast::Stmt::Return {
+                value: Some(ast::Expr::Call { callee, .. }),
+                ..
+            } = &suffix.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("constructor return");
+            };
+            let ast::Expr::Path(constructor) = callee.as_ref() else {
+                panic!("Self constructor");
+            };
+            assert_eq!(functions.struct_path_key(result), Some(expected.clone()));
+            assert_eq!(
+                functions.struct_path_key(constructor),
+                Some(expected.clone())
+            );
+            assert_eq!(functions.type_owner_key(constructor), Some(expected));
+            let ordinary = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ast::Item::Fn(function) => Some(function),
+                    _ => None,
+                })
+                .unwrap();
+            let ast::Stmt::Return {
+                value: Some(ast::Expr::Path(value)),
+                ..
+            } = &ordinary.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("ordinary parameter");
+            };
+            assert!(functions.struct_path_key(value).is_none());
+            assert!(functions.type_owner_key(value).is_none());
+        }
+        assert_ne!(owners[0], owners[1]);
+        sources.reverse();
+    }
+}
+
+#[test]
 /// Equal root entity leaves get distinct qualified signal paths.
 fn equal_root_entity_leaves_get_distinct_qualified_paths() {
     let sources = [
@@ -561,6 +657,66 @@ fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
             vec![Some(LayoutDirection::In), Some(LayoutDirection::Out)]
         )
     );
+}
+
+#[test]
+fn borrowed_view_layouts_keep_normalized_roles_and_source_directions() {
+    let mut sources = [
+        "module common;
+         pub struct Bus { pub data: integer, pub ready: integer }
+         pub type Alias = Bus;",
+        "module roles;
+         pub view Source for common::Alias { data out, ready in }
+         pub type Port = common::Alias Source;",
+        "module user;
+         entity Top {
+             direct: common::Bus roles::Source,
+             backing_alias: common::Alias roles::Source,
+             role_alias: roles::Port,
+             lanes: common::Alias[2] roles::Source
+         }
+         impl Top {}",
+    ];
+    for _ in 0..2 {
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(sink.error_count(), 0, "{:?}", sink.diagnostics());
+        for field in [
+            "direct",
+            "backing_alias",
+            "role_alias",
+            "lanes[0]",
+            "lanes[1]",
+        ] {
+            let LayoutKind::Struct { view, fields, .. } =
+                &design.source_layouts[&format!("Top.{field}")].kind
+            else {
+                panic!("{field} must retain its structural interface");
+            };
+            assert_eq!(view.as_deref(), Some("Source@Bus"));
+            assert_eq!(
+                fields
+                    .iter()
+                    .map(|field| (&*field.name, field.direction.clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("data", Some(LayoutDirection::Out)),
+                    ("ready", Some(LayoutDirection::In))
+                ]
+            );
+        }
+        sources.reverse();
+    }
 }
 
 #[test]

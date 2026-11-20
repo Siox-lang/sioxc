@@ -5416,3 +5416,282 @@ timeline_edge_test's u64::MAX fs/saturation assertion.
 All five foundations sections remain required; no push/PR/wiki publication
 and no estimate increase. Only this historical log changes after the green
 checkpoint until the next explicitly recorded implementation begins.
+
+### 2026-11-19 — Codex — compare real suffix folding through shared impl calls
+
+Own consteval.rs/source.rs and their numeric tests, plus source_processes.rs
+and suffix regressions. Keep the restored signed64 binding contract and old
+integer/fractional suffix paths intact. Add a thin shared interpreter entry
+for an already-selected borrowed implementation function, preserving its Self
+owner and trait-argument DefIds. Carry the original ImplDecl with each borrowed
+suffix; project its checked nominal real result through the existing shared
+derived-value query, not a second source walker or raw word reinterpretation.
+
+First retain the old real folder and compare EVERY successful result bit-for-
+bit against shared evaluation at its entry, including raw Rust regression
+calls and all ACTUAL corpus executions. Keep unknown results unknown in the
+production path during this comparison phase. Test exact IEEE payloads,
+aliases, Self, default trait arguments, helper bodies, same-leaf owners and
+module order. Run focused checks then the complete existing acceptance matrix
+with frozen source/corpus/driver inputs. Do not delete old folders before the
+successful-answer oracle passes or call this full suffix/foundations completion.
+All five sections stay required; no push/PR/wiki publication.
+
+Real-suffix focused unit1795075683368593539-1410413 completed
+exited/success/0, peak1,130,541,056 bytes. The selected-implementation/default
+trait/Self test, real suffix Self/helper/scope test, existing suffix borrowing
+and real-payload regressions, all54 interpreter tests, all806 frontend tests
+and strict frontend Clippy pass. This is NOT the full old-success oracle gate.
+
+Queue the unchanged complete matrix using cached
+foundations-real-suffix-oracle-full-20261119.sh and its matching native driver.
+They differ from the accepted registry driver only in checkout/evidence paths
+and four additional focused groups; all72 direct natives,4 aggregate cases,
+complete Rust/debugger suites, strict Clippy, ACTUAL corpora, UI/JSON and
+artifact/fingerprint/dependency checks remain. Keep source/corpus/drivers
+frozen after launch. No deletion of old real/integer folders, acceptance,
+commit, push or percentage increase before the full comparison passes.
+
+### 2026-11-19 — Codex — real suffix comparison green; remove legacy walker
+
+Full service1795075962968146515-1411936 completed exited/success/0 at
+10:18:21 CET after starting09:12:42, peak1,612,599,296 bytes under unchanged
+normal limits. Every old successful real-suffix answer matched shared
+evaluation bit-for-bit across the COMPLETE Rust and ACTUAL-corpus matrix.
+Passed806 frontend/14 import tests,863 default/842 bitpack library tests,
+all118 integration targets per mode including all46 GDB/DWARF tests, strict
+all-target/all-feature Clippy,70 runner tests/12 artifacts,36 waveform checker
+cases,72 direct native/debug binaries and4 aggregate waveform/parity cases.
+Both274-program corpora pass; each mode passes71 UI/71 JSON cases,56/56 active
+codes and both apply/recompile migrations. Pinned libfst remains clean.
+Compiler c843f242cd3cdf2f6b3d3c8f2a27404d453f101c7ee2ffa78b5489c5f6d19a39
+and ACTUAL corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after. Retain the service, logs, drivers and artifacts as proof.
+
+Own removal of eval_real_suffix_expr/legacy_real_suffix_block and the temporary
+comparison wrapper from source_processes.rs. Route that consumer and its tests
+directly through the shared checked implementation-call adapter. Extend the
+existing native suffix identity fixture with real-backed aliases, Self returns,
+locals and pure helper calls in hardware and processes, both source orders,
+ordinary/debug and both storage modes with exact waveform parity. Integer/
+fractional suffix behavior and strict signed64 bindings remain unchanged.
+The oracle-free production version still needs the complete unchanged matrix
+before acceptance or commit; this successful comparison is not that acceptance.
+
+The isolated borrowed-view followup in /home/max/siox-foundations-structs-next
+is now running focused v2 service1795079514508561441-1478818, frozen at
+a8d08c2397eecc21a063dd8009f06ed77a04a345afad42d57ae7c985625e6c00. Do not
+edit it while live. Its alias/direction registry migration remains unaccepted;
+integrate only after focused checks pass and validate the complete combination.
+All five foundation sections remain required; estimate stays about86%, not the
+whole compiler. No push/PR/wiki publication or unrelated peer integration.
+
+Old real-expression/block walkers and temporary oracle are now removed after
+the full successful comparison. Native suffix identity adds Physical(real)
+aliases, Self returns, an explicitly typed local and a module-private helper,
+in both hardware and process literals, both module orders/debug settings with
+exact waveform parity. Formatting/diff checks pass; production native behavior
+is not yet verified. Queue foundations-real-suffix-final-focus-20261119.sh on
+the normal guard and freeze primary inputs while it runs; a full oracle-free
+combined gate remains required before acceptance/commit.
+
+Isolated view service1795079514508561441-1478818 is terminal failed/101,
+peak1,090,301,952 bytes: the first new regression caught distinct group IDs
+for same-name overloads. No test weakened or view code integrated. Repair that
+resolver fact in its own checkout after termination; also delete the now-unused
+checker declaration_key helper rather than suppressing its warning. The primary
+real-suffix comparison proof remains green and independent of that WIP.
+
+Oracle-free focused service1795080032631392873-1488195 completed failed/101,
+peak1,084,739,584 bytes. All four focused groups,806 frontend tests and strict
+frontend Clippy pass; the new native Physical/Self/helper fixture fails before
+execution with E-P017 at the hardware literal: canonical scheduler derivation
+encounters Invalid. Hardware inline_suffix still invokes the old general
+inliner without the selected impl/Self context. Do NOT weaken/remove that case.
+Own lower.rs suffix contract retention, lower/collect.rs and lower/values.rs
+alongside source_processes.rs: share its checked real-result adapter with that
+hardware consumer before general inlining. Preserve original borrowed impl/fn,
+nominal owner checks and unknown/effectful fallback; add no AST evaluator,
+unchecked conversion or relaxed integer binding. Retry the same focused scope
+then retain the complete oracle-free combined acceptance gate. The isolated
+view v3 service1490244 remains live; its source stays frozen.
+
+The hardware suffix table now retains borrowed (ImplDecl, FnDecl) pairs.
+Its real-literal path calls the SAME checked real_suffix_value adapter used by
+Process lowering; non-derived/nonconstant bodies keep general inlining rather
+than losing aggregate/effectful behavior. Original Self/owner checks and signed
+contracts remain. Formatting/diff checks pass; the new native regression still
+needs to prove this correction. Queue the retained-scope final-focus-v2 driver
+behind the view job on the normal guard, then freeze this source/driver until
+terminal evidence. No acceptance/commit or full-gate reduction.
+
+Oracle-free real focused v2 service1795080213577614067-1492397 completed
+exited/success/0, peak1,508,880,384 bytes. All four targeted groups,806 frontend
+tests and strict frontend Clippy pass. Extended native suffix identity passes
+both storage modes, both source orders and ordinary/debug builds (8 binaries),
+including real-backed aliases, Self, locals/helpers in hardware and process
+contexts and exact waveform parity. Sourcefda72cb0c04c0b8eff0ffd240f11e4d23ec07db306918e1bd21b74803934249e
+matches before/after. Retain both earlier focused failure and v2 success logs.
+This is focused proof only: complete oracle-free acceptance remains required.
+
+Isolated view v3 failed its first test again after the overload group assertion
+was fixed: the query missed the parser's Indexed(View(...)) shape. Its original
+array test remains intact and the shared query now unwraps indexed elements
+after normalization. Focused v4 service1795080323550328579-1496036 is live on
+that frozen checkout atf904ea76970d1d4e03ce9a328da8d72bf7830c0dfbc05bb3d8b0c5282870a209.
+No view integration/acceptance until its own focused checks pass; do not edit
+that source while live. Prepare full combined verification without narrowing
+Rust/native/debugger/corpus/UI/JSON/artifact/fingerprint/dependency scope.
+
+### 2026-11-19 — Codex — integrate focused-green view and real suffix followups
+
+Isolated view v4 service1795080323550328579-1496036 completed
+exited/success/0, peak1,610,874,880 bytes under unchanged normal limits.
+All four identity/layout/direction groups,808 frontend tests,14 imports and
+strict frontend Clippy pass. Native borrowed_views passes both storage modes,
+both import orders and ordinary/debug settings (8 binaries), reactive parent/
+child wiring through backing/whole-role aliases and arrays, overloaded groups,
+and exact debug waveform parity. Its sourcef904ea76970d1d4e03ce9a328da8d72bf7830c0dfbc05bb3d8b0c5282870a209
+matches before/after. Retain original canceled queue, v2/v3 failures and v4
+success logs/drivers; no assertion was weakened. Primary oracle-free real
+focused v2 is separately terminal green atfda72cb0 as recorded above.
+
+Own integration of ONLY the tested source diff from the isolated view branch:
+resolver overload-group facts on Item::View's real registration path, borrowed
+DeclarationIndex view queries including array element shape, Checker/IR view
+registry removal, original field-direction consumers, dead helper removal,
+four unit groups and tests/borrowed_views.rs. Preserve the primary's independent
+suffix contract/adapter changes in overlapping lower.rs/lower/collect.rs hunks.
+Do not import the isolated checkout's older chat/docs or any peer WIP.
+
+Prepare foundations-real-suffix-views-final-full-20261119.sh and its fresh
+native driver: same complete accepted matrix PLUS all four view groups and
+both-mode native fixture, with assertions that old real walkers and all four
+view/direction maps stay removed. Original drivers/artifacts remain retained;
+no testcase/corpus/debugger/UI/JSON check is dropped. All acceptance still
+depends on that NEW full oracle-free combined snapshot, not either focused
+proof or the earlier temporary-oracle proof. No commit/push/PR/wiki or estimate
+advance; all five proposal sections remain required where incomplete.
+
+Integrated exactly17 tracked view source-file diffs plus its new native fixture
+with apply_patch, excluding the isolated chat/docs. Reviewed both overlapping
+lower.rs/collect.rs diffs: suffix ImplDecl/FnDecl retention remains intact while
+all four view maps are removed. No old real walker/comparison is restored.
+Formatting, whitespace and both final-driver shell syntax checks pass; pinned
+libfst is clean. Canonical proposal now distinguishes full comparison proof,
+each focused proof and pending full combined acceptance. ACTUAL corpus and all20
+peer files remain untouched.
+
+Launch foundations-real-suffix-views-final-full-20261119.sh with normal guard,
+Rust1.90/one Cargo job/two test threads/host debug1 and unchanged normal caps.
+Freeze the primary source, ACTUAL corpus and both final drivers until that
+service terminates. Original comparison and both focused evidence sets remain
+retained. Do not accept/commit the combination from launcher status, a partial
+frontend/native pass or previous snapshots' green checks. The complete matrix,
+direct native/VCD parity, UI/JSON/migrations, dependency and fingerprint gates
+remain unchanged; eight focused groups and native borrowed_views are additions.
+
+### 2026-11-19 — Codex — preserve real-suffix source frames after full-gate failure
+
+Combined service1795080656664268298-1500304 at68940e0d is NOT accepted.
+All810 frontend tests, targeted/both-mode native cases,72 direct native/debug
+binaries and4 aggregate parity checks passed; the default Rust library passed
+867 tests, but debug_info finished22 passed/1 FAILED. Existing
+hardware_expression_calls_keep_source_frames cannot set hardware.siox:157,
+the real suffix's return/source-local stop. Simulation finishes correctly;
+the new constant shortcut removed its source frame. The original assertion and
+retained source/GDB output remain unchanged.
+
+After capturing that authoritative Cargo failure, deliberately stopped the
+still-running combined job before later CI steps could spend another full
+matrix on a known-invalid snapshot. Stopped dead/success/0 is NOT a pass;
+earlier observed peak1,612,689,408 bytes and all logs/drivers are retained.
+This cancellation is for a proven semantic/debug regression, not observation
+expiry, a kernel stop or a reason to reduce GDB/native coverage. The independent
+prefix followup ran next and failed only its new unannotated-let fixture;
+that fixture is corrected and its retry uses the same shared lock.
+
+Own correction in functions.rs, lower/values.rs and source_processes.rs plus
+focused source/debug tests. Preserve normal hardware inline source frames
+instead of replacing them with an unannotated real constant. Resolve impl Self
+constructors from their existing lexical owner DefId and use the borrowed suffix
+implementation target for its result layout, so Self/alias/helper bodies lower
+through the ordinary source-aware path. Shared typed constant evaluation stays
+authoritative in Process folding; restore no old real evaluator or leaf-name
+recovery. Keep the new native Self/helper cases and existing GDB assertion;
+add explicit Self/helper frame coverage if needed. Revalidate native parity,
+both debugger modes and the ENTIRE corrected combined matrix before accepting
+or committing. All five proposal sections remain required; no push or estimate
+advance. The independent prefix retry source stays frozen while live.
+
+Working correction now resolves only Local constructor qualifiers through the
+existing declaration-index nominal owner query; unrelated value parameters
+remain non-type owners and explicit alias-method handling is unchanged.
+Hardware suffixes keep ordinary source-aware inlining, with their borrowed
+implementation target supplying the result layout; the provenance-erasing
+constant shortcut and now-unneeded duplicate adapter wrapper are removed.
+Process folding still uses the same checked interpreter/nominal projection,
+and old real AST evaluators remain absent. Added lexical Self/alias owner keys
+in both module orders and a new real suffix/helper GDB stop/local-value case
+with ordinary/debug waveform parity. The existing full-gate failure assertion
+is untouched. Formatting/diff checks pass; behavior remains unproven.
+
+Queue foundations-real-suffix-source-frames-focus-20261119.sh on the normal
+guard: new/old targeted unit groups, complete frontend, strict frontend Clippy,
+both-mode suffix/view native fixtures, targeted old/new GDB regressions and ALL
+debugger tests in BOTH storage modes. Keep all current caps/toolchain settings.
+Freeze primary source/driver while live. Its later success still cannot replace
+the complete corrected combined acceptance matrix; no commit/push or estimate
+advance. Prefix focused v2 is independently green (806 frontend/14 imports/
+strict Clippy atfbfff735), but has no native/full acceptance and is not integrated.
+
+### 2026-11-19 — Codex — corrected suffix/view full acceptance retry
+
+Source-frame focused unit1795082426085714670-1540418 completed
+exited/success/0, peak1,505,808,384 bytes. Source597125b0 is unchanged
+before/after. All811 frontend tests, strict frontend Clippy, suffix and
+borrowed-view native fixtures in both modes and ALL24 GDB tests per mode
+pass, including the unchanged old hardware-expression stop and the new
+Self/helper/local-value regression. This is focused proof, not full acceptance.
+
+Own acceptance-only Markdown below and new corrected-full/native cached
+drivers; preserve the rejected full attempt and all evidence. Queue the ENTIRE
+corrected combined gate on the normal shared guard/limits with Rust1.90,
+one Cargo job/two test threads/host debug1. No native, debugger, ACTUAL corpus,
+UI/JSON, apply/recompile, fingerprint or dependency checks are removed.
+Freeze this primary source, ACTUAL corpus and corrected drivers while live.
+Prefix followup stays isolated and unaccepted. All five sections remain
+required; no estimate advance, commit or push until complete acceptance.
+
+### 2026-11-20 — Codex — accept corrected real-suffix and borrowed-view checkpoint
+
+Full corrected service1795083437681592050-1555130 completed
+exited/success/0 on Nov19,11:17:17–12:18:53 CET, peak1,612,705,792 bytes.
+Reviewed authoritative manager state, complete driver and retained stage logs.
+All811 frontend/14 import tests,868default/847bitpack library tests,119
+integration targets per mode including ALL48 GDB cases, strict Clippy,
+70runner tests/12artifacts, BOTH ACTUAL274 corpora,71UI/71JSON/56codes and
+two apply/recompile migrations per mode pass. All72 direct native/debug
+programs and4aggregate timeline/VCD/parity checks pass. Native suffix/view
+fixtures retain module-order/debug and storage-mode coverage with exact parity.
+
+Source6d8cc95773d64b69078816691a5bc0247a5ee2a5fa74a45a14ba4bb6093dad0c
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent review. Code-only excluding Markdown:
+e481d79b9a13bdc1a51ba62a6fdad29df647a9aa7cd515aed0afd0195b9fca47.
+libfst clean at74301348450701727776c1a0522a3f512738e9ae; no dependency,
+toolchain, cap or generated-debug change. All20 peer corpus files unchanged.
+
+Evidence: /home/max/.cache/siox-jobs/siox-job-3000-1795083437681592050-1555130.log
+and /home/max/.cache/siox-jobs/foundations-real-suffix-views-corrected-full-20261119/.
+Separate native artifacts are in the matching corrected-native directory.
+Preserve rejected68940e0d and the complete earlier real-success oracle as
+history; no canceled result or focused-only run is used as full acceptance.
+
+Own acceptance-only documentation, then explicit owned-path LOCAL commit of
+the checked real-suffix/view combination. No prefix code, peer work, std,
+ACTUAL corpus or dependency edit is included. All five sections remain open
+where unfinished; estimate stays about86% of foundations. Integer/fractional
+suffix migration must preserve declared signed64 bindings AND the ACTUAL
+u64MAX-femtosecond timeline case; no new untyped bypass is accepted. Continue
+isolated prefix correction after its failed fixture below; no push/PR/wiki.

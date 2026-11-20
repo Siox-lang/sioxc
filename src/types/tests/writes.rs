@@ -3,6 +3,45 @@
 use super::*;
 
 #[test]
+fn view_directions_select_backing_identity_through_aliases_and_overloads() {
+    let source = "module roles;
+        struct Bus { pub data: integer, pub ready: integer }
+        struct Queue { pub data: integer, pub ready: integer }
+        type Alias = Bus;
+        view Source for Bus { data out, ready in }
+        view Source for Queue { data in, ready out }
+        entity Ports { bus: Alias Source, queue: Queue Source }
+        impl Ports {
+            bus.data = 1; queue.ready = 1;
+            bus.ready = 0; queue.data = 0;
+        }
+        impl Bus Source {
+            fn drive() { self.data = 1; self.ready = 0; }
+        }
+        impl Queue Source {
+            fn drive() { self.ready = 1; self.data = 0; }
+        }";
+    let mut sink = DiagnosticSink::default();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    check(&modules, &resolved, &mut sink);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 4, "{errors:?}");
+    assert!(
+        errors
+            .iter()
+            .all(|diagnostic| diagnostic.code == Some(codes::WRITE_TO_INPUT_PORT)),
+        "{errors:?}"
+    );
+}
+
+#[test]
 /// Writing an input leaf of a bus is rejected like any other input write.
 fn rejects_write_to_input_bus_leaf() {
     // Driving an `in` leaf of a bus-mode port (`bus.ready` in the Source

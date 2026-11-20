@@ -708,6 +708,11 @@ impl<'a> FunctionIndex<'a> {
             .resolved
             .resolved(path.span)
             .or_else(|| self.resolved.declared(path.span))?;
+        let id = if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Local) {
+            self.declarations.nominal_owner(id)?
+        } else {
+            id
+        };
         (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Struct))
             .then(|| self.struct_id_key(id))
             .flatten()
@@ -776,11 +781,18 @@ impl<'a> FunctionIndex<'a> {
     /// Nominal type named directly by a constructor path, or by the owner of
     /// `T::new`. Every declared owner uses its identity-preserving key.
     pub fn type_owner_key(&self, path: &ast::Path) -> Option<String> {
-        let type_key = |id: DefId| match self.resolved.kind_of(id)? {
-            crate::resolve::DefKind::Enum => self.enum_id_key(id),
-            crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
-            crate::resolve::DefKind::Struct => self.struct_id_key(id),
-            _ => None,
+        let type_key = |id: DefId| {
+            let id = if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Local) {
+                self.declarations.nominal_owner(id)?
+            } else {
+                id
+            };
+            match self.resolved.kind_of(id)? {
+                crate::resolve::DefKind::Enum => self.enum_id_key(id),
+                crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
+                crate::resolve::DefKind::Struct => self.struct_id_key(id),
+                _ => None,
+            }
         };
         self.resolved
             .resolved(path.span)

@@ -50,8 +50,6 @@ impl<'a> Lowering<'a> {
             new_defaults: HashMap::new(),
             logic_encodings: HashMap::new(),
             structs: HashMap::new(),
-            views: HashMap::new(),
-            view_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
             op_impls: Default::default(),
@@ -131,21 +129,6 @@ impl<'a> Lowering<'a> {
                         self.structs
                             .insert(self.free_fns.struct_decl_key(&s.name), s);
                     }
-                    ast::Item::View(v) => {
-                        let target = self
-                            .free_fns
-                            .type_head_key(&v.target)
-                            .unwrap_or_else(|| "<error>".to_string());
-                        let key = format!("{}@{target}", self.free_fns.view_decl_key(&v.name));
-                        self.views.insert(key.clone(), v);
-                        self.view_dirs.insert(
-                            key,
-                            v.fields
-                                .iter()
-                                .map(|f| (f.name.text.clone(), f.dir))
-                                .collect(),
-                        );
-                    }
                     // Module constants join the width environment; range
                     // constants (`const BYTE: range = 7..0`) keep their
                     // written direction. Aliases substitute during lowering.
@@ -216,7 +199,7 @@ impl<'a> Lowering<'a> {
                                     for it in &im.items {
                                         if let ast::ImplItem::Fn(f) = it {
                                             if f.name.text == "suffix" {
-                                                self.suffix_impls.insert(symbol.clone(), f);
+                                                self.suffix_impls.insert(symbol.clone(), (im, f));
                                             }
                                         }
                                     }

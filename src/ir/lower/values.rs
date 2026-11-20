@@ -525,7 +525,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::SuffixLit { text, suffix, .. } = e else {
             return None;
         };
-        let f = *self.suffix_impls.get(&suffix.text)?;
+        let (implementation, f) = *self.suffix_impls.get(&suffix.text)?;
         f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
@@ -536,7 +536,8 @@ impl<'a> Lowering<'a> {
                         .and_then(|ty| self.free_fns.declarations().scalar_type_id(ty))
                         .is_some_and(|id| Some(id) == self.free_fns.resolved().builtin("real"));
                 let v = if is_real {
-                    Expr::Real(text.replace('_', "").parse().unwrap_or(0.0))
+                    let input = text.replace('_', "").parse().ok()?;
+                    Expr::Real(input)
                 } else {
                     Expr::Const(parse_int(text).unwrap_or(0))
                 };
@@ -545,9 +546,7 @@ impl<'a> Lowering<'a> {
         }
         let _shapes = self.source_shape_scope(
             HashMap::new(),
-            f.ret
-                .as_ref()
-                .map(|ty| self.source_layout(ty, &self.cur_env)),
+            Some(self.source_layout(&implementation.target, &self.cur_env)),
         );
         self.inline_source_function(f, ast::expr_span(e), &mut env, None)
     }

@@ -262,21 +262,11 @@ impl<'a> Lowering<'a> {
                 };
             }
             let (name, view) = match &ty {
-                ast::Type::View { view, target, .. } => (
+                ast::Type::View { target, .. } => (
                     self.free_fns
                         .type_head_key(target)
                         .unwrap_or_else(|| "<anonymous>".to_string()),
-                    self.view_of(&ty).or_else(|| {
-                        view.segments.last().map(|name| {
-                            format!(
-                                "{}@{}",
-                                name.text,
-                                self.free_fns
-                                    .type_head_key(target)
-                                    .unwrap_or_else(|| "<anonymous>".to_string())
-                            )
-                        })
-                    }),
+                    self.view_of(&ty),
                 ),
                 ast::Type::Generic { base, .. } => (
                     self.free_fns
@@ -291,20 +281,21 @@ impl<'a> Lowering<'a> {
                     None,
                 ),
             };
-            let directions = self
-                .view_of(&ty)
-                .and_then(|view_key| self.view_dirs.get(&view_key));
+            let selected_view = self
+                .free_fns
+                .declarations()
+                .applied_view(&ty)
+                .map(|(_, view)| view);
             let fields = fields
                 .into_iter()
                 .map(|(name, ty)| {
-                    let direction =
-                        directions
-                            .and_then(|directions| directions.get(&name))
-                            .map(|direction| match direction {
-                                ast::Direction::In => LayoutDirection::In,
-                                ast::Direction::Out => LayoutDirection::Out,
-                                ast::Direction::Inout => LayoutDirection::InOut,
-                            });
+                    let direction = selected_view
+                        .and_then(|view| view.fields.iter().find(|field| field.name.text == name))
+                        .map(|field| match field.dir {
+                            ast::Direction::In => LayoutDirection::In,
+                            ast::Direction::Out => LayoutDirection::Out,
+                            ast::Direction::Inout => LayoutDirection::InOut,
+                        });
                     LayoutField {
                         name,
                         direction,
@@ -827,14 +818,13 @@ impl<'a> Lowering<'a> {
 
     /// The view applied to a type, if any.
     pub(super) fn view_of(&self, ty: &ast::Type) -> Option<String> {
-        if let ast::Type::View { view, target, .. } = ty {
-            return Some(format!(
-                "{}@{}",
-                self.free_fns.view_path_key(view)?,
-                self.free_fns.type_head_key(target)?
-            ));
-        }
-        let head = self.free_fns.type_head_key(ty)?;
-        self.views.contains_key(&head).then_some(head)
+        let declarations = self.free_fns.declarations();
+        let (_, view) = declarations.applied_view(ty)?;
+        let backing = declarations.structure(declarations.view_target_id(&view.target)?)?;
+        Some(format!(
+            "{}@{}",
+            self.free_fns.view_decl_key(&view.name),
+            self.free_fns.struct_decl_key(&backing.name)
+        ))
     }
 }

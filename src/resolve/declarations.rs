@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
     ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, ImplItem, Item, Module, Params,
-    Path, StructDecl, TraitDecl, Type, Using, UsingKind,
+    Path, StructDecl, TraitDecl, Type, Using, UsingKind, ViewDecl,
 };
 
 pub(crate) mod expand;
@@ -23,6 +23,7 @@ enum Declaration<'a> {
     Entity(&'a EntityDecl),
     Enum(&'a EnumDecl),
     Trait(&'a TraitDecl),
+    View(&'a ViewDecl),
     Function(&'a FnDecl),
     ModuleFunction(&'a FnDecl),
     Constant(&'a ConstDecl),
@@ -144,6 +145,11 @@ impl<'a> DeclarationIndex<'a> {
                         .insert(id, Declaration::Trait(declaration));
                 }
             }
+            Item::View(declaration) => {
+                if let Some(id) = self.resolved.declared(declaration.name.span) {
+                    self.declarations.insert(id, Declaration::View(declaration));
+                }
+            }
             Item::Fn(declaration) => {
                 if let Some(id) = self
                     .resolved
@@ -229,6 +235,70 @@ impl<'a> DeclarationIndex<'a> {
                 Declaration::Struct(declaration) => Some((id, *declaration)),
                 _ => None,
             })
+    }
+
+    pub(crate) fn view(&self, id: DefId) -> Option<&'a ViewDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::View(declaration) => Some(declaration),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn views(&self) -> impl Iterator<Item = (DefId, &'a ViewDecl)> + '_ {
+        self.declarations
+            .iter()
+            .filter_map(|(&id, declaration)| match declaration {
+                Declaration::View(declaration) => Some((id, *declaration)),
+                _ => None,
+            })
+    }
+
+    pub(crate) fn view_target_id(&self, target: &Type) -> Option<DefId> {
+        let normalized = self.normalize_type(target)?;
+        let mut head = normalized.as_ref();
+        while let Type::Generic { base, .. } | Type::Indexed { base, .. } = head {
+            head = base;
+        }
+        let owner = self.scalar_type_id(head)?;
+        self.structure(owner).map(|_| owner)
+    }
+
+    /// Select an overload by its resolved group and normalized backing owner.
+    pub(crate) fn applied_view(&self, ty: &Type) -> Option<(DefId, &'a ViewDecl)> {
+        let normalized = self.normalize_type(ty)?;
+        let mut element = normalized.as_ref();
+        while let Type::Indexed { base, .. } = element {
+            element = base;
+        }
+        let Type::View { view, target, .. } = element else {
+            return None;
+        };
+        let view = self.resolved.resolved(view.span)?;
+        let owner = self.view_target_id(target)?;
+        self.view_for(view, owner)
+    }
+
+    pub(crate) fn view_for(&self, view: DefId, owner: DefId) -> Option<(DefId, &'a ViewDecl)> {
+        let group = self.resolved.view_group(view)?;
+        self.views()
+            .filter(|(id, declaration)| {
+                self.resolved.view_group(*id) == Some(group)
+                    && self.view_target_id(&declaration.target) == Some(owner)
+            })
+            .min_by_key(|(id, _)| id.0)
+    }
+
+    /// A bare view carries no backing argument; do not guess among overloads.
+    pub(crate) fn unique_view_target(&self, view: DefId) -> Option<&'a Type> {
+        let group = self.resolved.view_group(view)?;
+        let mut views = self
+            .views()
+            .filter(|(id, _)| self.resolved.view_group(*id) == Some(group));
+        let (_, first) = views.next()?;
+        let owner = self.view_target_id(&first.target)?;
+        views
+            .all(|(_, view)| self.view_target_id(&view.target) == Some(owner))
+            .then_some(&first.target)
     }
 
     pub(crate) fn enumerations(&self) -> impl Iterator<Item = (DefId, &'a EnumDecl)> + '_ {

@@ -87,7 +87,6 @@ impl<'a> Checker<'a> {
             operator_precedence: HashMap::new(),
             conversion_sigs: HashSet::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
-            views: HashMap::new(),
             array_families: HashSet::new(),
             array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
@@ -107,7 +106,6 @@ impl<'a> Checker<'a> {
             method_has_self: HashMap::new(),
             method_visibility: HashMap::new(),
             private_entity_members: HashMap::new(),
-            view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
             type_cache: std::cell::RefCell::new(HashMap::new()),
             covered_tuple_matches: HashSet::new(),
@@ -242,8 +240,9 @@ impl<'a> Checker<'a> {
                             dir: p.dir,
                             // An array of views applies the view per element.
                             view: self
-                                .type_key(array_element(&p.ty))
-                                .filter(|key| self.views.contains_key(key)),
+                                .declarations
+                                .applied_view(array_element(&p.ty))
+                                .map(|(id, _)| id),
                             range: self.declared_range(&p.ty),
                             index_bounds: self.declared_index_bounds(&p.ty),
                         })
@@ -632,14 +631,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::View(v) => {
-                let Some(key) = self
-                    .declaration_key(v.name.span)
-                    .zip(self.type_key(&v.target))
-                    .map(|(view, target)| format!("{view}@{target}"))
+                let Some((id, target)) = self
+                    .resolved
+                    .declared(v.name.span)
+                    .zip(self.declarations.view_target_id(&v.target))
                 else {
                     return;
                 };
-                if self.views.insert(key.clone(), v.target.clone()).is_some() {
+                if self
+                    .declarations
+                    .view_for(id, target)
+                    .is_some_and(|(first, _)| first != id)
+                {
                     self.error(
                         codes::DUPLICATE_ITEM,
                         v.name.span,
@@ -649,12 +652,6 @@ impl<'a> Checker<'a> {
                         ),
                     );
                 }
-                let dirs = v
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.text.clone(), f.dir))
-                    .collect();
-                self.view_dirs.insert(key, dirs);
             }
             _ => {}
         }

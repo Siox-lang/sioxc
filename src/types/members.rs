@@ -112,9 +112,9 @@ impl<'a> Checker<'a> {
         // A bus port (`bus: Stream Source`) types as the *view*, which owns no
         // fields, so the walk below found no struct and returned silently —
         // leaving every field access through a bus unchecked.
-        let through_view = self.view_backing(&head);
+        let through_view = self.view_backing(&base_ty);
         let borrowed_owner = if through_view.is_some() {
-            self.view_backing_type(&head)
+            self.view_backing_type(&base_ty)
                 .and_then(|target| self.struct_type_id(target))
         } else {
             match &base_ty {
@@ -295,7 +295,7 @@ impl<'a> Checker<'a> {
             return;
         }
         // A view receiver may use inherent methods of its backing struct.
-        if let Some(backing) = self.view_backing(&head) {
+        if let Some(backing) = self.view_backing(&recv) {
             let backing_key = (backing.clone(), field.text.clone());
             if self.methods.contains_key(&backing_key) {
                 if !self.check_method_visibility(&backing_key, field.span) {

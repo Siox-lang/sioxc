@@ -427,6 +427,29 @@ pub(crate) fn evaluate_function(
     .invoke(function, arguments, depth, function.name.span)
 }
 
+/// Execute a selected source implementation, retaining Self and trait arguments.
+pub(crate) fn evaluate_impl_function(
+    function: &FnDecl,
+    implementation: &crate::syntax::ast::ImplDecl,
+    arguments: Vec<Value>,
+    environment: &dyn Environment,
+    depth: u32,
+) -> Result<Value, NotConstant> {
+    let selected = environment
+        .source()
+        .and_then(|source| source.selected_impl_function(function, implementation))
+        .ok_or(NotConstant {
+            span: function.name.span,
+            reason: Reason::Unsupported,
+        })?;
+    Interpreter {
+        environment,
+        locals: Vec::new(),
+        operators: Vec::new(),
+    }
+    .invoke_selected(selected, arguments, depth, function.name.span)
+}
+
 /// Evaluate an existing call's borrowed parts without erasing argument types.
 pub(crate) fn evaluate_call(
     callee: &Expr,

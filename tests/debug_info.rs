@@ -4024,6 +4024,115 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 }
 
 #[test]
+fn real_suffix_self_helpers_keep_source_debug_frames() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_real_suffix_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("suffix.siox");
+    let text = r#"module dwarf_real_suffix;
+struct Rate(real);
+type Alias = Rate;
+fn adjust(value: real) -> real {
+    let result: real = value + 1.0;
+    return result; // helper return stop
+}
+impl Suffix<"units", real> for Alias {
+    static fn suffix(value: real) -> Self {
+        let scaled: real = value * 2.0;
+        return Self(adjust(scaled)); // suffix return stop
+    }
+}
+entity Dut { rate: Alias out }
+impl Dut { rate = 1.5units; }
+#[test] entity T {}
+impl T {
+    let dut: Dut = {};
+    process { await 1ns; assert!(real(dut.rate) == 4.0); }
+}"#;
+    std::fs::write(&source, text).unwrap();
+    let mut reference = None;
+    let mut debug_binary = None;
+    for debugging in [false, true] {
+        let binary = directory.join(if debugging {
+            "debug.bin"
+        } else {
+            "ordinary.bin"
+        });
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(
+            command
+                .arg(&source)
+                .arg("-o")
+                .arg(&binary)
+                .output()
+                .unwrap(),
+        );
+        let wave = binary.with_extension("vcd");
+        success(Command::new(&binary).arg("-o").arg(&wave).output().unwrap());
+        let wave = std::fs::read(wave).unwrap();
+        if let Some(reference) = &reference {
+            assert_eq!(&wave, reference);
+        } else {
+            reference = Some(wave);
+        }
+        if debugging {
+            debug_binary = Some(binary);
+        }
+    }
+    let helper = text
+        .lines()
+        .position(|line| line.contains("// helper return stop"))
+        .unwrap()
+        + 1;
+    let suffix = text
+        .lines()
+        .position(|line| line.contains("// suffix return stop"))
+        .unwrap()
+        + 1;
+    let file = source.to_string_lossy();
+    let python = format!(
+        r#"import gdb
+gdb.execute('set disable-randomization off')
+gdb.Breakpoint({file:?} + ':{helper}')
+gdb.Breakpoint({file:?} + ':{suffix}')
+gdb.execute('run', to_string=True)
+seen = set()
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    line = frame.find_sal().line
+    if line == {helper}:
+        assert float(frame.read_var('value')) == 3.0
+        assert float(frame.read_var('result')) == 4.0
+        seen.add('helper')
+    elif line == {suffix}:
+        assert float(frame.read_var('value')) == 1.5
+        assert float(frame.read_var('scaled')) == 3.0
+        seen.add('suffix')
+    else:
+        raise AssertionError((line, frame.name()))
+    gdb.execute('continue', to_string=True)
+assert seen == {{'helper', 'suffix'}}, seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#
+    );
+    success(
+        Command::new("gdb")
+            .args(["--batch", "-q", "-ex", "set pagination off", "-ex"])
+            .arg(format!("python exec({python:?})"))
+            .arg(debug_binary.unwrap())
+            .output()
+            .unwrap(),
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));

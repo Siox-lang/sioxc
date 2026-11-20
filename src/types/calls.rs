@@ -1188,15 +1188,12 @@ impl<'a> Checker<'a> {
     /// be driven. Empty for any other impl target, where `self` is plain data.
     pub(super) fn self_view_dirs(&self, target: &Type) -> PortDirs {
         let mut dirs = PortDirs::default();
-        let Some(key) = self.type_key(target) else {
+        let Some((_, view)) = self.declarations.applied_view(target) else {
             return dirs;
         };
-        let Some(leaves) = self.view_dirs.get(&key) else {
-            return dirs;
-        };
-        for (field, dir) in leaves {
-            if *dir == Direction::In {
-                dirs.illegal.insert(format!("self.{field}"));
+        for field in &view.fields {
+            if field.dir == Direction::In {
+                dirs.illegal.insert(format!("self.{}", field.name.text));
             }
         }
         dirs

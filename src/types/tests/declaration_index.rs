@@ -28,6 +28,116 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn borrowed_view_contracts_keep_overloads_aliases_and_module_identity() {
+    let mut sources = [
+        "module left;
+         struct Bus<T> { pub data: T, pub ready: integer }
+         struct Queue { pub data: integer, pub ready: integer }
+         type Words = Bus<integer>;
+         view Source<T> for Bus<T> { data out, ready in }
+         view Source for Queue { data in, ready out }
+         view Mirror for Words { data out, ready in }
+         type Linked = Words Mirror;
+         fn probe(bus: Bus<integer> Source, queue: Queue Source,
+                  alias: Words Mirror, linked: Linked, array: Words[2] Mirror) {}",
+        "module right;
+         struct Bus<T> { pub data: T, pub ready: integer }
+         view Source<T> for Bus<T> { data in, ready out }
+         fn probe(bus: Bus<real> Source) {}",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        let mut groups = Vec::new();
+        for module in &modules {
+            let left = module.path.segments[0].text == "left";
+            let views: Vec<_> = module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::View(view) => Some(view),
+                    _ => None,
+                })
+                .collect();
+            for view in &views {
+                let id = resolved.declared(view.name.span).unwrap();
+                assert!(std::ptr::eq(index.view(id).unwrap(), *view));
+                assert!(std::ptr::eq(&index.view(id).unwrap().target, &view.target));
+            }
+            let source = resolved.declared(views[0].name.span).unwrap();
+            groups.push(resolved.view_group(source).unwrap());
+            if left {
+                let second = resolved.declared(views[1].name.span).unwrap();
+                assert_ne!(source, second);
+                assert_eq!(resolved.view_group(source), resolved.view_group(second));
+                assert!(index.unique_view_target(source).is_none());
+                assert!(index.unique_view_target(second).is_none());
+            } else {
+                assert!(std::ptr::eq(
+                    index.unique_view_target(source).unwrap(),
+                    &views[0].target
+                ));
+            }
+            let Item::Fn(probe) = module.items.last().unwrap() else {
+                panic!("probe");
+            };
+            for parameter in &probe.params {
+                let ty = parameter.ty.as_ref().unwrap();
+                let (id, view) = index.applied_view(ty).unwrap_or_else(|| {
+                    panic!("resolved applied view for {:?}: {ty:?}", parameter.name)
+                });
+                assert!(views.iter().any(|original| std::ptr::eq(*original, view)));
+                assert!(std::ptr::eq(index.view(id).unwrap(), view));
+                let owner = index.view_target_id(&view.target).unwrap();
+                let expected = if parameter.name.as_ref().unwrap().text == "queue" {
+                    "Queue"
+                } else {
+                    "Bus"
+                };
+                assert_eq!(resolved.def(owner).unwrap().name, expected);
+                assert_eq!(
+                    resolved.def(owner).unwrap().module,
+                    resolved.def(id).unwrap().module
+                );
+                let fields = &index.view(id).unwrap().fields;
+                assert!(std::ptr::eq(fields.as_ptr(), view.fields.as_ptr()));
+                assert_eq!(
+                    view.fields[0].dir,
+                    if left && expected == "Bus" {
+                        Direction::Out
+                    } else {
+                        Direction::In
+                    }
+                );
+            }
+        }
+        assert_ne!(
+            groups[0], groups[1],
+            "module-local overload groups cannot merge"
+        );
+        assert!(index
+            .unique_view_target(resolved.builtin("integer").unwrap())
+            .is_none());
+        sources.reverse();
+    }
+}
+
+#[test]
+fn view_duplicates_compare_normalized_backing_identity() {
+    let (modules, resolved) = parse(&["module duplicate;
+         struct Bus { pub data: integer }
+         type Alias = Bus;
+         view Source for Bus { data out }
+         view Source for Alias { data out }"]);
+    let mut sink = DiagnosticSink::default();
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    drop(checker);
+    assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+    assert_eq!(sink.diagnostics()[0].code, Some(codes::DUPLICATE_ITEM));
+}
+
+#[test]
 fn borrowed_struct_classification_and_array_bases_keep_aliases_labels_and_scope() {
     let mut sources = [
         "module left;

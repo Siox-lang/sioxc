@@ -245,6 +245,8 @@ pub struct Resolved {
     declarations: HashMap<Span, DefId>,
     /// Known kinds of explicit generic binders; absent recovery bindings stay unknown.
     parameter_kinds: HashMap<DefId, ParameterKind>,
+    /// Views with one module-local name share an overload-group identity.
+    view_groups: HashMap<DefId, DefId>,
     /// Lang items: the role name `core`/`std` gave a declaration with
     /// `attr lang for X = "role";`, to that declaration.
     lang: HashMap<String, DefId>,
@@ -259,8 +261,15 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    pub(crate) fn view_group(&self, view: DefId) -> Option<DefId> {
+        self.view_groups.get(&view).copied()
+    }
+
     fn insert_definition(&mut self, definition: DefInfo) -> DefId {
         let id = DefId(self.defs.len() as u32);
+        if definition.kind == DefKind::View {
+            self.view_groups.insert(id, id);
+        }
         if let Some(span) = definition.span {
             self.declarations.insert(span, id);
         }
@@ -975,11 +984,17 @@ impl<'a> Resolver<'a> {
                     Some(v.name.span),
                     None,
                 );
-                self.globals.entry(v.name.text.clone()).or_insert(id);
-                if let Some(module) = &self.current_module {
-                    self.module_defs
+                let global = *self.globals.entry(v.name.text.clone()).or_insert(id);
+                let representative = if let Some(module) = &self.current_module {
+                    *self
+                        .module_defs
                         .entry((module.clone(), v.name.text.clone()))
-                        .or_insert(id);
+                        .or_insert(id)
+                } else {
+                    global
+                };
+                if let Some(group) = self.out.view_group(representative) {
+                    self.out.view_groups.insert(id, group);
                 }
             }
             Item::Enum(e) => {

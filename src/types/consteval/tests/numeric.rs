@@ -319,6 +319,117 @@ impl Environment for NativeNumericSource<'_, '_> {
 }
 
 #[test]
+fn selected_implementation_calls_keep_self_and_default_trait_arguments() {
+    let mut sources = [
+        "module contracts;
+         pub trait Transform<Input> {
+             static fn identity(value: Input) -> Input { return value; }
+             static fn wrap(value: Input) -> Self;
+         }",
+        "module left;
+         use contracts::Transform;
+         pub struct Rate(real); type Scalar = real; type Target = Rate;
+         impl Transform<Scalar> for Target {
+             static fn wrap(value: Scalar) -> Self { return Self(value); }
+         }",
+        "module right;
+         use contracts::Transform;
+         pub struct Rate(real); type Scalar = real; type Target = Rate;
+         impl Transform<Scalar> for Target {
+             static fn wrap(value: Scalar) -> Self { return Self(value); }
+         }
+         fn unrelated(value: real) -> real { return value; }",
+    ];
+    for _ in 0..2 {
+        with_numeric_source(&sources, |source, modules| {
+            let default = modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .find_map(|item| {
+                    let Item::Trait(declaration) = item else {
+                        return None;
+                    };
+                    declaration
+                        .items
+                        .iter()
+                        .find(|function| function.name.text == "identity")
+                })
+                .unwrap();
+            let unrelated = numeric_function(modules, "unrelated");
+            let mut checked = 0;
+            for module in modules {
+                for item in &module.items {
+                    let Item::Impl(implementation) = item else {
+                        continue;
+                    };
+                    let function = implementation
+                        .items
+                        .iter()
+                        .find_map(|item| {
+                            let crate::syntax::ast::ImplItem::Fn(function) = item else {
+                                return None;
+                            };
+                            Some(function)
+                        })
+                        .unwrap();
+                    for input in [
+                        0.0,
+                        -0.0,
+                        2.5,
+                        f64::INFINITY,
+                        f64::from_bits(0x7ff8_0000_0000_00ab),
+                    ] {
+                        let value = evaluate_impl_function(
+                            default,
+                            implementation,
+                            vec![Value::Real(input)],
+                            &source,
+                            0,
+                        )
+                        .unwrap();
+                        let Value::Real(value) = value else {
+                            panic!("trait argument retains real identity")
+                        };
+                        assert_eq!(value.to_bits(), input.to_bits());
+                        let value = evaluate_impl_function(
+                            function,
+                            implementation,
+                            vec![Value::Real(input)],
+                            &source,
+                            0,
+                        )
+                        .unwrap();
+                        let Value::Record { owner, fields } = value else {
+                            panic!("Self retains its implementation owner")
+                        };
+                        assert!(module.items.iter().any(|item| matches!(item, Item::Struct(declaration) if std::ptr::eq(source.structure(owner).unwrap(), declaration))));
+                        let [Value::Real(value)] = fields.as_ref() else {
+                            panic!("real base")
+                        };
+                        assert_eq!(value.to_bits(), input.to_bits());
+                    }
+                    assert_eq!(
+                        evaluate_impl_function(
+                            unrelated,
+                            implementation,
+                            vec![Value::Real(1.0)],
+                            &source,
+                            0
+                        )
+                        .unwrap_err()
+                        .reason,
+                        Reason::Unsupported
+                    );
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, 2);
+        });
+        sources.reverse();
+    }
+}
+
+#[test]
 fn typed_numeric_values_keep_declared_domains_through_calls_and_assignments() {
     let mut sources = [
         "module client; use providers::numbers::{provider = self};

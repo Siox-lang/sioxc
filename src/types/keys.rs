@@ -82,13 +82,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The key for whatever is declared at `span`.
-    pub(super) fn declaration_key(&self, span: Span) -> Option<String> {
-        self.resolved
-            .declared(span)
-            .and_then(|id| self.definition_key(id))
-    }
-
     /// The key for whatever a path resolves to.
     pub(super) fn path_key(&self, path: &Path) -> Option<String> {
         self.resolved

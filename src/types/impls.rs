@@ -303,10 +303,10 @@ impl<'a> Checker<'a> {
                     }
                     // A bus-mode port contributes each `in` leaf (`bus.ready`),
                     // so driving it inside the entity is rejected (spec 3.19).
-                    if let Some(dirs) = p.view.clone().and_then(|k| self.view_dirs.get(&k)) {
-                        for (field, dir) in dirs {
-                            if *dir == Direction::In {
-                                illegal.insert(format!("{}.{field}", p.name));
+                    if let Some(view) = p.view.and_then(|id| self.declarations.view(id)) {
+                        for field in &view.fields {
+                            if field.dir == Direction::In {
+                                illegal.insert(format!("{}.{}", p.name, field.name.text));
                             }
                         }
                     }

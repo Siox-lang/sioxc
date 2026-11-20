@@ -636,27 +636,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The type-head name used to key impl methods: a named type's def name,
-    /// a kernel type's spelling, or the nominal family of an indexed array.
-    /// The struct behind a view, given the view's bare name. `views` is keyed
-    /// by the `(view, backing)` pair, so a bare name resolves only when one
-    /// view carries it; an ambiguous name is left alone rather than guessed.
-    pub(super) fn view_backing(&self, name: &str) -> Option<String> {
-        let prefix = format!("{name}@");
-        let mut targets = self.views.keys().filter_map(|k| k.strip_prefix(&prefix));
-        let first = targets.next()?;
-        targets.next().is_none().then(|| first.to_string())
+    /// Render the selected backing for the still-legacy method registries.
+    pub(super) fn view_backing(&self, ty: &Ty) -> Option<String> {
+        self.type_key(self.view_backing_type(ty)?)
     }
 
     /// Retain the selected target's resolver spans instead of recovering a type
     /// from the compatibility layout name. Ambiguous bare views stay unknown.
-    pub(super) fn view_backing_type(&self, name: &str) -> Option<&Type> {
-        let prefix = format!("{name}@");
-        let mut targets = self
-            .views
-            .iter()
-            .filter_map(|(key, target)| key.starts_with(&prefix).then_some(target));
-        let first = targets.next()?;
-        targets.next().is_none().then_some(first)
+    pub(super) fn view_backing_type(&self, ty: &Ty) -> Option<&Type> {
+        let Ty::Named(view) = ty else {
+            return None;
+        };
+        self.declarations.unique_view_target(*view)
     }
 }

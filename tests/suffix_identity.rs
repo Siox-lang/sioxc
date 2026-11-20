@@ -38,6 +38,15 @@ fn aliased_suffix_contracts_execute_in_hardware_and_processes() {
                              static fn helper(value: Scalar) -> RateAlias {{
                                  return RateAlias {{ .value = value + 1000.0 }};
                              }}
+                         }}
+                         pub struct Physical(real);
+                         pub type PhysicalAlias = Physical;
+                         fn adjust(value: Scalar) -> Scalar {{ return value + 1.0; }}
+                         impl Suffix<\"{name}physical\", real> for PhysicalAlias {{
+                             static fn suffix(value: Scalar) -> Self {{
+                                 let local: Scalar = value * {real_scale};
+                                 return Self(adjust(local));
+                             }}
                          }}"
                     ),
                 )
@@ -53,11 +62,13 @@ fn aliased_suffix_contracts_execute_in_hardware_and_processes() {
                  {imports}
                  entity Dut {{
                      left: L::Alias out, right: R::Alias out,
-                     lf: L::RateAlias out, rf: R::RateAlias out
+                     lf: L::RateAlias out, rf: R::RateAlias out,
+                     lp: L::PhysicalAlias out, rp: R::PhysicalAlias out
                  }}
                  impl Dut {{
                      left = 2leftunit; right = 3rightunit;
                      lf = 2.5leftrate; rf = 1.25rightrate;
+                     lp = 2.5leftphysical; rp = 1.25rightphysical;
                  }}
                  #[test] entity Probe {{}}
                  impl Probe {{
@@ -67,11 +78,15 @@ fn aliased_suffix_contracts_execute_in_hardware_and_processes() {
                          let right: R::Alias = 3rightunit;
                          let lf: L::RateAlias = 2.5leftrate;
                          let rf: R::RateAlias = 1.25rightrate;
+                         let lp: L::PhysicalAlias = 2.5leftphysical;
+                         let rp: R::PhysicalAlias = 1.25rightphysical;
                          assert!(left.value == 74 and right.value == 33);
                          assert!(lf.value == 3.75 and rf.value == 3.125);
+                         assert!(real(lp) == 4.75 and real(rp) == 4.125);
                          await 1ns;
                          assert!(dut.left.value == 74 and dut.right.value == 33);
                          assert!(dut.lf.value == 3.75 and dut.rf.value == 3.125);
+                         assert!(real(dut.lp) == 4.75 and real(dut.rp) == 4.125);
                      }}
                  }}"
             );

@@ -284,7 +284,7 @@ impl<'i, 'a> Source<'i, 'a> {
         }
     }
 
-    pub(super) fn project_derived<'v>(
+    pub(crate) fn project_derived<'v>(
         &self,
         mut value: &'v Value,
         target: DefId,
@@ -364,6 +364,46 @@ impl<'i, 'a> Source<'i, 'a> {
         'a: 't,
     {
         self.declarations.instantiate_type(arguments, ty)
+    }
+
+    pub(super) fn selected_impl_function(
+        &self,
+        function: &'a FnDecl,
+        implementation: &'a crate::syntax::ast::ImplDecl,
+    ) -> Option<SelectedFunction<'a>> {
+        let declaration = implementation
+            .trait_
+            .as_ref()
+            .and_then(|path| self.resolved().resolved(path.span))
+            .and_then(|owner| {
+                self.declarations
+                    .trait_decl(owner)
+                    .or_else(|| self.functions?.trait_decl(owner))
+            });
+        let own = implementation.items.iter().any(
+            |item| matches!(item, ImplItem::Fn(candidate) if std::ptr::eq(candidate, function)),
+        );
+        let default = declaration.is_some_and(|declaration| {
+            declaration
+                .items
+                .iter()
+                .any(|candidate| std::ptr::eq(candidate, function))
+        });
+        if !own && !default {
+            return None;
+        }
+        let applied = declaration
+            .map(|declaration| {
+                self.declarations
+                    .arguments(&declaration.params, &implementation.trait_args)
+            })
+            .transpose()
+            .ok()?;
+        Some(SelectedFunction {
+            function,
+            implementation: Some(implementation),
+            applied,
+        })
     }
 
     pub(super) fn structure(&self, owner: DefId) -> Option<&'a StructDecl> {
