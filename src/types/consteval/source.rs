@@ -498,9 +498,21 @@ impl<'i, 'a> Source<'i, 'a> {
             })
     }
 
-    pub(super) fn method_function(&self, method: &Ident, receiver: &Value) -> Option<&'a FnDecl> {
+    pub(super) fn method_function(
+        &self,
+        method: &Ident,
+        receiver: &Value,
+    ) -> Option<SelectedFunction<'a>> {
         let owner = self.value_type(receiver)?;
-        let supported = |function: &&FnDecl| {
+        let supported = |selected: &SelectedFunction<'_>| {
+            let function = selected.function;
+            let supported_type = |ty: &Type| {
+                let ty = match &selected.applied {
+                    Some(applied) => self.instantiated_type(applied, ty),
+                    None => Some(Cow::Borrowed(ty)),
+                };
+                ty.is_some_and(|ty| self.supported(&ty, Some(owner)))
+            };
             function.name.text == method.text
                 && function.body.is_some()
                 && function.generics.params.is_empty()
@@ -508,21 +520,14 @@ impl<'i, 'a> Source<'i, 'a> {
                     .params
                     .first()
                     .is_some_and(|parameter| parameter.is_self)
-                && function
-                    .ret
-                    .as_ref()
-                    .is_some_and(|ty| self.supported(ty, Some(owner)))
+                && function.ret.as_ref().is_some_and(supported_type)
                 && function.params.iter().skip(1).all(|parameter| {
-                    !parameter.is_self
-                        && parameter
-                            .ty
-                            .as_ref()
-                            .is_some_and(|ty| self.supported(ty, Some(owner)))
+                    !parameter.is_self && parameter.ty.as_ref().is_some_and(supported_type)
                 })
         };
         // Inherent methods take priority; distinct matching trait bodies are ambiguous.
         for inherent in [true, false] {
-            let mut selected: Option<&'a FnDecl> = None;
+            let mut selected: Option<SelectedFunction<'a>> = None;
             for implementation in self.declarations.implementations_for(owner).chain(
                 self.functions
                     .into_iter()
@@ -549,12 +554,21 @@ impl<'i, 'a> Source<'i, 'a> {
                             .iter()
                             .find(|function| function.name.text == method.text)
                     })
+                    .and_then(|function| self.selected_impl_function(function, implementation))
                     .filter(supported);
-                if let Some(function) = candidate {
-                    if selected.is_some_and(|previous| !std::ptr::eq(previous, function)) {
+                if let Some(candidate) = candidate {
+                    if selected.as_ref().is_some_and(|previous| {
+                        !std::ptr::eq(previous.function, candidate.function)
+                            || previous
+                                .implementation
+                                .zip(candidate.implementation)
+                                .is_none_or(|(previous, candidate)| {
+                                    !std::ptr::eq(previous, candidate)
+                                })
+                    }) {
                         return None;
                     }
-                    selected = Some(function);
+                    selected = Some(candidate);
                 }
             }
             if selected.is_some() {

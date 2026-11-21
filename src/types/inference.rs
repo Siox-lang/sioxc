@@ -3,6 +3,49 @@
 use super::*;
 
 impl<'a> Checker<'a> {
+    /// Intrinsic radix expansion keeps its source-declared result domain.
+    pub(super) fn radix_literal_type(&self, base: char, digits: &str) -> Ty {
+        if !crate::syntax::is_radix_prefix(base) {
+            return Ty::Error;
+        }
+        let Some([target]) = self.prefix_types.get(&base.to_string()).map(Vec::as_slice) else {
+            return Ty::Error;
+        };
+        let count = crate::syntax::radix_digits(digits).try_fold(0u32, |count, digit| {
+            digit
+                .is_digit(crate::syntax::radix_of(base))
+                .then_some(())?;
+            count.checked_add(1)
+        });
+        let Some(width) = count
+            .filter(|count| *count != 0)
+            .and_then(|count| count.checked_mul(crate::syntax::bits_per_digit(base)))
+        else {
+            return Ty::Error;
+        };
+        let Ty::Array {
+            elem,
+            family,
+            len,
+            low,
+        } = self.ast_ty(target)
+        else {
+            return Ty::Error;
+        };
+        if !self.is_enum_ty(&elem) {
+            return Ty::Error;
+        }
+        if len != 0 && len != width {
+            return Ty::Error;
+        }
+        Ty::Array {
+            elem,
+            family,
+            len: width,
+            low,
+        }
+    }
+
     /// Whether a system event/history attribute can observe this type.
     /// Named values are classified from their resolved declaration instead of
     /// being accepted blindly (in particular, entity instances are not data).
@@ -66,21 +109,7 @@ impl<'a> Checker<'a> {
                     Ty::Error
                 }
             }
-            Expr::BitStrLit { base, digits, .. } => {
-                // Only the intrinsic radix prefixes have a known width; an
-                // unknown prefix is `Ty::Error` so its diagnostic doesn't
-                // cascade into a spurious width mismatch.
-                if !crate::syntax::is_radix_prefix(*base) {
-                    return Ty::Error;
-                }
-                let bits = crate::syntax::bits_per_digit(*base);
-                Ty::Array {
-                    elem: Box::new(self.ty_from_head("Logic")),
-                    family: Some(self.array_family_key("unsigned")),
-                    len: crate::syntax::radix_digits(digits).count() as u32 * bits,
-                    low: 0,
-                }
-            }
+            Expr::BitStrLit { base, digits, .. } => self.radix_literal_type(*base, digits),
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.
             Expr::CharLit { .. } => Ty::Char,

@@ -5695,3 +5695,196 @@ where unfinished; estimate stays about86% of foundations. Integer/fractional
 suffix migration must preserve declared signed64 bindings AND the ACTUAL
 u64MAX-femtosecond timeline case; no new untyped bypass is accepted. Continue
 isolated prefix correction after its failed fixture below; no push/PR/wiki.
+
+### 2026-11-20 — Codex — retain selected impl context for constant method calls
+
+Own types/consteval.rs, consteval/source.rs and a dedicated method-context
+regression module. Ordinary source method selection currently returns only
+FnDecl: trait-default substitutions and implementation identity are discarded
+before invoke, despite the shared interpreter already supporting both. Reuse
+SelectedFunction, selected_impl_function and invoke_selected rather than a new
+registry, evaluator, untyped binding path or copied function body. Contextual
+arguments must use the selected trait bindings; defaults from distinct impls
+must stay ambiguous even when they borrow the same source function.
+
+Retain inherent priority, non-generic function limitations, aggregate/enum
+contexts, recursion and signed64 checks. Cover original source pointers,
+same-leaf owners, trait aliases/default arguments, character/real arguments,
+nested calls and duplicate default providers in both module orders/domains.
+This is a specific callable-context migration, not complete generic/applied
+nominal support. Primary accepted893bec1 remains the rollback/evidence point;
+new code needs focused and full combined gates before commit. Prefix source
+remains frozen independently while its focused native job runs.
+
+### 2026-11-20 — Codex — integrate focused radix proof; isolate Cargo outputs
+
+Isolated prefix v5 service1795192856022926626-1682017 completed
+exited/success/0,17:40:56–17:42:53 CET, peak1,326,804,992 bytes.
+Source2a6374ad6dedaa5bf0ec81a1bf80494ca75ab5683918a9a9675ca66fddc01ce4
+is unchanged before/after. Both prefix groups, all806 frontend/14imports,
+strict frontend/native-test Clippy and ordinary/debug native ULogic-backed
+Radix literals in BOTH modes pass, including exact typed-family/element
+identity, every x/o bit and hardware/process waveform parity. Keep every
+earlier failed fixture/layout attempt as evidence. Code-only source excluding
+Markdown79885a9b8bc34359e398237bcce7698cf006c5db6f1ce99e124184a0c4409f7e.
+
+The independent method focus1795192859159173948-1682131 failed/101,
+peak342,265,856 bytes, and is NOT semantic evidence: shared Cargo outputs
+reused the prefix checkout's lib binary (806 tests), running ZERO of the new
+method tests instead of the expected two. Its later borrowed-view native
+test linked the stale library and failed. No source/corpus assertion is
+relaxed or accepted from this run. New primary verification uses its own
+disk-backed Cargo target and checks exact new test names in --list before
+running filters. Do not clean or delete another checkout's shared artifacts.
+
+Own integration of ONLY tested prefix Rust changes (collect/expressions/
+inference/frontend fixtures, indexed-alias layout normalization, and native
+prefix_contracts). Preserve this checkout's accepted view changes and current
+method-context work; do NOT copy isolated historical docs/logs. Repeat combined
+focused/native checks, then the ENTIRE Rust/GDB/ACTUAL-corpus/UI/JSON matrix
+with unique target outputs and frozen fingerprints before acceptance/commit.
+All five sections, signed integer/timeline boundaries, normal caps/toolchain
+and no-push policy remain unchanged. Accepted local893bec1 is unaffected.
+
+Unique-target combined focus v2 unit1795193146575208419-1687983 completed
+failed/101, peak1,088,966,656 bytes. Exact --list proves all815 current
+frontend tests include BOTH new method tests and BOTH prefix groups. The
+inherent-priority/ambiguity/signed-binding group passes; the context group
+fails before evaluation because its one-segment module-alias imports are not
+legal import syntax. Fix only that fixture to providers::left/right and use
+current implicit-receiver spelling; keep every semantic assertion. Retain
+the failure and repeat the SAME combined scope on the primary-only target.
+
+### 2026-11-20 — Codex — freeze prefix/method combination for full acceptance
+
+Combined focus v3 service1795193237433161941-1689002 completed
+exited/success/0,17:47:17–17:51:24 CET, peak1,610,874,880 bytes under
+normal limits. Sourceecd8ec6adc81528d640d0cb48031e7df9e44c30fdf0e94748e68dd72de8cd317
+matches before/after. The exact test list includes all four new groups;
+both method groups, all55 evaluator tests/all815 frontend tests/14imports,
+strict frontend/native Clippy and native prefix/view/derived/suffix fixtures
+in BOTH storage modes pass. Source ULogic identity, every radix bit, reactive
+view wiring, inherited values and ordinary/debug waveform parity are retained.
+
+Own acceptance-status Markdown and the measured cross-checkout output rule in
+HOUSERULES.md before freezing. Shared target reuse has been demonstrated by
+zero new method tests and a stale-library view failure; use checkout-local or
+dedicated cached targets and confirm filtered test presence, without deleting
+other worktrees' outputs. No dependency or limit increase is required.
+
+Queue foundations-prefix-methods-full-20261120.sh with the matching fresh
+native driver, primary-only Cargo target and normal guarded lock, Rust1.90,
+one Cargo job/two test threads/host debug1. Preserve EVERY complete Rust,
+GDB, ACTUAL corpus, UI/JSON/code/migration, native/VCD, pin and before/after
+fingerprint gate from accepted893bec1; new method/prefix tests are additions.
+Freeze primary source, ACTUAL corpus and full/native drivers while live.
+Focused proof is not full acceptance: no further commit/push, estimate advance
+or completion claim until the entire combination is independently green.
+All five proposal sections and every remaining requirement remain in scope.
+
+### 2026-11-20 — Codex — preserve string shapes after full-gate regression
+
+Full combination1795193583578417888-1694331 at37adee5a is NOT accepted.
+All815 frontend/14imports and initial native/direct waveform groups passed;
+default cargo test then failed native_formatting_preserves_wide_unicode_and_long_messages
+in build_binary (35passed/1failed). Two assignment snapshots have no packed
+width: target/value IDs70/77 and78/79. Complete Cargo trace/source and stage
+logs are retained under foundations-prefix-methods-full-20261120.
+
+Deliberately stopped the still-running matrix after capturing the authoritative
+failure, before later bitpack/corpus stages spent another full run. Observed
+peak1,612,423,168 bytes; canceled dead/success/0 is NOT passing evidence.
+This is a real shape regression, not a kernel stop or permission to weaken
+formatter, strings, aliases, native/debugger or corpus checks.
+
+Own indexed-alias layout normalization and a small native regression covering
+fixed string aliases, nested string arrays/fields, copying and mutation.
+Keep the original wide/Unicode test unchanged. Preserve both source-declared
+family identity (the new prefix regression) AND established string dimensions;
+do not hide the issue by replacing the custom ULogic prefix fixture or dropping
+the shared alias query. Isolated static-attribute work stays unintegrated.
+Repeat focused native/formatter checks and the entire corrected combined gate
+before acceptance/commit. All five sections remain required; no push/estimate rise.
+
+Minimal native regression1795194453386947945-1722294 independently fails
+failed/101, peak246,620,160 bytes with the same missing-width snapshots
+for fixed string aliases/nested arrays and record fields. This preserves a
+small reproducer alongside the unchanged wide/Unicode fixture.
+Own shared resolve/declarations.rs indexed normalization and its declaration
+identity tests: applying an index to an alias of an unconstrained array must
+fill that open dimension, not add a second one. Canonicalize that case where
+alias normalization already happens, retaining outer array dimensions, ranges,
+source element identities and source expression spans. Keep the IR query and
+both family/string native assertions; no fixture substitution or new folder.
+
+Indexed-alias focus1795194562312735552-1722639 failed/101,
+peak1,049,104,384 bytes: the canonical dimension identity test and full frontend
+pass, and custom radix native identity passes, but the new named Word alias
+still has missing-width record snapshots. A retained one-off API inspection
+of the original wide fixture now compiles successfully and shows NestedBox's
+four failing snapshots with concrete144-bit widths; it is diagnostic evidence,
+not execution/full acceptance. The new Word path exposes the second boundary:
+layout normalization consults the shared query only for an outer Indexed node,
+not a Path alias whose target itself needs index normalization.
+
+Apply every non-identity shared normalization (owned or a borrowed original
+alias target), then retain the existing bootstrap fallback only when that
+query leaves the input unchanged/unknown. This preserves raw builtin string
+fixtures while canonicalizing named indexed aliases uniformly. Keep both
+native fixtures and original formatter unchanged. Diagnostic attempts/logs
+and earlier full failure remain retained; repeat all focused/full acceptance.
+
+### 2026-11-20 — Codex — corrected indexed aliases ready for full retry
+
+Indexed-alias focus v2 unit1795194907081603245-1725754 completed
+exited/success/0,18:15:07–18:16:49 CET, peak1,423,073,280 bytes.
+Sourcea9d541f5eec1d3c2b95e771db5543741f7ac84b9efd0796f0cf54b863b4d15ee
+matches before/after. All816 frontend/55evaluator/14import tests, both method
+groups, canonical dimension/element-identity regression, strict Clippy, BOTH
+ordinary/debug native prefix tests (ULogic provider and nested strings), and
+both-mode view/derived/suffix fixtures pass. The UNCHANGED original wide/Unicode
+formatter now compiles/runs and passes all assertions in BOTH storage modes.
+
+This proves the focused repair, not complete combination acceptance. Update
+proposal status, then queue the fresh corrected-full/native drivers on the
+SAME normal guard behind isolated static-attribute focus. Dedicated primary
+target, Rust1.90/jobs1/threads2/hostdebug1 and all caps remain unchanged.
+Freeze primary source, ACTUAL corpus and corrected drivers while queued/live.
+The full Rust/GDB/ACTUAL-corpus/UI/JSON/native/waveform/pin/fingerprint matrix
+is unchanged; new canonical and string fixtures add coverage. Static-attribute
+code is NOT integrated or included in this proof. Do not commit/push, increase
+the estimate or shrink all-five completion requirements before full acceptance.
+
+### 2026-11-21 — Codex — accept prefix, constant-method and indexed-alias checkpoint
+
+Reviewed complete corrected full unit1795195132946984971-1731183:
+exited/success/0, Nov20 18:18:52–19:20:24 CET, peak1,612,435,456 bytes.
+All816 frontend/55 evaluator/14 import tests,873default/852bitpack library
+tests and120 integration targets per mode pass, including ALL48 GDB cases.
+Both ACTUAL274 corpora,71UI/71JSON/56codes/two apply-recompile migrations per
+mode, strict Clippy,70 runner/36 waveform tests and12 specified artifacts pass.
+All72 direct native/debug programs and four aggregate timeline/VCD/parity
+runs pass. The source assertions and original wide/Unicode formatter are intact.
+
+Additional original CI GDB smoke unit1795197948405838756-1786320 completed
+exited/success/0 at19:26:52 CET, peak1,264,537,600 bytes. It uses a fresh
+checkout-local target because the original smoke script selects root/target.
+FIFO/wide, ordinary/debug GDB inspection, stepping and exact baseline VCD
+parity all pass. No stale executable or canceled/zero-test proof is accepted.
+
+Source30689ee7ba98677769a9013cf06f959b7bd1625a9c6f43dc259cbfcb5e6ca597
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after both gates and independent review. Code-only excluding MD:
+284c27618392f09be4ad8d9151fd79b353531a8b9ba5d69abf1ecd97feff5536.
+libfst clean at74301348450701727776c1a0522a3f512738e9ae; unchanged normal
+2GiB hard/1.5GiB soft/no-swap/no-core limits, Rust1.90/jobs1/threads2/hostdebug1.
+All20 peer corpus files remain untouched. Primary acceptance-only docs now
+record proof; commit only explicit owned paths locally after unchanged-code
+fingerprint/diff review. No push, PR or wiki publication.
+
+This accepts source-registered prefixes, selected constant-method contexts and
+the indexed-alias normalizer/layout repair, plus the dedicated-target rule.
+Separate static-attribute, registry-guard and elaborated-record drafts are NOT
+included. All five sections stay required; typed/applied contexts, remaining
+values/defaults/static attributes, integer/fractional suffixes, other declaration
+registries and residual hooks remain open. Estimate stays about86% of foundations.

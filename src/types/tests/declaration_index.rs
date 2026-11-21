@@ -4,6 +4,50 @@ use crate::resolve::declarations::DeclarationIndex;
 use crate::syntax::ast::Expr;
 use crate::types::consteval::{evaluate, evaluate_value, Reason, Source, Value};
 
+#[test]
+fn normalized_indexed_aliases_fill_open_dimensions_without_losing_nested_shape() {
+    let mut sources = [
+        "module left;
+         pub type Text = Char[]; pub type Word = Text[3]; pub type Rows = Word[2];",
+        "module right;
+         pub type Text = integer[]; pub type Word = Text[5]; pub type Rows = Word[4];",
+        "module client;
+         fn probe(a: left::Rows, b: right::Rows, c: left::Text[7], d: Char[3][2]) {}",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let declarations = DeclarationIndex::collect(&resolved, &modules);
+        let function = modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .find_map(|item| match item {
+                Item::Fn(function) => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        for (parameter, (shape, element)) in function.params.iter().zip([
+            ("Char[3][2]", "Char"),
+            ("integer[5][4]", "integer"),
+            ("Char[7]", "Char"),
+            ("Char[3][2]", "Char"),
+        ]) {
+            let normalized = declarations
+                .normalize_type(parameter.ty.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(crate::syntax::pretty::type_str(&normalized), shape);
+            let mut base = normalized.as_ref();
+            while let Type::Indexed { base: inner, .. } = base {
+                base = inner;
+            }
+            let Type::Path(path) = base else {
+                panic!("source element type")
+            };
+            assert_eq!(resolved.resolved(path.span), resolved.builtin(element));
+        }
+        sources.reverse();
+    }
+}
+
 fn parse(sources: &[&str]) -> (Vec<Module>, Resolved) {
     let mut sink = DiagnosticSink::default();
     let modules: Vec<_> = sources

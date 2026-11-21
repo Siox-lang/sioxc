@@ -249,7 +249,7 @@ pub(crate) trait Environment {
         self.source()?.condition_function(value)
     }
 
-    fn method_function(&self, method: &Ident, receiver: &Value) -> Option<&FnDecl> {
+    fn method_function(&self, method: &Ident, receiver: &Value) -> Option<SelectedFunction<'_>> {
         self.source()?.method_function(method, receiver)
     }
 
@@ -957,16 +957,26 @@ impl<'a> Interpreter<'a> {
                 .ok_or_else(|| fail(Reason::Unsupported))?;
             return self.checked_value(value, span);
         }
-        let (function, receiver) = if let Expr::Field { base, field, .. } = callee {
+        let (selected, receiver) = if let Expr::Field { base, field, .. } = callee {
             let receiver = self.expression(base, None, depth + 1)?;
             (
                 environment.method_function(field, &receiver),
                 Some(receiver),
             )
         } else {
-            (environment.function(callee), None)
+            (
+                environment
+                    .function(callee)
+                    .map(|function| SelectedFunction {
+                        function,
+                        implementation: None,
+                        applied: None,
+                    }),
+                None,
+            )
         };
-        let function = function.ok_or_else(|| fail(Reason::Unsupported))?;
+        let selected = selected.ok_or_else(|| fail(Reason::Unsupported))?;
+        let function = selected.function;
         let parameters = function
             .params
             .iter()
@@ -983,11 +993,20 @@ impl<'a> Interpreter<'a> {
         values.extend(receiver);
         for (parameter, argument) in parameters.zip(args) {
             values.push(match parameter.ty.as_ref() {
-                Some(ty) => self.declared_expression(argument, ty, receiver_owner, depth + 1)?,
+                Some(ty) => {
+                    let ty = match &selected.applied {
+                        Some(applied) => environment
+                            .source()
+                            .and_then(|source| source.instantiated_type(applied, ty))
+                            .ok_or_else(|| fail(Reason::Unsupported))?,
+                        None => std::borrow::Cow::Borrowed(ty),
+                    };
+                    self.declared_expression(argument, &ty, receiver_owner, depth + 1)?
+                }
                 None => self.expression(argument, None, depth + 1)?,
             });
         }
-        let value = self.invoke(function, values, depth + 1, span)?;
+        let value = self.invoke_selected(selected, values, depth + 1, span)?;
         self.checked_value(value, span)
     }
 

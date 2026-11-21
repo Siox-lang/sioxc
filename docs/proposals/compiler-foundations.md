@@ -9,7 +9,46 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-19, reviewed 2026-11-20): corrected full
+Latest local acceptance (2026-11-20, reviewed 2026-11-21): corrected full
+unit `1795195132946984971-1731183` completed `exited/success/0`,
+18:18:52–19:20:24 CET, peak 1,612,435,456 bytes within unchanged normal limits.
+All 816 frontend/55 evaluator/14 import tests, complete Rust suites (873 default /
+852 bitpack library tests and 120 integration targets per mode), all 48
+GDB/DWARF cases and strict Clippy pass. Both ACTUAL 274-program corpora pass;
+each mode passes 71 UI/71 JSON cases, all 56 codes and both apply/recompile
+migrations. All 70 runner/36 waveform-checker tests, 12 specified artifacts,
+72 direct native/debug programs and four aggregate timeline/VCD/parity runs pass.
+
+The original CI FIFO/wide debugger smoke script also completed successfully in
+unit `1795197948405838756-1786320`, finishing at 19:26:52 CET, peak
+1,264,537,600 bytes. All four ordinary/debug GDB inspection/stepping runs and
+their exact baseline waveform comparisons pass. Its fresh checkout-local target
+does not reuse another worktree's root package artifacts.
+
+Source `30689ee7ba98677769a9013cf06f959b7bd1625a9c6f43dc259cbfcb5e6ca597`
+and corpus `04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after both gates and independent review. Code-only excluding
+Markdown: `284c27618392f09be4ad8d9151fd79b353531a8b9ba5d69abf1ecd97feff5536`.
+Only acceptance Markdown changes afterward; the clean libfst pin, Rust 1.90,
+one Cargo job/two test threads, host debug1 and generated debug checks remain
+unchanged.
+
+This accepts the source-registered radix-prefix contracts, selected constant
+method implementation/Self/trait contexts, and canonical indexed-alias repair
+described below. The original wide/Unicode formatter and new nested-string
+fixture both execute successfully without weakening assertions. Earlier failed
+or stale-artifact runs remain rejected evidence; dated pending notes below are
+superseded only for this fully checked combination.
+
+Static-port attributes, the registry ratchet and elaborated record identities
+remain isolated followups, NOT part of this accepted source. All five sections
+remain required. Fully applied generic/associated contexts, remaining typed
+values/defaults/static attributes, integer/fractional suffix migration, actual
+remaining declaration registries and residual hooks stay open. Estimate remains
+about **86% of compiler foundations**, not the whole compiler. No push, PR or
+wiki publication is implied.
+
+Previous local acceptance (2026-11-19, reviewed 2026-11-20): corrected full
 guarded unit `1795083437681592050-1555130` completed `exited/success/0`,
 11:17:17–12:18:53 CET, peak 1,612,705,792 bytes under unchanged normal limits.
 All 811 frontend/14 import tests, both complete Rust suites (868 default /
@@ -38,11 +77,69 @@ orders and ordinary/debug builds, with exact waveform parity.
 
 The failed earlier combined attempt is retained below; its pending notes are
 superseded only for this corrected, fully checked scope. The separate prefix
-followup is NOT integrated or accepted. All five sections remain required;
+followup is not accepted; its working integration below still needs full checks.
+All five sections remain required;
 the estimate remains about **86% of compiler foundations**, not the whole
 compiler. Integer/fractional suffixes, typed/applied contexts, values/defaults,
 remaining registries/boundary guard and residual hooks stay open. No push,
 PR or wiki publication is implied.
+
+Working followup (2026-11-20; not accepted): registered radix prefixes select
+their unique original implementation target rather than matching Logic/unsigned
+names. Normalized element/family identity, literal widths and fixed labels
+survive; missing/ambiguous/incompatible providers stay unknown. Indexed family
+aliases reuse the declaration normalizer while existing path-only/bootstrap
+string handling is retained. Isolated focused unit `1795192856022926626-1682017`
+passes all 806 frontend/14 imports, strict Clippy and both-mode ordinary/debug
+native ULogic-backed Radix values with exact typed identity, bit values and
+waveform parity, at source `2a6374ad` unchanged before/after. This does not
+complete the other residual hook consumers.
+
+Ordinary constant method calls now keep the same selected implementation,
+Self and trait arguments as operator/suffix calls, rather than invoking only
+the detached function body. Contextual arguments use the selected contract;
+distinct implementations of one default body remain ambiguous. New regressions
+cover module order, borrowed source pointers, nested defaults, nominal owners,
+inherent priority, enum/real/natural arguments and strict signed bindings.
+These changes are integrated locally with the prefix followup. Combined focused
+unit `1795193237433161941-1689002` completed `exited/success/0`,
+17:47:17–17:51:24 CET, peak 1,610,874,880 bytes. Both method groups,
+all 55 evaluator/815 frontend/14 import tests, strict Clippy and both-mode
+native prefix/view/derived/suffix fixtures pass. Source `ecd8ec6a` matches
+before/after; original typed identities, bit assertions and waveform parity
+remain intact. This focused proof is not full combined acceptance.
+
+A first method-focused attempt reused a stale library from another checkout
+in the formerly shared Cargo target and ran zero new method tests; it is NOT
+passing semantic evidence. New combined verification has a primary-only target
+directory and asserts the exact new test names before filtered execution.
+The ENTIRE combined Rust/native/GDB/ACTUAL-corpus/UI/JSON matrix on the new
+dedicated target, with unchanged source/corpus and dependency checks, is pending
+before acceptance or commit. All five sections and remaining work above stay
+in scope; estimate remains about 86% of foundations, no push/PR/wiki.
+
+The first combined full attempt `1795193583578417888-1694331` at
+`37adee5a` is rejected: the existing wide/Unicode formatting case lost packed
+widths on two record assignment snapshots. The run was deliberately stopped
+after preserving that actual Cargo failure; stopped `dead/success/0` is not
+a passing matrix. The minimal nested-string alias native regression reproduces
+the same failure without changing the original test.
+
+The correction fills an unconstrained array dimension at the shared alias
+normalizer rather than nesting another open dimension. Layout queries now
+accept every changed canonical alias result, including a borrowed original
+target, while retaining the established bootstrap fallback for unchanged or
+unknown types. It preserves nested dimensions, element identities and the
+custom ULogic radix family rather than special-casing string names.
+
+Corrected focused unit `1795194907081603245-1725754` completed
+`exited/success/0`, 18:15:07–18:16:49 CET, peak 1,423,073,280 bytes, at
+source `a9d541f5` unchanged before/after. All 816 frontend/55 evaluator/
+14 import tests, strict Clippy, both-mode prefix/string/view/derived/suffix
+native fixtures and the unchanged original wide/Unicode formatter pass.
+The fresh corrected complete matrix remains pending before acceptance/commit.
+The separate static-attribute worktree is not integrated or covered by this
+proof. Every remaining five-section requirement remains open as stated above.
 
 Previous local acceptance (2026-11-15, reviewed 2026-11-19): full guarded unit
 `1794709495191787889-1083259` completed `exited/success/0`, 03:24:55–04:30:29

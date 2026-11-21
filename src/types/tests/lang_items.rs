@@ -3,6 +3,193 @@
 use super::*;
 
 #[test]
+fn radix_prefix_results_follow_borrowed_registered_contracts() {
+    for fixed in [false, true] {
+        let target = if fixed { "Fixed" } else { "Alias" };
+        let result = if fixed { "Fixed" } else { "Alias[8]" };
+        let provider = format!(
+            "module numbers;
+             pub enum Level {{ '0', '1' }}
+             pub struct Word(Level[]);
+             pub type Alias = Word;
+             pub type Fixed = Alias[9..2];
+             impl core::digits::Decode<\"x\", Char[]> for {target} {{}}
+             fn probe() {{ let value: {result} = x\"AB\"; }}"
+        );
+        let mut sources = [
+            "module core::digits;
+             pub trait Decode<Tag: Char[], Input> { static fn prefix(data: Input) -> Self {} }
+             attr lang for Decode = \"prefix\";"
+                .to_string(),
+            provider,
+            "module std::logic;
+             pub enum Logic { '0', '1' }
+             pub struct unsigned(Logic[]);
+             pub trait Prefix<Tag: Char[], Input> {}
+             impl Prefix<\"x\", Char[]> for unsigned {}"
+                .to_string(),
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect();
+            let modules = with_core(modules, &mut sink);
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let typed = check(&modules, &resolved, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let provider = modules
+                .iter()
+                .find(|module| module.path.segments[0].text == "numbers")
+                .unwrap();
+            let element = provider
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Enum(declaration) => resolved.declared(declaration.name.span),
+                    _ => None,
+                })
+                .unwrap();
+            let (target, literal) = (
+                provider
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Impl(declaration) => Some(&declaration.target),
+                        _ => None,
+                    })
+                    .unwrap(),
+                provider
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Fn(function) => match function.body.as_ref()?.stmts.first()? {
+                            Stmt::Let(declaration) => declaration.value.as_ref(),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .unwrap(),
+            );
+            assert_eq!(
+                typed.expr_type(expr_span(literal)),
+                Some(&Ty::Array {
+                    elem: Box::new(Ty::Named(element)),
+                    family: Some("numbers::Word".to_string()),
+                    len: 8,
+                    low: if fixed { 2 } else { 0 },
+                })
+            );
+            let mut borrow_sink = DiagnosticSink::new();
+            let mut checker = Checker::new(&mut borrow_sink, &resolved, &modules);
+            checker.collect(&modules);
+            let [original] = checker.prefix_types["x"].as_slice() else {
+                panic!("one registered provider");
+            };
+            assert!(std::ptr::eq(*original, target));
+            sources.reverse();
+        }
+    }
+}
+
+#[test]
+fn radix_prefix_failures_do_not_acquire_a_named_library_fallback() {
+    for (declarations, digits, message) in [
+        ("", "AB", "no `impl Prefix` declares it"),
+        (
+            "struct Left(Cell[]); struct Right(Cell[]);
+          impl Prefix<\"x\", Char[]> for Left {}
+          impl Prefix<\"x\", Char[]> for Right {}",
+            "AB",
+            "ambiguous",
+        ),
+        (
+            "struct Record { pub data: integer }
+          impl Prefix<\"x\", Char[]> for Record {}",
+            "AB",
+            "cannot represent",
+        ),
+        (
+            "struct Record { pub data: integer }
+             impl Prefix<\"x\", Char[]> for Record[] {}",
+            "AB",
+            "cannot represent",
+        ),
+        (
+            "struct Narrow(Cell[]);
+          impl Prefix<\"x\", Char[]> for Narrow[4] {}",
+            "AB",
+            "cannot represent",
+        ),
+        (
+            "struct Packed(Cell[]);
+          impl Prefix<\"x\", Char[]> for Packed {}",
+            "GG",
+            "invalid hex",
+        ),
+    ] {
+        let source = format!(
+            "module invalid;
+             enum Cell {{ '0', '1' }}
+             enum Logic {{ '0', '1' }} struct unsigned(Logic[]);
+             {declarations}
+             fn probe() {{ let value: integer = x\"{digits}\"; }}"
+        );
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &source, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let typed = check(&modules, &resolved, &mut sink);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        let unsupported_array_impl = declarations.contains("for Record[]");
+        assert_eq!(
+            errors.len(),
+            if unsupported_array_impl { 2 } else { 1 },
+            "{errors:?}"
+        );
+        assert!(errors
+            .iter()
+            .all(|error| error.code == Some(codes::TYPE_MISMATCH)));
+        let prefix = errors
+            .iter()
+            .find(|error| error.message.contains(message))
+            .unwrap();
+        assert!(prefix.message.contains("bit-string"), "{errors:?}");
+        assert_eq!(
+            prefix.labels.len(),
+            usize::from(message == "cannot represent")
+        );
+        if unsupported_array_impl {
+            assert!(errors
+                .iter()
+                .any(|error| error.message == "a trait cannot be implemented for `Record[]`"));
+        }
+        let literal = modules[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Fn(function) => match function.body.as_ref()?.stmts.first()? {
+                    Stmt::Let(declaration) => declaration.value.as_ref(),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(typed.expr_type(expr_span(literal)), Some(&Ty::Error));
+    }
+}
+
+#[test]
 fn unregistered_library_namespace_traits_do_not_grant_kernel_capabilities() {
     let mut sources = [
         ("module core::contracts; pub trait Capability {}", FileId(0)),

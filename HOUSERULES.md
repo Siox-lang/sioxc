@@ -113,6 +113,14 @@ bash scripts/guarded-run.sh env CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=1 ca
 Keep all native/debugger tests enabled and the memory limits unchanged; this
 changes Rust host test metadata, not the language's debug/simulation mode.
 
+Keep Cargo outputs checkout-local, or give each worktree its own cached
+`CARGO_TARGET_DIR`. A shared target has reused a different worktree's root
+library/test binary despite changed sources: zero matching tests and a stale
+library are not proof of the checkout under test. Before relying on a filtered
+test run, confirm its exact test names with `cargo test ... -- --list`; do not
+count a zero-test success as coverage. Shared dependency downloads in
+`CARGO_HOME` are fine; do not delete other worktrees' build outputs.
+
 Before you commit, all three must be green:
 
 ```bash

@@ -4,6 +4,7 @@ use crate::syntax::{ast::Item, parse_module};
 
 mod aggregate;
 mod derived;
+mod methods;
 mod numeric;
 
 fn expression(text: &str) -> Expr {

@@ -488,14 +488,19 @@ impl<'a> Checker<'a> {
                         // for T`: the first trait argument is the affix symbol
                         // and the impl target `T` is what the literal produces
                         // (spec 3.24). std owns which affixes exist.
-                        if t == "Suffix" || t == "Prefix" {
+                        let prefix = self
+                            .resolved
+                            .resolved(tr.span)
+                            .and_then(|id| self.resolved.lang_of(id))
+                            == Some("prefix");
+                        if t == "Suffix" || prefix {
                             if let Some(GenericArg::Positional(Expr::StrLit { text, .. })) =
                                 im.trait_args.first()
                             {
-                                let table = if t == "Suffix" {
-                                    &mut self.suffix_types
-                                } else {
+                                let table = if prefix {
                                     &mut self.prefix_types
+                                } else {
+                                    &mut self.suffix_types
                                 };
                                 table.entry(text.clone()).or_default().push(&im.target);
                             }

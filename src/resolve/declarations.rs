@@ -681,6 +681,20 @@ impl<'a> DeclarationIndex<'a> {
             }
             Type::Indexed { base, index, span } => {
                 let normalized = self.normalize_type_inner(base, seen)?;
+                if index.is_some() {
+                    if let Type::Indexed {
+                        base: element,
+                        index: None,
+                        ..
+                    } = normalized.as_ref()
+                    {
+                        return Some(Cow::Owned(Type::Indexed {
+                            base: element.clone(),
+                            index: index.clone(),
+                            span: *span,
+                        }));
+                    }
+                }
                 if std::ptr::eq(normalized.as_ref(), base.as_ref()) {
                     Some(Cow::Borrowed(ty))
                 } else {

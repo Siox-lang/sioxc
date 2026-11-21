@@ -459,6 +459,11 @@ impl<'a> Lowering<'a> {
         } else {
             subst_type_params(ty, &self.cur_type_env)
         };
+        if let Some(normalized) = self.free_fns.normalize_type(&substituted) {
+            if !std::ptr::eq(normalized.as_ref(), &substituted) {
+                return normalized.into_owned();
+            }
+        }
         match &substituted {
             ast::Type::Path(_) => self.resolve_alias(&substituted).clone(),
             ast::Type::Indexed {

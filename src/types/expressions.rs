@@ -991,23 +991,32 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::BitStrLit { base, digits, span } => {
-                // std owns which prefixes exist (`impl Prefix<sym, _> for T`): when it is
-                // in scope, a prefix it doesn't declare is unknown. When std is
-                // absent (some unit tests) the compiler still recognizes its
-                // intrinsic radix prefixes — mirroring the suffix fs/Hz fallback.
-                // (A plain string `"1X10"` needs no prefix; `b"…"` is gone.)
-                if !self.prefix_types.is_empty()
-                    && !self.prefix_types.contains_key(&base.to_string())
-                {
-                    self.error(
-                        codes::TYPE_MISMATCH,
-                        *span,
-                        format!(
-                            "unknown bit-string prefix `{base}` — no `impl Prefix` declares it"
-                        ),
-                    );
-                    return;
-                }
+                let target = match self.prefix_types.get(&base.to_string()).map(Vec::as_slice) {
+                    Some([target]) => *target,
+                    Some(targets) if targets.len() > 1 => {
+                        let names = targets
+                            .iter()
+                            .map(|target| self.ty_display(&self.ast_ty(target)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!("bit-string prefix `{base}` is ambiguous: {names}"),
+                        );
+                        return;
+                    }
+                    _ => {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!(
+                                "unknown bit-string prefix `{base}` — no `impl Prefix` declares it"
+                            ),
+                        );
+                        return;
+                    }
+                };
                 // Evaluation is a compiler intrinsic until const string ops
                 // exist, so only the known radix prefixes carry an alphabet.
                 // The alphabet follows from the radix rather than being listed
@@ -1033,6 +1042,15 @@ impl<'a> Checker<'a> {
                         *span,
                         format!("invalid {kind} bit-string literal `{base}\"{digits}\"`"),
                     );
+                    return;
+                }
+                if self.radix_literal_type(*base, digits) == Ty::Error
+                    && self.ast_ty(target) != Ty::Error
+                {
+                    self.sink.emit(Diagnostic::error(format!(
+                        "bit-string prefix `{base}` target cannot represent this literal's width and element shape"
+                    )).with_code(codes::TYPE_MISMATCH).at(*span)
+                        .label(type_span(target), "prefix result type declared here"));
                 }
             }
             Expr::Path(path) => {

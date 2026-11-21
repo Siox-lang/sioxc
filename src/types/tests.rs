@@ -39,6 +39,8 @@ const VEC: &str = "\n\
         impl<T: Or<T, T>> Or<T, T> for T[] { fn or(rhs: T[]) -> T[] { return self; } }\n\
         impl<T: Not<T>> Not<T> for T[] { fn not() -> T[] { return self; } }\n\
         struct unsigned(Logic[]);\n\
+        impl Prefix<\"x\", Char[]> for unsigned {}\n\
+        impl Prefix<\"o\", Char[]> for unsigned {}\n\
         impl Add<unsigned, unsigned> for unsigned { fn add(rhs: unsigned) -> unsigned { return self; } }\n\
         impl Div<unsigned, unsigned> for unsigned { fn div(rhs: unsigned) -> unsigned { return self; } }\n\
         impl Eq<unsigned> for unsigned { fn eq(rhs: unsigned) -> Bool { return true; } }\n\
