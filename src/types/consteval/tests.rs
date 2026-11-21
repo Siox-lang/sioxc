@@ -6,6 +6,7 @@ mod aggregate;
 mod derived;
 mod methods;
 mod numeric;
+mod static_attributes;
 
 fn expression(text: &str) -> Expr {
     let source = format!("module constants; const VALUE: integer = {text};");

@@ -79,7 +79,7 @@ pub enum Ty {
         /// drives method and operator dispatch. `None` for a plain array.
         family: Option<String>,
         /// The lowest declared index of any array: 10 for `integer[10..11]`,
-        /// 0 for `unsigned[8]` (`7..0`), -4 for `sfixed<8, 4>` (`3..-4`).
+        /// 0 for `unsigned[8]` (`0..7`), -4 for `sfixed<8, 4>` (`3..-4`).
         /// With `len` it is the whole index domain, which
         /// for a fixed or float format *is* the format: `ufixed<8, 4>` and
         /// `ufixed<8, 2>` are different types.

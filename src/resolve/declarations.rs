@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
     ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, ImplItem, Item, Module, Params,
-    Path, StructDecl, TraitDecl, Type, Using, UsingKind, ViewDecl,
+    Path, Port, StructDecl, TraitDecl, Type, Using, UsingKind, ViewDecl,
 };
 
 pub(crate) mod expand;
@@ -21,6 +21,8 @@ pub(crate) use substitute::ArgumentError;
 enum Declaration<'a> {
     Struct(&'a StructDecl),
     Entity(&'a EntityDecl),
+    Port(&'a Port),
+    Value(&'a Type),
     Enum(&'a EnumDecl),
     Trait(&'a TraitDecl),
     View(&'a ViewDecl),
@@ -79,6 +81,16 @@ impl<'a> DeclarationIndex<'a> {
         self.resolved
     }
 
+    /// Static representation, never the runtime contents of a value declaration.
+    pub(crate) fn value_type(&self, owner: DefId) -> Option<&'a Type> {
+        match self.declarations.get(&owner)? {
+            Declaration::Port(port) => Some(&port.ty),
+            Declaration::Value(ty) => Some(*ty),
+            Declaration::Constant(constant) => Some(&constant.ty),
+            _ => None,
+        }
+    }
+
     pub(crate) fn new(resolved: &'a Resolved) -> Self {
         Self {
             resolved,
@@ -107,6 +119,11 @@ impl<'a> DeclarationIndex<'a> {
                 if let Some(id) = self.resolved.declared(declaration.name.span) {
                     self.declarations
                         .insert(id, Declaration::Entity(declaration));
+                    for port in &declaration.ports {
+                        if let Some(port_id) = self.resolved.port(id, &port.name.text) {
+                            self.declarations.insert(port_id, Declaration::Port(port));
+                        }
+                    }
                 }
             }
             Item::Enum(declaration) => {
@@ -118,6 +135,15 @@ impl<'a> DeclarationIndex<'a> {
                 for item in &implementation.items {
                     if let ImplItem::Const(constant) = item {
                         self.insert_constant(constant);
+                    }
+                    if let ImplItem::Let(declaration) = item {
+                        if let Some((id, ty)) = self
+                            .resolved
+                            .declared(declaration.name.span)
+                            .zip(declaration.ty.as_ref())
+                        {
+                            self.declarations.insert(id, Declaration::Value(ty));
+                        }
                     }
                 }
                 let mut target = &implementation.target;

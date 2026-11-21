@@ -35,6 +35,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Check declaration registry ratchet
+        run: python3 scripts/check_registries.py
+
       - name: Test diagnostic runners
         run: python3 -m unittest discover -s scripts -p '*_test.py' -v
 

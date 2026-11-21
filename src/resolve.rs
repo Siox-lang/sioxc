@@ -247,6 +247,8 @@ pub struct Resolved {
     parameter_kinds: HashMap<DefId, ParameterKind>,
     /// Views with one module-local name share an overload-group identity.
     view_groups: HashMap<DefId, DefId>,
+    /// Entity interface members, distinct even when modules/types share names.
+    ports: HashMap<(DefId, String), DefId>,
     /// Lang items: the role name `core`/`std` gave a declaration with
     /// `attr lang for X = "role";`, to that declaration.
     lang: HashMap<String, DefId>,
@@ -261,6 +263,10 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    pub(crate) fn port(&self, owner: DefId, name: &str) -> Option<DefId> {
+        self.ports.get(&(owner, name.to_owned())).copied()
+    }
+
     pub(crate) fn view_group(&self, view: DefId) -> Option<DefId> {
         self.view_groups.get(&view).copied()
     }
@@ -519,6 +525,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_item(item);
         }
     }
+    r.resolve_entity_ports(modules);
     r.check_declaration_cycles(modules);
     r.check_constant_cycles();
     r.check_generic_arity();
@@ -539,8 +546,6 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.lint_private_imports(&std_files);
     r.lint_unused_imports(&std_files);
     r.lint_unused_params(&std_files);
-    r.out.entity_aliases =
-        declarations::DeclarationIndex::collect(&r.out, modules).entity_aliases();
     r.out.enum_variants = r.enum_variants;
     r.out.builtins = r.builtins;
     r.out
@@ -712,6 +717,95 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
+    /// Complete interface value identities after alias heads and lexical scopes.
+    fn resolve_entity_ports(&mut self, modules: &[Module]) {
+        let implementations = {
+            let index = declarations::DeclarationIndex::collect(&self.out, modules);
+            modules
+                .iter()
+                .flat_map(|module| &module.items)
+                .filter_map(|item| {
+                    let Item::Impl(implementation) = item else {
+                        return None;
+                    };
+                    Some((
+                        implementation,
+                        index.entity_type_id(&implementation.target)?,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        self.out.entity_aliases =
+            declarations::DeclarationIndex::collect(&self.out, modules).entity_aliases();
+        for module in modules {
+            self.set_current_module(module);
+            for item in &module.items {
+                let Item::Entity(entity) = item else {
+                    continue;
+                };
+                let Some(owner) = self.out.declared(entity.name.span) else {
+                    continue;
+                };
+                for port in &entity.ports {
+                    let id = self.add_def(
+                        port.name.text.clone(),
+                        DefKind::Local,
+                        false,
+                        Some(port.name.span),
+                        Some(owner),
+                    );
+                    self.out
+                        .ports
+                        .entry((owner, port.name.text.clone()))
+                        .or_insert(id);
+                }
+            }
+        }
+        for (implementation, owner) in implementations {
+            let explicit = implementation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ImplItem::Let(declaration) => self.out.declared(declaration.name.span),
+                    ImplItem::Const(declaration) => self.out.declared(declaration.name.span),
+                    ImplItem::Fn(declaration) => self.out.declared(declaration.name.span),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            let mut uses = Vec::new();
+            let mut visit = |expression: &Expr| {
+                let Expr::Path(path) = expression else {
+                    return;
+                };
+                let [name] = path.segments.as_slice() else {
+                    return;
+                };
+                let Some(port) = self.out.port(owner, &name.text) else {
+                    return;
+                };
+                if self.out.resolved(path.span).is_some_and(|id| {
+                    matches!(self.out.kind_of(id), Some(DefKind::Local | DefKind::Param))
+                        || explicit.contains(&id)
+                }) {
+                    return;
+                }
+                uses.push((path.span, port));
+            };
+            for member in &implementation.items {
+                if matches!(member, ImplItem::Fn(function) if function.is_static) {
+                    continue;
+                }
+                crate::syntax::visit::read::impl_item(member, &mut |_| {}, &mut visit);
+            }
+            for (span, port) in uses {
+                self.out.uses.insert(span, port);
+            }
+        }
+        // Port shadowing must not retain dependencies on the former global constant.
+        self.const_edges
+            .retain(|(_, read, span)| self.out.resolved(*span) == Some(*read));
+    }
+
     /// A resolver with empty scopes, reporting into `sink`.
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Resolver {

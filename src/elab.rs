@@ -49,9 +49,14 @@ pub enum EType {
     /// Any named type: an enum scalar, a struct, or a
     /// bare bit-vector family (`unsigned`). No bit-vector width, so the width check
     /// skips it.
-    Named(String),
+    Named {
+        /// Source spelling for diagnostics and hierarchy output.
+        name: String,
+        /// Canonical declaration identity; unknown names are never guessed.
+        definition: Option<DefId>,
+    },
     /// A sized array. A bit vector is just an array of bits: `unsigned[8]` is
-    /// `Array { elem: Named("unsigned"), len: 8 }` (element names the family so it
+    /// `Array { elem: Named { name: "unsigned", .. }, len: 8 }` (element names the family so it
     /// renders as `unsigned[8]`), the same encoding as `Bit[8]` or `Point[4]`.
     /// Signedness/behaviour lives in the family's operator impls, not here.
     Array {
@@ -81,7 +86,7 @@ impl fmt::Display for EType {
     /// `unsigned[8]` rather than an internal shape.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EType::Named(n) => write!(f, "{n}"),
+            EType::Named { name, .. } => write!(f, "{name}"),
             EType::Array { elem, len: Some(l) } => write!(f, "{elem}[{l}]"),
             EType::Array { elem, len: None } => write!(f, "{elem}[]"),
             EType::Other(s) => write!(f, "{s}"),
@@ -447,14 +452,6 @@ fn elaborate_roots(
         misplaced: std::cell::RefCell::new(Vec::new()),
         collisions: std::cell::RefCell::new(Vec::new()),
         impls: HashMap::new(),
-        record_structs: modules
-            .iter()
-            .flat_map(|m| &m.items)
-            .filter_map(|item| match item {
-                Item::Struct(s) if !s.fields.is_empty() => Some(s.name.text.clone()),
-                _ => None,
-            })
-            .collect(),
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
@@ -516,8 +513,6 @@ struct Elaborator<'a> {
     collisions: std::cell::RefCell<Vec<(String, Span, Span)>>,
     /// Entity identity -> its inherent impls (where instances live).
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
-    /// Names of structs with fields, which are connected field by field.
-    record_structs: HashSet<String>,
     /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
 }
@@ -1388,7 +1383,7 @@ impl<'a> Elaborator<'a> {
                 }
             }
             let signal = render_signal(e, render_env, self.source());
-            let ty = concrete_ty(port_ty, env, self.source());
+            let ty = self.concrete_ty(port_ty, env);
             connected.insert(port.clone());
             conns.push(Connection {
                 port,
@@ -1446,7 +1441,7 @@ impl<'a> Elaborator<'a> {
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.declarations.entity(entity_id) {
             for p in &edecl.ports {
-                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env, self.source()));
+                sigs.insert(p.name.text.clone(), self.concrete_ty(&p.ty, env));
             }
         }
         if let Some(impls) = self.impls.get(&entity_id) {
@@ -1454,13 +1449,62 @@ impl<'a> Elaborator<'a> {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(l.name.text.clone(), concrete_ty(t, env, self.source()));
+                            sigs.insert(l.name.text.clone(), self.concrete_ty(t, env));
                         }
                     }
                 }
             }
         }
         sigs
+    }
+
+    /// Keep resolved owners through elaboration; rendered names are not lookup keys.
+    fn concrete_ty(&self, ty: &Type, env: &HashMap<String, i64>) -> EType {
+        let normalized = self.declarations.normalize_type(ty);
+        let canonical = normalized.as_deref().unwrap_or(ty);
+        match canonical {
+            Type::Path(_) => EType::Named {
+                name: render_concrete(ty, env, self.source()),
+                definition: self.declarations.scalar_type_id(canonical),
+            },
+            Type::Indexed { base, index, .. } => EType::Array {
+                elem: Box::new(self.concrete_ty(base, env)),
+                len: index
+                    .as_deref()
+                    .and_then(|index| index_width(index, env, self.source())),
+            },
+            Type::Generic { .. } | Type::View { .. } | Type::Tuple { .. } => {
+                EType::Other(render_concrete(ty, env, self.source()))
+            }
+        }
+    }
+
+    fn is_record(&self, ty: &EType) -> bool {
+        let EType::Named {
+            definition: Some(mut owner),
+            ..
+        } = ty
+        else {
+            return false;
+        };
+        let mut active = HashSet::new();
+        while active.insert(owner) {
+            let Some(structure) = self.declarations.structure(owner) else {
+                return false;
+            };
+            if !structure.fields.is_empty() {
+                return true;
+            }
+            let Some(base) = structure
+                .base
+                .as_ref()
+                .and_then(|base| self.declarations.scalar_type_id(base))
+            else {
+                return false;
+            };
+            owner = base;
+        }
+        false
     }
 
     /// Report a width mismatch when a port and the local signal it connects to
@@ -1478,14 +1522,22 @@ impl<'a> Elaborator<'a> {
             // A struct port connects field by field, by name: another struct,
             // or a vector, of the same width matched no field and the
             // connection was dropped in silence (#186).
-            let record =
-                |ty: &EType| matches!(ty, EType::Named(name) if self.record_structs.contains(name));
             let mismatched = match (&c.ty, sig) {
                 // A port named by a generic parameter (`input: T`) takes any
-                // type; only a struct port must match by name (#226).
-                (EType::Named(port), EType::Named(signal)) => port != signal && record(&c.ty),
-                (EType::Named(_), EType::Array { .. }) | (EType::Array { .. }, EType::Named(_)) => {
-                    record(&c.ty) || record(sig)
+                // type; only a known struct port must match its owner (#226).
+                (
+                    EType::Named {
+                        definition: Some(port),
+                        ..
+                    },
+                    EType::Named {
+                        definition: Some(signal),
+                        ..
+                    },
+                ) => port != signal && self.is_record(&c.ty),
+                (EType::Named { .. }, EType::Array { .. })
+                | (EType::Array { .. }, EType::Named { .. }) => {
+                    self.is_record(&c.ty) || self.is_record(sig)
                 }
                 _ => false,
             };
@@ -1713,37 +1765,6 @@ impl Environment for Parameters<'_, '_> {
                 .get(name)
                 .map(|value| Binding::Value(consteval::Value::Integer(i128::from(*value))))
         })
-    }
-}
-
-/// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(
-    t: &Type,
-    env: &HashMap<String, i64>,
-    declarations: consteval::Source<'_, '_>,
-) -> EType {
-    match t {
-        // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
-        // enum (`Bit`), or a struct — is just its name here (no width; the
-        // width check skips it).
-        Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
-            Some(name) => EType::Named(name.to_string()),
-            None => EType::Other(String::new()),
-        },
-        Type::Indexed { base, index, .. } => {
-            let len = index
-                .as_deref()
-                .and_then(|i| index_width(i, env, declarations));
-            EType::Array {
-                elem: Box::new(concrete_ty(base, env, declarations)),
-                len,
-            }
-        }
-        // Bus-mode and generic types don't carry a simple scalar width; keep a
-        // rendered form for display and skip width checking on them.
-        Type::Generic { .. } | Type::View { .. } | Type::Tuple { .. } => {
-            EType::Other(render_concrete(t, env, declarations))
-        }
     }
 }
 
@@ -2260,6 +2281,86 @@ mod tests {
             cell.connections[0].ty,
             EType::Array { len: Some(3), .. }
         ));
+    }
+
+    #[test]
+    fn elaborated_record_connections_keep_owner_identity_through_aliases() {
+        let sources = [
+            "module left;
+             pub struct Pair { pub value: integer }
+             pub type Alias = Pair;
+             pub struct Wrapped(Alias);
+             pub entity Sink { p: Alias in } impl Sink {}
+             pub entity WrappedSink { p: Wrapped in } impl WrappedSink {}",
+            "module right; pub struct Pair { pub value: integer }",
+            "module user;
+             entity Generic<Pair> { p: Pair in }
+             entity Top { a: left::Alias in, b: right::Pair in,
+                          wrapped: left::Wrapped in, bits: integer[1] in }
+             impl Top {
+                 let alias_ok: left::Sink = { .p = a };
+                 let wrong_owner: left::Sink = { .p = b };
+                 let wrapped_ok: left::WrappedSink = { .p = wrapped };
+                 let wrong_wrapped: left::WrappedSink = { .p = b };
+                 let generic: Generic<integer[1]> = { .p = bits };
+             }",
+        ];
+        for reverse in [false, true] {
+            let mut sink = DiagnosticSink::new();
+            let mut modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(i, text)| crate::syntax::parse_module(FileId(i as u32), text, &mut sink))
+                .collect();
+            if reverse {
+                modules.reverse();
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let typed = crate::types::check(&modules, &resolved, &mut sink);
+            let mut elaboration = DiagnosticSink::new();
+            let hierarchy = elaborate(&modules, &resolved, &typed, &mut elaboration);
+            let errors: Vec<_> = elaboration
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH))
+                .collect();
+            assert_eq!(errors.len(), 2, "{:?}", elaboration.diagnostics());
+            assert_eq!(elaboration.error_count(), 2);
+            assert!(errors
+                .iter()
+                .all(|error| error.message.contains("right::Pair")));
+            let left = modules
+                .iter()
+                .find(|module| module.path.segments[0].text == "left")
+                .unwrap();
+            let pair = left
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Struct(structure) if structure.name.text == "Pair" => {
+                        resolved.declared(structure.name.span)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let alias = hierarchy
+                .instances
+                .iter()
+                .find(|instance| instance.name == "alias_ok")
+                .unwrap();
+            assert!(matches!(&alias.connections[0].ty,
+                EType::Named { name, definition: Some(id) }
+                    if name == "Alias" && *id == pair));
+            let generic = hierarchy
+                .instances
+                .iter()
+                .find(|instance| instance.name == "generic")
+                .unwrap();
+            assert!(matches!(&generic.connections[0].ty,
+                EType::Named { definition: Some(id), .. }
+                    if resolved.kind_of(*id) == Some(crate::resolve::DefKind::Param)));
+        }
     }
 
     #[test]

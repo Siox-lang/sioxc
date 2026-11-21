@@ -9,7 +9,88 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-20, reviewed 2026-11-21): corrected full
+Latest local acceptance (2026-11-21): combined full service
+`1795232592570177627-1846924` completed `exited/success/0`,
+04:43:12–05:50:05 CET, peak 1,612,693,504 bytes under unchanged normal limits.
+All 818 frontend/56 evaluator/14 import tests, complete Rust suites (875 default /
+854 bitpack library cases, 122 integration targets per mode), all 48 GDB/DWARF
+cases and strict Clippy pass. The original CI FIFO/wide smoke script also passes
+all four ordinary/debug GDB inspection/stepping and exact baseline VCD checks.
+
+Both ACTUAL 274-program corpora pass. Each mode passes 71 UI/71 JSON cases,
+all 56 codes and both apply/recompile migrations. All 78 script-runner tests,
+36 waveform-checker tests, 12 specified artifacts, 72 direct native/debug
+programs and four aggregate timeline/VCD/parity runs pass. The registry ratchet
+passes with 83 classified fields while strict mode correctly rejects the 39
+remaining declaration-migration entries; that expected rejection is not a
+claim that migration is finished.
+
+Source `f9a44592948d685a7b746798d3447e9beff9553505f10c8c92e2d0506f4ece3e`
+and corpus `04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf`
+match before/after and independent review. Code-only excluding Markdown:
+`248c2f140fd5f5046dfa6220ed06d459cae21f67d19193a5285482edf212f36f`.
+Only acceptance Markdown changes afterward. The clean libfst pin, Rust 1.90,
+one Cargo job/two test threads, host debug1 and generated debug coverage remain
+unchanged.
+
+This accepts the fixed-port metadata/scope, elaborated record identity and
+initial registry-ratchet combination described below. The corrected static
+visibility regression remains intact. The separate process-constant collector
+deletion and guard alias-definition-scope correction are NOT included; their
+focused jobs are still running/queued and are not acceptance evidence here.
+The guard's documented import/opaque/name-resolution limitations remain.
+
+All five sections stay required. Fully applied generic/associated contexts,
+remaining typed values/defaults/static attributes, integer/fractional suffix
+migration, actual remaining declaration registries and residual hooks remain
+open. Estimate stays about **86% of foundations**, not the whole compiler.
+No push, PR or wiki publication is implied.
+
+Implementation notes (scope accepted by the gate above): static port-bound attributes,
+elaborated record identities and the declaration-registry ratchet are now
+combined on the accepted prefix/method/indexed-alias checkpoint. The isolated
+focused checks below preceded the complete combined acceptance above.
+
+Ports receive owning entity/member identities; the shared source index borrows
+port and impl-value types, and constant attributes reuse the existing array
+bounds/attribute code without reading runtime signal contents. Static functions
+still cannot reach instance ports. The first attempt violated that rule and
+is rejected; corrected focused unit `1795232167694811290-1830855` passes the
+unchanged visibility regression, all 812 frontend/14 imports, strict Clippy and
+both-mode ordinary/debug native bounds/parity fixtures, at unchanged source
+`6d163722`. This covers fixed port/impl-value shapes and typed evaluator locals,
+not every applied generic or runtime-local environment required by issue #295.
+
+Record checks no longer keep `Elaborator.record_structs`. Elaborated named
+types retain their resolved owner alongside presentation text, and field/base
+queries borrow `DeclarationIndex`. The Rust API representation is now
+`EType::Named { name, definition }` rather than `EType::Named(String)`.
+Focused unit `1795196954456433068-1773481` passes 812 frontend/14 imports,
+strict Clippy and relevant old/new native suites in both modes at source
+`459a46a4`, covering aliases, distinct same-leaf records, inherited fields,
+same-named generic parameters and reactive ordinary/debug waveform parity.
+
+`python3 scripts/check_registries.py` rejects new/unclassified or stale
+name-keyed state fields in types/elab/IR; `--list` is read-only and `--strict`
+also rejects every remaining declaration-migration entry. The reviewed
+inventory distinguishes real migration debt from operator/affix/member symbols,
+scoped execution state and serialized runtime output. CI and CI-local run the
+guard and its tests. Isolated unit `1795196566646662466-1767488` passes all
+78 script tests and exact strict-debt rejection at source `aa58d56b`. Combining
+the record deletion removes only that actual inventory entry: 39 declaration
+migrations remain. A green allowlist is not identity-migration completion.
+This spelling-based source check is not Rust name resolution and cannot prove
+the absence of opaque/imported/definition-site-shadowed aliases, generated
+tables or handwritten leaf searches; consumer audits and identity tests remain
+required.
+
+All five foundation sections remain required. Applied generic/associated
+contexts, remaining typed values/defaults/static attributes, integer/fractional
+suffix migration, the actual remaining registries and residual hooks stay open.
+Estimate remains about **86% of foundations**, not the whole compiler. No new
+commit, push, PR or wiki publication was authorized by focused evidence alone.
+
+Previous local acceptance (2026-11-20, reviewed 2026-11-21): corrected full
 unit `1795195132946984971-1731183` completed `exited/success/0`,
 18:18:52–19:20:24 CET, peak 1,612,435,456 bytes within unchanged normal limits.
 All 816 frontend/55 evaluator/14 import tests, complete Rust suites (873 default /

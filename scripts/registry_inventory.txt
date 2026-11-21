@@ -1,0 +1,85 @@
+# file:owner.field | classification | why the key is retained or what must migrate
+# migration entries are debt, NOT identity-safe exemptions. --strict rejects them.
+src/elab.rs:InstanceSpec.loop_env | state | one generated instance's lexical iteration bindings
+src/elab.rs:Parameters.values | state | evaluated parameters within one selected entity instance
+src/ir/design.rs:Design.array_element_of_family | output | exported element metadata for serialized family names
+src/ir/design.rs:Design.enum_bases | output | exported nominal representation names, not source contracts
+src/ir/design.rs:Design.enum_syms | output | waveform/runtime enum symbols indexed by serialized type names
+src/ir/design.rs:Design.logic_encodings | output | elaborated runtime truth/encoding tables, no AST declarations
+src/ir/design.rs:Design.new_defaults | output | exported defaults associated with serialized type names
+src/ir/design.rs:Design.source_layouts | output | recursive storage metadata addressed by allocated instance paths
+src/ir/design.rs:Design.testbench_nets | output | emitted testbench signal paths mapped to allocated SignalIds
+src/ir/design.rs:LogicEncoding.binary_ops | symbol | operator symbols select elaborated discriminant tables
+src/ir/design.rs:LogicEncoding.unary_ops | symbol | operator symbols select elaborated discriminant tables
+src/ir/functions.rs:FunctionIndex.associated | migration | associated method contracts need owner DefId plus member identity
+src/ir/functions.rs:FunctionIndex.blanket_array_operators | migration | blanket operator requirements still carry named trait contracts
+src/ir/functions.rs:FunctionIndex.conversions | migration | conversion bodies must be selected by resolved source/target identities
+src/ir/lower.rs:Lowering.aliases | migration | source alias contracts must come from DeclarationIndex
+src/ir/lower.rs:Lowering.array_families | migration | nominal family classification must retain source owner identities
+src/ir/lower.rs:Lowering.blanket_array_impls | migration | replace named trait requirements with resolved contracts
+src/ir/lower.rs:Lowering.block_scopes | state | lexical hardware function locals within selected source call frames
+src/ir/lower.rs:Lowering.const_arrays | migration | array constant phase facts need resolved constant owners
+src/ir/lower.rs:Lowering.const_ranges | migration | range constant phase facts need resolved constant owners
+src/ir/lower.rs:Lowering.const_values | migration | scalar constant phase facts need resolved constant owners
+src/ir/lower.rs:Lowering.consts | migration | integer constant facts must not be recovered by declaration names
+src/ir/lower.rs:Lowering.consts_real | migration | real constant facts must not be recovered by declaration names
+src/ir/lower.rs:Lowering.cur_env | state | bound numeric values for the current generated instance and loop
+src/ir/lower.rs:Lowering.cur_type_env | state | concrete argument bindings within the selected entity specialization
+src/ir/lower.rs:Lowering.enum_bases | migration | source enum derivation must retain owner DefIds before output serialization
+src/ir/lower.rs:Lowering.enum_first_disc | migration | enum default facts must retain source owner identities
+src/ir/lower.rs:Lowering.enum_reprs | migration | enum representation queries must consume resolved phase facts
+src/ir/lower.rs:Lowering.enum_variants | migration | source enum member queries must consume owner/member identities
+src/ir/lower.rs:Lowering.expanding_structs | migration | declaration recursion tracking should use resolved nominal owners
+src/ir/lower.rs:Lowering.implemented_traits | migration | type-to-trait declaration relationships need resolved identities
+src/ir/lower.rs:Lowering.inherent_impls | migration | borrowed implementation contracts still indexed by named owners
+src/ir/lower.rs:Lowering.instance_array_facts | state | concrete elaborated instance paths and their allocated array storage facts
+src/ir/lower.rs:Lowering.instance_arrays | state | flattened runtime instance-array paths in the current hierarchy
+src/ir/lower.rs:Lowering.local_array | state | current instance's flattened array value paths and concrete indices
+src/ir/lower.rs:Lowering.local_char | state | allocated character signal paths in the current instance
+src/ir/lower.rs:Lowering.local_enum | state | allocated local value paths, not global declaration lookup keys
+src/ir/lower.rs:Lowering.local_numeric | state | current value/argument paths retain their execution representation
+src/ir/lower.rs:Lowering.local_struct | state | concrete local value paths and applied layout/view metadata
+src/ir/lower.rs:Lowering.local_struct_repr | state | per-value representation metadata for allocated local paths
+src/ir/lower.rs:Lowering.locals | state | concrete flattened signal paths mapped to allocated SignalIds
+src/ir/lower.rs:Lowering.logic_encodings | migration | source encoding queries should retain owner identities until output
+src/ir/lower.rs:Lowering.new_defaults | migration | source default queries should retain owner identities until output
+src/ir/lower.rs:Lowering.param_integers | state | current source call's argument labels and integer representation facts
+src/ir/lower.rs:Lowering.param_types | state | concrete formal argument bindings inside selected source expansions
+src/ir/lower.rs:Lowering.param_widths | state | current call's concrete argument representation widths
+src/ir/lower.rs:Lowering.reported_generated_dead_assignments | state | diagnostic deduplication by source spans and generated signal paths
+src/ir/lower.rs:Lowering.reported_oob | state | diagnostic deduplication by local storage path and index bounds
+src/ir/lower.rs:Lowering.structs | migration | borrowed struct contracts must be queried through DeclarationIndex
+src/ir/lower.rs:Lowering.suffix_impls | symbol | literal affix symbols select source-borrowed suffix implementation contracts
+src/ir/lower.rs:Lowering.trait_decls | migration | borrowed trait declarations must be indexed by resolved trait identity
+src/ir/lower/source_bindings.rs:SourceCallInspection.parameters | state | parameter labels within one already-selected source call
+src/ir/lower/source_bindings.rs:SourceShapeFrame.values | state | lexical source value labels within one expansion frame
+src/ir/lower/source_calls.rs:SourceCallFrame.arguments | state | evaluated actual arguments for one selected source declaration
+src/ir/lower/source_processes.rs:LoweringContext.constant_integers | migration | process constant facts must retain resolved constant identity
+src/ir/lower/source_processes.rs:LoweringContext.shared_functions | state | generated-function memo by concrete call signature, not declaration search
+src/ir/lower/source_processes.rs:LoweringContext.suffixes | symbol | affix symbol overload sets retain borrowed target and implementation identities
+src/ir/lower_helpers/builders.rs:WordConstants.env | state | bound scalar/attribute values in an explicit evaluation environment
+src/ir/mod.rs:OperatorImpls.0 | migration | operator symbol is legitimate but its implementing-type subtable needs DefIds
+src/types/helpers.rs:PortDirs.consts | state | lexical constant names for assignment-direction checks
+src/types/helpers.rs:PortDirs.illegal | state | concrete current-entity input value paths for write diagnostics
+src/types/helpers.rs:PortDirs.loop_vars | state | local loop bindings for current-scope direction analysis
+src/types/helpers.rs:PortDirs.plain_in_roots | state | current entity's concrete input roots, not global declarations
+src/types/mod.rs:Checker.array_bounds | state | lexical local value labels and their concrete written index bounds
+src/types/mod.rs:Checker.array_elements | migration | family element queries must retain resolved nominal/type identities
+src/types/mod.rs:Checker.array_families | migration | nominal family classification must use resolved declaration owners
+src/types/mod.rs:Checker.array_methods | symbol | blanket-array member labels, with trait/receiver selection checked separately
+src/types/mod.rs:Checker.blanket_array_impls | migration | trait requirements for array forwarding need resolved contracts
+src/types/mod.rs:Checker.conversion_sigs | migration | conversion source/target relationships must retain DefIds
+src/types/mod.rs:Checker.index_sigs | migration | indexing owner/input/output contracts must retain resolved identities
+src/types/mod.rs:Checker.method_has_self | migration | receiver facts should be borrowed from the selected method contract
+src/types/mod.rs:Checker.method_overloads | migration | parameter overloads should borrow original source method contracts
+src/types/mod.rs:Checker.method_param_types | migration | replace copied parameter ASTs with source-borrowed contracts
+src/types/mod.rs:Checker.method_traits | migration | method-to-trait relationships need resolved owner/trait identities
+src/types/mod.rs:Checker.method_visibility | migration | visibility should follow original selected owner/member declarations
+src/types/mod.rs:Checker.methods | migration | replace named method return-type copies with resolved borrowed contracts
+src/types/mod.rs:Checker.operator_precedence | symbol | operator spelling is a language-level grouping key
+src/types/mod.rs:Checker.operator_sigs | migration | operator symbol may stay textual but nominal signatures need identities
+src/types/mod.rs:Checker.prefix_types | symbol | radix affix symbols retain unique borrowed source result contracts
+src/types/mod.rs:Checker.suffix_types | symbol | suffix symbols retain borrowed source result contracts; hook audit is separate
+src/types/mod.rs:Checker.trait_impls | migration | implementation relationships must retain resolved type/trait identities
+src/types/mod.rs:Checker.trait_impls_by_type | migration | trait defaults must be selected by resolved implementing-type owner
+src/types/mod.rs:Checker.type_attrs | migration | type/member metadata contracts must retain their resolved declaration owners

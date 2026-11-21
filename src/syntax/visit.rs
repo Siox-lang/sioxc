@@ -29,7 +29,7 @@ macro_rules! walk {
                 expr(& $($mutable)? constant.value, types, expressions);
             }
 
-            fn item(item: & $($mutable)? Item, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+            pub(crate) fn item(item: & $($mutable)? Item, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
                 match item {
                     Item::Using(using) => if let UsingKind::Alias { params: p, ty: t, .. } = & $($mutable)? using.kind { params(p, types, expressions); ty(t, types, expressions); },
                     Item::Const(c) => constant(c, types, expressions),
@@ -56,22 +56,26 @@ macro_rules! walk {
                         ty(& $($mutable)? i.target, types, expressions);
                         attrs(& $($mutable)? i.attrs, types, expressions);
                         for member in & $($mutable)? i.items {
-                            match member {
-                                ImplItem::Const(c) => constant(c, types, expressions),
-                                ImplItem::Let(l) => declaration(l, types, expressions),
-                                ImplItem::Fn(f) => function(f, types, expressions),
-                                ImplItem::Process(p) => block(& $($mutable)? p.body, types, expressions),
-                                ImplItem::Stmt(s) => statement(s, types, expressions),
-                                ImplItem::AttrBinding(b) => expr(& $($mutable)? b.value, types, expressions),
-                                ImplItem::Attr(a) => attribute(a, types, expressions),
-                                ImplItem::ModeField { .. } => {}
-                            }
+                            impl_item(member, types, expressions);
                         }
                     }
                     Item::Trait(t) => { params(& $($mutable)? t.params, types, expressions); for f in & $($mutable)? t.items { function(f, types, expressions); } }
                     Item::AttrDecl(a) => attribute(a, types, expressions),
                     Item::AttrBinding(b) => expr(& $($mutable)? b.value, types, expressions),
                     Item::Macro(_) | Item::MacroCall { .. } => {}
+                }
+            }
+
+            pub(crate) fn impl_item(member: & $($mutable)? ImplItem, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+                match member {
+                    ImplItem::Const(c) => constant(c, types, expressions),
+                    ImplItem::Let(l) => declaration(l, types, expressions),
+                    ImplItem::Fn(f) => function(f, types, expressions),
+                    ImplItem::Process(p) => block(& $($mutable)? p.body, types, expressions),
+                    ImplItem::Stmt(s) => statement(s, types, expressions),
+                    ImplItem::AttrBinding(b) => expr(& $($mutable)? b.value, types, expressions),
+                    ImplItem::Attr(a) => attribute(a, types, expressions),
+                    ImplItem::ModeField { .. } => {}
                 }
             }
 

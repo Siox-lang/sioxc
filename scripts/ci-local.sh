@@ -46,6 +46,7 @@ step() {
     return 1
 }
 step "fmt"                       "${cargo[@]}" fmt --all --check
+step "registry ratchet"          python3 "$(dirname "$0")/check_registries.py"
 step "diagnostic runners"        python3 -m unittest discover -s "$(dirname "$0")" -p '*_test.py' -v
 step "Phase 1 example artifacts" python3 "$(dirname "$0")/check-phase1-examples.py" "$corpus"
 step "check (frontend only)"     "${cargo[@]}" check --locked --no-default-features --lib

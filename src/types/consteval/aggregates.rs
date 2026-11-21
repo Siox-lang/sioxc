@@ -21,6 +21,9 @@ impl<'a> Interpreter<'a> {
         span: Span,
         depth: u32,
     ) -> Result<Value, NotConstant> {
+        if let Some(value) = self.declared_attribute(base, attr, span, depth) {
+            return value;
+        }
         let fail = || NotConstant {
             span,
             reason: Reason::Unsupported,
@@ -41,10 +44,61 @@ impl<'a> Interpreter<'a> {
         else {
             return Err(fail());
         };
+        let len = u64::try_from(values.len()).map_err(|_| fail())?;
+        self.array_attribute(len, left, descending, attr, span)
+    }
+
+    fn declared_attribute(
+        &mut self,
+        base: &Expr,
+        attr: &Ident,
+        span: Span,
+        depth: u32,
+    ) -> Option<Result<Value, NotConstant>> {
+        let source = self.environment.source()?;
+        let local = match base {
+            Expr::Path(path) => self.environment.local_key(path).and_then(|key| {
+                self.locals
+                    .last()?
+                    .bindings
+                    .iter()
+                    .rev()
+                    .find(|binding| binding.key == key)?
+                    .ty
+            }),
+            _ => None,
+        };
+        let ty = local.or_else(|| source.declared_type(base))?;
+        let ty = self.instantiated_type(ty)?;
+        let representation = source.array_representation(&ty)?;
+        let Type::Indexed {
+            index: Some(index), ..
+        } = representation.as_ref()
+        else {
+            return None;
+        };
+        Some(
+            self.array_bounds(Some(index), None, depth + 1, span)
+                .and_then(|(len, left, descending)| {
+                    self.array_attribute(u64::from(len), left, descending, attr, span)
+                }),
+        )
+    }
+
+    fn array_attribute(
+        &self,
+        len: u64,
+        left: i64,
+        descending: bool,
+        attr: &Ident,
+        span: Span,
+    ) -> Result<Value, NotConstant> {
+        let fail = || NotConstant {
+            span,
+            reason: Reason::Unsupported,
+        };
         if attr.text == "length" {
-            return Ok(Value::Integer(
-                i128::try_from(values.len()).map_err(|_| fail())?,
-            ));
+            return Ok(Value::Integer(i128::from(len)));
         }
         if attr.text == "ascending" {
             return self
@@ -53,8 +107,7 @@ impl<'a> Interpreter<'a> {
                 .and_then(|source| source.boolean(!descending))
                 .ok_or_else(fail);
         }
-        let distance =
-            i64::try_from(values.len().checked_sub(1).ok_or_else(fail)?).map_err(|_| fail())?;
+        let distance = i64::try_from(len.checked_sub(1).ok_or_else(fail)?).map_err(|_| fail())?;
         let right = if descending {
             left.checked_sub(distance)
         } else {

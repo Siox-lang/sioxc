@@ -5888,3 +5888,73 @@ Separate static-attribute, registry-guard and elaborated-record drafts are NOT
 included. All five sections stay required; typed/applied contexts, remaining
 values/defaults/static attributes, integer/fractional suffixes, other declaration
 registries and residual hooks remain open. Estimate stays about86% of foundations.
+
+### 2026-11-21 — Codex — integrate checked registry and record followups
+
+Own the primary integration of the separately focused registry guard and
+elaborated-record identity work, based on accepted5776fbe. No peer/main/corpus
+edits. Guard unit1767488 passed78 Python tests, normal84-table ratchet and exact
+strict rejection of40 migration entries at unchanged sourceaa58d56b. Record
+unit1773481 passed812 frontend/14 imports, strict Clippy and old/new relevant
+native suites in BOTH modes at unchanged source459a46a4. These are focused
+proofs, not acceptance of the new combination. Remove only the inventory debt
+entry for the record_structs table actually deleted by that migration.
+
+Copy only owned Rust/native/CI/script paths, NOT older proposal/chat snapshots.
+Own concise current working-status documentation here. Static-port attributes
+remain separate until corrected focus1830855 completes; its prior static-scope
+failure is rejected and must stay documented. When integrated, run the ENTIRE
+combined native/Rust/GDB/ACTUAL-corpus/UI/JSON/fingerprint matrix with exact new
+test names, unchanged limits/toolchain and a dedicated primary target. No new
+commit or push before full acceptance; all five sections and86% estimate remain.
+
+Corrected static-attribute focus1830855 has now completed exited/success/0,
+peak1,528,377,344 bytes, with source6d163722561c5e04f93b6552987df6fbfc48403b7d643cc894d8caa85b3e712c
+unchanged before/after. The unchanged static-function visibility regression,
+all812 frontend/14 import tests, strict Clippy and BOTH-mode ordinary/debug
+native port-bound fixtures pass. The original static-scope failure remains
+rejected. Integrate only these owned Rust/native paths; preserve primary's
+accepted prefix/method/indexed-alias changes when merging overlapping files.
+This is focused integration authority, not full acceptance or commit approval.
+
+Freeze this complete combined primary source, ACTUAL corpus and the new
+Nov21 full/native drivers while queued/live. The gate adds exact new test-name
+checks, the registry ratchet and explicit rejection of39 still-open migrations,
+new native attribute/record fixtures in both modes, and the original CI GDB
+smoke script using root/target only for that script. All prior Rust/GDB/native/
+waveform/corpus/UI/JSON/apply-recompile/pin/fingerprint checks remain. No caps,
+toolchain, assertions or corpus contents change. The guard's spelling-analysis
+limits are explicit in code/docs, not claimed as complete Rust resolution.
+
+### 2026-11-21 — Codex — accept static metadata, record identities and initial ratchet
+
+Combined full service1795232592570177627-1846924 completed exited/success/0,
+04:43:12–05:50:05 CET, peak1,612,693,504 bytes. Reviewed manager status,
+unchanged driver scope and every retained stage result. All818 frontend/56
+evaluator/14 imports,875default/854bitpack library cases and122 integration
+targets per mode pass, including ALL48 GDB cases. Original CI FIFO/wide smoke
+also passes all four ordinary/debug inspection/stepping and exact VCD checks.
+Strict Clippy, BOTH ACTUAL274 corpora,71UI/71JSON/56codes/two migrations per
+mode,78 script tests/36 wave tests/12 artifacts,72 direct native/debug programs
+and four aggregate timeline/declaration/VCD/parity runs pass.
+
+Registry ratchet:83 classified fields;39 actual declaration migrations remain.
+Strict mode must and does reject that debt. All five foundation sections remain
+required; the guard is not Rust name resolution or completion proof.
+Separate process-constant deletion1883618 and alias-scope guard correction1904350
+are NOT in this source and still require their focused/full integration proof.
+Preserve the earlier failed static-scope attempt and its unchanged regression.
+
+Sourcef9a44592948d685a7b746798d3447e9beff9553505f10c8c92e2d0506f4ece3e
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent review. Code-only excluding Markdown:
+248c2f140fd5f5046dfa6220ed06d459cae21f67d19193a5285482edf212f36f.
+libfst clean at74301348450701727776c1a0522a3f512738e9ae; unchanged normal
+2GiB hard/1.5GiB soft/no-swap/no-core caps, Rust1.90/jobs1/threads2/hostdebug1.
+All peer/main/corpus changes are preserved; acceptance-only Markdown now.
+
+Commit only explicit owned paths locally after unchanged-code/diff review.
+No push, PR or wiki. Estimate stays about86% of foundations; applied contexts,
+typed values/defaults/static attributes, integer/fractional suffixes, remaining
+registries and residual hooks stay open. The clock/time domain question is
+non-blocking for the other work; no time or integer semantics have changed.

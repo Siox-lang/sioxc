@@ -32,6 +32,23 @@ impl<'i, 'a> Source<'i, 'a> {
         self
     }
 
+    pub(super) fn declared_type(&self, expression: &Expr) -> Option<&'a Type> {
+        let Expr::Path(path) = expression else {
+            return None;
+        };
+        let owner = self.resolved().resolved(path.span)?;
+        self.declarations
+            .value_type(owner)
+            .or_else(|| self.functions?.value_type(owner))
+    }
+
+    pub(super) fn array_representation<'t>(&self, ty: &'t Type) -> Option<Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        self.declarations.array_representation(ty)
+    }
+
     /// Project a typed scalar only where a consumer requires its stored word.
     pub(crate) fn word(&self, value: Value) -> Option<i64> {
         match value {
