@@ -9,7 +9,46 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (2026-11-21): combined full service
+Latest local acceptance (reviewed 2026-11-22): full combined service
+1795237211316578391-2005774 completed exited/success/0 on November21,
+06:00:11–07:03:30 CET, peak1,612,320,768 bytes under unchanged normal caps.
+All819 frontend/56 evaluator/14 import tests, complete Rust suites (876 default /
+855 bitpack library cases,123 integration targets per mode), ALL48 GDB/DWARF
+cases and the original four FIFO/wide CI GDB smoke checks pass. Both ACTUAL274
+corpora,71 UI/71 JSON/56 codes/two apply-recompile migrations per mode, strict
+Clippy,80 script tests/36 waveform-checker tests/12 specified artifacts,
+72 direct native/debug programs and four aggregate timeline/VCD/parity runs pass.
+
+This accepts deletion of the process constant-seed collector and per-process
+clone. Only actual selected-instance parameters remain scoped execution state;
+typed module constants borrow original contracts through DeclarationIndex.
+The alias-scope registry guard correction is also accepted: alias bodies keep
+declaration scope and substituted generic arguments keep caller scope. The
+guard still does not resolve Rust imports, opaque/generated types or arbitrary
+name/type relationships. Its inventory passes83 classified fields and strict
+mode correctly rejects38 genuine remaining declaration migrations.
+
+Source e0aba04a8591090061561223a49f462d811e1cd65b3367a1d9be6c0142a8730a
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent review. Code-only excluding Markdown:
+9ce460e64a6e7be27d88c195272ef1be7a51e76d97173a1e1cc4472b5e9ea41c.
+Only acceptance Markdown and one-month log pruning afterward. The pinned
+dependency, Rust1.90/jobs1/threads2/host debug1, generated debug checks and
+2GiB hard/1.5GiB soft/no-swap/no-core limits remain unchanged.
+
+Separate field-metadata and borrowed-trait-default drafts are NOT accepted or
+included. Their first focused checks stopped at test compilation because the
+tests tried to sort non-Ord DefIds; set-based deduplication retains the same
+identity assertions, and fresh focused checks are running/queued. Failed logs
+remain evidence, not passes. Full integration gates remain required for them.
+
+All FIVE sections remain required at about **86% of foundations**, not the
+whole compiler: applied generic/associated contexts, remaining typed values/
+defaults/static attributes, integer/fractional suffix migration, remaining
+declaration registries and residual hooks stay open. No time/integer semantic
+changes; no push, PR or wiki publication.
+
+Previous local acceptance (2026-11-21): combined full service
 `1795232592570177627-1846924` completed `exited/success/0`,
 04:43:12–05:50:05 CET, peak 1,612,693,504 bytes under unchanged normal limits.
 All 818 frontend/56 evaluator/14 import tests, complete Rust suites (875 default /

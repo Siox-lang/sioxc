@@ -118,7 +118,8 @@ struct LoweringContext<'a> {
     type_aliases: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Type>,
     constant_stack: std::collections::HashSet<crate::resolve::DefId>,
     functions: &'a crate::ir::FunctionIndex<'a>,
-    constant_integers: &'a std::collections::HashMap<String, i64>,
+    /// Only current-instance parameters; source constants use DeclarationIndex.
+    parameters: &'a std::collections::HashMap<String, i64>,
     value_bindings: Vec<std::collections::HashMap<crate::resolve::DefId, ProcessValueId>>,
     /// A value carrying the format a family `From` impl is building, which
     /// its body reads as `Self'high` (`lower_process_family_from`).
@@ -286,39 +287,6 @@ fn process_functions<'a>(
     functions
 }
 
-/// Fold module integer constants to seed const-evaluable function calls. The
-/// fixed point makes declaration order irrelevant and stops naturally when a
-/// rejected cycle or non-integer constant cannot make progress.
-fn module_constant_integers(
-    modules: &[Module],
-    functions: &crate::ir::FunctionIndex<'_>,
-) -> std::collections::HashMap<String, i64> {
-    let constants = modules
-        .iter()
-        .flat_map(|module| &module.items)
-        .filter_map(|item| match item {
-            ast::Item::Const(constant) => Some(constant),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut values = std::collections::HashMap::new();
-    loop {
-        let previous = values.len();
-        for constant in &constants {
-            let key = functions.constant_decl_key(constant);
-            if values.contains_key(&key) {
-                continue;
-            }
-            if let Some(value) = crate::ir::eval_const_fns(&constant.value, &values, functions, 0) {
-                values.insert(key, value);
-            }
-        }
-        if values.len() == previous {
-            return values;
-        }
-    }
-}
-
 fn type_leaf(ty: &ast::Type) -> Option<&str> {
     match ty {
         ast::Type::Path(path) => path.segments.last().map(|segment| segment.text.as_str()),
@@ -457,43 +425,33 @@ fn process_declared_type_inner(
             let (length, low) = match index.as_deref() {
                 None => (0, 0),
                 Some(ast::Expr::Range { lo, hi, .. }) => {
-                    let left = crate::ir::eval_const_fns(
-                        lo,
-                        context.constant_integers,
-                        context.functions,
-                        0,
-                    )?;
-                    let right = crate::ir::eval_const_fns(
-                        hi,
-                        context.constant_integers,
-                        context.functions,
-                        0,
-                    )?;
+                    let left =
+                        crate::ir::eval_const_fns(lo, context.parameters, context.functions, 0)?;
+                    let right =
+                        crate::ir::eval_const_fns(hi, context.parameters, context.functions, 0)?;
                     (
                         u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
                         left.min(right),
                     )
                 }
-                Some(index) => match crate::ir::eval_range_fns(
-                    index,
-                    context.constant_integers,
-                    context.functions,
-                ) {
-                    Some((left, right)) => (
-                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
-                        left.min(right),
-                    ),
-                    None => (
-                        u32::try_from(crate::ir::eval_const_fns(
-                            index,
-                            context.constant_integers,
-                            context.functions,
+                Some(index) => {
+                    match crate::ir::eval_range_fns(index, context.parameters, context.functions) {
+                        Some((left, right)) => (
+                            u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
+                            left.min(right),
+                        ),
+                        None => (
+                            u32::try_from(crate::ir::eval_const_fns(
+                                index,
+                                context.parameters,
+                                context.functions,
+                                0,
+                            )?)
+                            .ok()?,
                             0,
-                        )?)
-                        .ok()?,
-                        0,
-                    ),
-                },
+                        ),
+                    }
+                }
             };
             match base {
                 crate::types::Ty::Array {
@@ -1208,7 +1166,7 @@ pub fn lower(
     let self_calls = std::cell::RefCell::new(std::collections::HashSet::new());
     let functions = process_functions(modules, resolved, typed);
     let suffixes = constant_suffixes(modules, &functions);
-    let constant_integers = module_constant_integers(modules, &functions);
+    let parameters = std::collections::HashMap::new();
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
         let root_path = hierarchy.root_path(test.root);
@@ -1306,7 +1264,7 @@ pub fn lower(
                 type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
-                constant_integers: &constant_integers,
+                parameters: &parameters,
                 value_bindings: Vec::new(),
                 self_formats: Vec::new(),
 
@@ -1374,7 +1332,7 @@ pub fn lower(
                             type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
-                            constant_integers: &constant_integers,
+                            parameters: &parameters,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
 
@@ -1435,7 +1393,7 @@ pub fn lower(
                             type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
-                            constant_integers: &constant_integers,
+                            parameters: &parameters,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
 
@@ -1513,7 +1471,7 @@ pub fn lower(
                     type_aliases: &type_aliases,
                     constant_stack: std::collections::HashSet::new(),
                     functions: &functions,
-                    constant_integers: &constant_integers,
+                    parameters: &parameters,
                     value_bindings: Vec::new(),
                     self_formats: Vec::new(),
 
@@ -1592,10 +1550,10 @@ pub fn lower(
         };
         let id = ProcessId(process_ir.processes.len() as u32);
         // The instance's parameters fold as constants (`unsigned[W]`).
-        let mut instance_integers = constant_integers.clone();
+        let mut instance_parameters = std::collections::HashMap::new();
         for (name, value) in &hierarchy.instance(owner).params {
             if let crate::elab::ParamValue::Int(value) = value {
-                instance_integers.insert(name.clone(), *value);
+                instance_parameters.insert(name.clone(), *value);
             }
         }
         let mut process = {
@@ -1611,7 +1569,7 @@ pub fn lower(
                 type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
-                constant_integers: &instance_integers,
+                parameters: &instance_parameters,
                 value_bindings: Vec::new(),
                 self_formats: Vec::new(),
 
@@ -4426,7 +4384,7 @@ fn packed_slice_bounds(
         return None;
     };
     let evaluate = |expression: &ast::Expr| {
-        crate::ir::eval_const_fns(expression, context.constant_integers, context.functions, 0)
+        crate::ir::eval_const_fns(expression, context.parameters, context.functions, 0)
     };
     match index {
         ast::Expr::Range { lo, hi, .. } => Some((evaluate(lo)?, evaluate(hi)?)),
@@ -5802,7 +5760,7 @@ fn pattern_condition(
                 let order = crate::ir::lower_helpers::eval_range_order_fns(
                     lo.as_deref()?,
                     hi.as_deref()?,
-                    context.constant_integers,
+                    context.parameters,
                     context.functions,
                     owner,
                 );
@@ -6469,11 +6427,11 @@ fn apply_process_declared_ranges(
             let bounds = match index.as_deref() {
                 Some(index @ ast::Expr::Range { .. }) => Some(crate::ir::eval_range_fns(
                     index,
-                    context.constant_integers,
+                    context.parameters,
                     context.functions,
                 )?),
                 Some(index) => {
-                    crate::ir::eval_range_fns(index, context.constant_integers, context.functions)
+                    crate::ir::eval_range_fns(index, context.parameters, context.functions)
                 }
                 None => None,
             };
@@ -6514,12 +6472,7 @@ fn apply_process_declared_ranges(
             ) = (args.as_slice(), &mut layout.kind)
             {
                 let bound = |bound: &ast::Expr| {
-                    crate::ir::eval_const_fns(
-                        bound,
-                        context.constant_integers,
-                        context.functions,
-                        0,
-                    )
+                    crate::ir::eval_const_fns(bound, context.parameters, context.functions, 0)
                 };
                 if let (Some(left), Some(right)) = (bound(lo), bound(hi)) {
                     *value_range = Some((left.min(right), left.max(right)));
@@ -6556,8 +6509,7 @@ fn sized_by_value(
     if matches!(
         index.as_ref(),
         ast::Expr::Int { .. } | ast::Expr::Range { .. }
-    ) || crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
-        .is_some()
+    ) || crate::ir::eval_const_fns(index, context.parameters, context.functions, 0).is_some()
     {
         return None;
     }
@@ -7352,7 +7304,7 @@ fn lower_process_raw_resize(
                 return None;
             }
             let eval = |bound: &ast::Expr| {
-                crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+                crate::ir::eval_const_fns(bound, context.parameters, context.functions, 0)
             };
             let (len, low) = match index.as_ref() {
                 ast::Expr::Range { lo, hi, .. } => {
@@ -7843,7 +7795,7 @@ fn inline_with_self_format(
     conversion: Option<crate::resolve::DefId>,
 ) -> Option<ProcessValueId> {
     let eval = |bound: &ast::Expr| {
-        crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+        crate::ir::eval_const_fns(bound, context.parameters, context.functions, 0)
     };
     let Some((left, right)) = (match index {
         ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi)),
@@ -11399,12 +11351,9 @@ fn value_ref_with_type_inner(
         // Only const initializers may erase source calls here. Runtime calls
         // retain their boundaries even when the shared evaluator knows a value.
         if !context.constant_stack.is_empty() {
-            if let Some(value) = crate::ir::eval_const_fns(
-                expression,
-                context.constant_integers,
-                context.functions,
-                0,
-            ) {
+            if let Some(value) =
+                crate::ir::eval_const_fns(expression, context.parameters, context.functions, 0)
+            {
                 let number = if matches!(ty, Some(crate::types::Ty::Real)) {
                     ProcessNumber::Real((value as f64).to_bits())
                 } else {
@@ -13961,7 +13910,7 @@ mod tests {
             type_aliases: &Default::default(),
             constant_stack: Default::default(),
             functions: &crate::ir::FunctionIndex::new(&resolved),
-            constant_integers: &Default::default(),
+            parameters: &Default::default(),
             value_bindings: vec![],
             self_formats: vec![],
 
@@ -14755,6 +14704,71 @@ mod tests {
             .values
             .iter()
             .all(|value| !matches!(value.kind, ProcessValueKind::Call { .. })));
+    }
+
+    #[test]
+    fn module_metadata_uses_borrowed_constants_without_scalar_seed_tables() {
+        let mut sources = [
+            "module left;
+             pub const COUNT: integer = 3;
+             pub const REAL: real = 2.5;
+             pub const NAT: natural = 4;
+             pub struct Count(integer);
+             pub const NOMINAL: Count = Count(6);
+             pub fn width() -> integer { return COUNT; }",
+            "module right;
+             pub const COUNT: integer = 5;
+             pub fn width() -> integer { return COUNT; }",
+            "module caller;
+             const COUNT: integer = 99;
+             fn shadow(COUNT: integer) -> integer { return COUNT; }
+             const SUM: integer = left::COUNT + right::COUNT;
+             const WIDTH: integer = left::width() + right::width();
+             const LOCAL: integer = COUNT;
+             const SHADOW: integer = shadow(7);
+             const REAL_COPY: real = left::REAL;
+             const NAT_COPY: natural = left::NAT;
+             const NOMINAL_COPY: left::Count = left::NOMINAL;",
+        ];
+        for _ in 0..2 {
+            let mut sink = DiagnosticSink::new();
+            let modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+                })
+                .collect();
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let typed = crate::types::check(&modules, &resolved, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let functions = process_functions(&modules, &resolved, &typed);
+            let parameters = std::collections::HashMap::from([("COUNT".into(), 123)]);
+            let caller = modules
+                .iter()
+                .find(|module| module.path.segments[0].text == "caller")
+                .unwrap();
+            for item in &caller.items {
+                let ast::Item::Const(constant) = item else {
+                    continue;
+                };
+                let expected = match constant.name.text.as_str() {
+                    "COUNT" | "LOCAL" => Some(99),
+                    "SUM" | "WIDTH" => Some(8),
+                    "SHADOW" => Some(7),
+                    "REAL_COPY" | "NAT_COPY" | "NOMINAL_COPY" => None,
+                    _ => panic!("uncovered fixture constant"),
+                };
+                assert_eq!(
+                    crate::ir::eval_const_fns(&constant.value, &parameters, &functions, 0),
+                    expected,
+                    "{}",
+                    constant.name.text
+                );
+            }
+            sources.reverse();
+        }
     }
 
     #[test]

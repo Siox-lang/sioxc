@@ -79,6 +79,28 @@ class RegistryGuardTests(unittest.TestCase):
                     "wire": ("output", "serialized signal path")}
         self.assertEqual(guard.audit(actual, expected, strict=True), [])
 
+    def test_alias_bodies_keep_their_declaration_namespace(self):
+        for root_key, child_key in [("String", "DefId"), ("DefId", "String")]:
+            with self.subTest(root_key=root_key):
+                found = self.fields(f"""
+                    type Key = {root_key};
+                    type Table = HashMap<Key, FnDecl>;
+                    mod child {{ type Key = {child_key}; struct Cache {{ values: Table }} }}
+                """)
+                self.assertEqual(found, {"src/types/example.rs:child::Cache.values"}
+                                 if root_key == "String" else set())
+
+    def test_generic_alias_arguments_keep_the_caller_namespace(self):
+        for root_key, child_key in [("String", "DefId"), ("DefId", "String")]:
+            with self.subTest(child_key=child_key):
+                found = self.fields(f"""
+                    type Key = {root_key};
+                    type Table<K> = HashMap<K, FnDecl>;
+                    mod child {{ type Key = {child_key}; struct Cache {{ values: Table<Key> }} }}
+                """)
+                self.assertEqual(found, {"src/types/example.rs:child::Cache.values"}
+                                 if child_key == "String" else set())
+
     def test_repository_inventory_has_no_new_or_stale_entries(self):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual(guard.audit(guard.inventory(root),

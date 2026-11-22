@@ -54,7 +54,7 @@ src/ir/lower.rs:Lowering.trait_decls | migration | borrowed trait declarations m
 src/ir/lower/source_bindings.rs:SourceCallInspection.parameters | state | parameter labels within one already-selected source call
 src/ir/lower/source_bindings.rs:SourceShapeFrame.values | state | lexical source value labels within one expansion frame
 src/ir/lower/source_calls.rs:SourceCallFrame.arguments | state | evaluated actual arguments for one selected source declaration
-src/ir/lower/source_processes.rs:LoweringContext.constant_integers | migration | process constant facts must retain resolved constant identity
+src/ir/lower/source_processes.rs:LoweringContext.parameters | state | selected instance parameters only; source constants use borrowed DefId contracts
 src/ir/lower/source_processes.rs:LoweringContext.shared_functions | state | generated-function memo by concrete call signature, not declaration search
 src/ir/lower/source_processes.rs:LoweringContext.suffixes | symbol | affix symbol overload sets retain borrowed target and implementation identities
 src/ir/lower_helpers/builders.rs:WordConstants.env | state | bound scalar/attribute values in an explicit evaluation environment

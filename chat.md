@@ -31,301 +31,6 @@ Older entries are in git history (`git log -p -- chat.md`).
 
 
 
-### 2026-10-21 — Antigravity — compiler bug-hunting and fixes (branch `fix/compiler-bugs`)
-
-Working in isolated worktree `/home/max/siox-bugfix` on branch `fix/compiler-bugs` (based on `origin/main` `6064b0c`). Leaving `/home/max/siox`, `/home/max/siox-conv`, `/home/max/siox-operator-results`, `/home/max/siox-bug-baseline`, and `/home/max/siox-tests` untouched.
-
-Addressing compiler/lowering/process bugs found during differential sweeps (`src/syntax/parser.rs`, `src/types/`, `src/ir/lower/`, `src/llvm/process/`):
-1. Bit-pattern `match` on slice/non-path scrutinees in hardware (`src/ir/lower/control.rs`, `src/ir/lower/expressions.rs`).
-2. Hardware function return metavalue preservation (`mask_to_type_width` corrupting `'Z'`/`'W'`/`'-'`/`'H'`/`'L'` via `BinOp::And`, and `Stmt::Return` dropping metavalues on bit-string literals in `src/ir/lower/calls.rs`).
-3. Testbench early-return `Select` / `InlineCall` layout & support for arrays, structs, and metavalue literals (`src/ir/lower/source_processes.rs`, `src/llvm/process/value_types.rs`, `src/llvm/process/support.rs`).
-4. Hardware slice assignment on struct fields and array elements (`src/ir/lower/block_locals.rs`, `src/ir/lower/writes.rs`, `src/ir/lower/calls.rs`).
-5. Local struct/field mutation inside hardware functions (`src/ir/lower/calls.rs`, `src/ir/lower/block_locals.rs`).
-6. Match-arm expression parsing for struct literals (`{ .field = ... }`) (`src/syntax/parser.rs`).
-7. Ranged type constructors `unsigned[2..0](...)` in expressions (`src/types/expressions.rs`).
-8. Diagnostic cascade suppression for `continue`/`break` (`src/types/statements.rs`) and recursive hardware function calls (`src/ir/lower/calls.rs`).
-9. Checker memoization via `type_cache` for long custom operator chains avoiding exponential re-inference (`src/types/inference.rs`, `src/types/statements.rs`, `src/types/impls.rs`, `src/types/collect.rs`, `src/types/mod.rs`).
-10. Hardware negative integer literal sign headroom on unary negation in normalized value width arena lookup (`src/ir/lower/hardware.rs`, `src/ir/lower/source_processes.rs`).
-11. Multi-word signed comparisons in LLVM process backend (`src/llvm/process/binary.rs`, `src/ir/lower/expressions.rs`, `src/ir/lower/source_bindings.rs`).
-12. Packed enum and logic conversion to kernel 64-bit integer (`src/ir/lower/calls.rs`).
-13. `inline_resolve` parameter layouts, types, and widths preservation (`src/ir/lower/resolution.rs`).
-14. Wide packed vector (>64 bits) resize in process and hardware lowering bypassing 64-bit std integer conversion (`src/ir/lower/source_processes.rs`, `src/ir/lower/calls.rs`, `src/llvm/process/support.rs`).
-
-### 2026-10-21 — Antigravity — post-PR #141 lowering regression fixes (branch `fix/compiler-regressions`)
-
-Working in `/home/max/siox-bugfix` on branch `fix/compiler-regressions` based on `origin/main` (`872e039`).
-Fixed regressions identified after PR #141 merge:
-1. `both_engines::elements_of_call_results`: `storage_slice_bounds` in `src/ir/lower/expressions.rs` was treating calls returning unpacked arrays (`split3(x)[1]`) as packed vectors because `operand_type_name` returned `"unsigned"`. Restored the check to strictly require `Ty::Array { family: Some(_), .. }`.
-2. `debug_info` panics at `logic.rs:204` (`Option::unwrap()` on `None`):
-   - In `src/ir/lower/expressions.rs`: `operand_range` now specifically matches `ast::Expr::Index { index: Range, .. }` and evaluates actual slice bounds. Removed the fabricated `(width - 1, 0)` range fallback and ad-hoc `Field|Index` width probe in `ast_width`.
-   - In `src/ir/lower/control.rs`: bit matching on slice scrutinees unwraps the target base to index the underlying vector at `(low + position)` rather than constructing nested slice indexing `x[7..4][pos]`.
-3. `calls.rs` vector narrowing & scalar return masking:
-   - In `src/ir/lower/calls.rs`: restricted `lower_wide_packed_resize` to `target_width > 64 && source_width > 0` so narrowing conversions (e.g. 81 -> 8 bits) continue to use standard std function inlining.
-   - Removed redundant `bind_source_expression` on scalar returns; in `mask_to_type_width`, use bitwise AND masking for `w < 64` and slice for `w > 64`, restoring `and 255` expected by `ir::tests::values::a_call_result_carries_its_return_type`.
-4. `debug_info::numeric_family_conversions_keep_source_signatures`: in `src/ir/lower/source_bindings.rs`, restored `if env.contains_key(&root)` to prevent nominal type loss for block locals falling through to `block_local_type`.
-5. `testbench_methods::procedural_calls_share_cfg_and_preserve_call_evaluation`: in `src/llvm/process/binary.rs`, restricted sign-extension of unpacked equality operands to cases where the packed vector operand is actually signed, avoiding sign-extending positive wide integers when compared against wide `unsigned[N]`.
-
-
-
-### 2026-10-21 — Codex — write failure classification before migration
-
-Read-only baseline VCD inspection changes the next action: comb.q/word in
-packed_partial_write_test are zzzz1z1z, while cr.q/word are00001010. Both
-constant writes landed, but their context has no full-vector default. Its
-runtime-index counterpart already explicitly writes word=0 inside its process;
-the constant case only has a declaration initializer, which is not a driver.
-writes.rs deliberately seeds unnamed lanes of resolved partial contributions
-from the std-owned neutral value. Do not change that to global zero padding.
-
-metavalue_state_test places comb=dirty4 and ifclear{comb=0000} in separate
-impl statements. body.rs gives each its own driver context, exactly as language
-section3.11 requires; the waveform stays X000 when clear rises. That test's
-comment intends a source-order override, which now requires one process.
-Before any compiler workaround, verify a proper process/default migration
-against explicit concurrent/neutral controls, retaining numeric/meta assertions.
-Do not edit corpus/source until the current frozen Rust gate finishes.
-
-3776536 has now printed default PASS; bitpack is still running. All23 default
-DWARF tests pass, including both owned regressions and long conversion probes.
-This is not yet a complete Rust/corpus gate or permission to commit/push.
-
-Repository search now confirms the Rust integration suite does not consume the
-two affected actual-corpus files (no corpus glob or named reference). Refine
-the freeze accordingly: keep all compiler/std/Rust source at32e90f2 unchanged,
-but migrate only these two clean tracked corpus files while bitpack runs.
-Keep every existing assertion. MetaState gets one explicit comb override
-process plus an independently resolved concurrent control; Comb gets the same
-explicit default as CombRuntime plus a separate neutral-lane control. No LLVM
-or semantics changes. Verify ordinary/debug binaries and VCD parity in both
-packing modes after3776536 releases the guarded slot, then both full corpora.
-
-3776536 is terminal exited/success/0, peak2969145344: default PASS, bitpack PASS,
-rust_exit=0 and matching pre/post32e90f2 source hashes. All Rust tests, including
-both complete23-test DWARF suites, passed. Own scripts/check-vcd.py now only to
-add profiles for the two migrated corpus cases, retaining existing checker
-behavior. Next verify clean6064b0c and owned ordinary/debug native results and
-full waveform parity; compiler/std/Rust code remains unchanged.
-
-Migration gate3850568 is terminal exited/success/0, peak78393344: both cases
-pass all12 native executions (clean6064b0c baseline plus owned default/bitpack,
-ordinary/debug), both strict waveform profiles, and all6 ordinary/debug full
-VCD comparisons. Pre/post source hash61c40b92 matches (only check-vcd.py was
-added to the frozen compiler/Rust snapshot). All original native assertions
-remain, and concurrent-X/neutral-Z controls pass. These were incomplete corpus
-process migrations, not evidence for a staged-write backend workaround.
-Remove the incorrectly classified new TODO item; retain other pending bug
-items until full actual-checkout corpus acceptance. Next run both full corpora
-without exclusions, including all preserved untracked programs.
-
-Full actual-checkout corpus acceptance is live as
-siox-job-3000-1792583634183557260-3855241.service (default guarded2GiB cap).
-It runs strict fmt/Clippy, six corrupted-waveform rejection controls for the new
-profiles, AST graph refresh, then both full corpora, retaining per-mode logs and
-pre/post compiler and corpus source hashes. Inspect terminal state/logs; launch
-is not acceptance. Do not edit compiler/std/Rust/scripts/corpus until it ends.
-No compiler/corpus commit or push before the complete acceptance result.
-
-### 2026-10-21 — Codex — compiler regression batch accepted locally
-
-3855241 finished exited/success/0, peak201621504: both actual corpora246/246,
-strict fmt/all-target/all-feature Clippy, all6 corrupted-waveform controls and
-AST graph refresh passed. Compiler61c40b92 and corpus48a607bc hashes match
-before/after and the current checkout. This follows3776536's complete default
-and bitpack Rust passes and3850568's12 direct native runs/6 debug-VCD parity
-checks, plus the earlier seven original cases' ordinary/debug packing matrix.
-
-Remove only the six now-resolved IR bug TODO entries; preserve Antigravity's
-quadratic-inference ownership and other open work. Keep all untracked corpus
-programs/artifacts and foreign paper documents. Before local commits, run final
-frontend-only checks and required-example validation. Commits will contain
-only owned compiler/regression files, the two corpus migrations, and separately
-the clean paper docs/std.md update. No merge or push authorization inferred.
-
-Read-only review also suggests an unverified follow-up: an operator result
-written as a sized type alias may still lose its constraint, because collected
-bare Path outputs bypass the new constrained-result AST path. Do not claim a
-bug or change code before a native/checker reproducer after this accepted batch.
-
-Final frontend job3900872 is terminal exited/success/0, peak320077824:
---no-default-features lib check/strict Clippy and required Phase1 artifact
-validation passed. Corpus migration is committed locally as17f11a1; its commit
-contains exactly the two owned tracked fixtures, preserving all untracked
-programs and artifacts. This accepted compiler batch references that corpus
-revision and retains the actual-checkout acceptance above. No push performed.
-
-### 2026-10-21 — Codex — operator output aliases: reproduce first
-
-Accepted base is9d84a3c. Own the output-declaration collection and its existing
-checker/native tests, plus a new actual-corpus operator_alias_result_test.siox;
-leave all previous untracked corpus files and Antigravity/LLVM ownership alone.
-Exercise forward/chained sized aliases, named/Bool aliases, unary and binary
-operators, and literal-left output selection. Current collector drops every
-Path AST, so aliases cannot use existing ast_ty_for_owner/path_ty expansion.
-First retain failing tests/evidence; only then remove that special-case filter
-if the shared path suffices. No new alias resolver or backend workaround.
-
-3913537 proves the pre-fix failure: the checker regression reports2 unexpected
-errors for forward/chained binary/unary outputs; the actual corpus case reports
-3 E-P003 errors assigning/initializing Small as unsigned[3] and comparing its
-literal-left result. The guard exited0 only because both failures were expected;
-this is reproduction evidence, not a passing acceptance gate. Remove the Path
-filter so existing ast_ty_for_owner/path_ty handles declaration identity and
-aliases after collection. Expanded native matrix covers four ranges, direct
-and forward-alias outputs, Packet/Bool aliases, ordinary/debug and VCD parity.
-
-3916207 is terminal failed101: after retaining output ASTs, all565 default
-library tests pass, including the alias controls. The expanded native matrix
-then finds a separate chained-alias constructor gap at Narrow(1): import
-desugaring's plain_alias follows one body only, leaving the inner alias as a
-callee. Keep the failing matrix. Own src/syntax/imports.rs now to make its
-existing plain_alias expansion iterative/cycle-safe in the alias declaration's
-home scope; do not add checker/IR/backend constructor special cases.
-
-3933712 passes565 default unit tests and the cycle control, but import-form
-tests correctly reject the new fixture's public alias exposing private aliases.
-Make that fixture's two referenced aliases public; retain the caller's same-leaf
-WordBase and all scope/cycle assertions. This was invalid test setup, not a
-reason to relax privacy. The operator native binary had not run in that gate.
-
-3940450 then passes565 units and the cycle control, but the cross-module fixture
-needs its existing geometry dependency (colors) explicitly loaded, and alias
-constructors now expose a real qualified-constructor lowering gap: raw resize
-recognizes only one-segment family paths. The canonical std::bits::unsigned
-callee falls through, evaluating bound self/rhs with no inline environment.
-Own the raw-resize family lookup in calls.rs and matching width/layout lookups
-in expressions.rs/source_bindings.rs; use the existing resolver-owned
-struct_path_key, retaining current unqualified synthetic-path behavior. No new
-alias/constructor machinery in IR and no LLVM/runtime edits. Keep all alias,
-scope, cycle and native controls.
-
-3950353 passes all565 default units, all9 import tests and the complete hardware
-operator native matrix. The actual corpus binary then fails at its first
-procedural ranged constructor: lower_process_raw_resize evaluates a Range as
-one scalar width. Own that existing function in source_processes.rs now; reuse
-expr_to_type/process_declared_type and process_binding_layout for exact lengths
-and written labels, rather than another evaluator. The checker's corresponding
-Call/Index inference also used signed_lit and erased ranges to width0; use the
-existing index_shape helper and add wrong-width rejection controls. Preserve
-all native assertions and add procedural/direct qualified range-label checks.
-
-3961830 passes565 old unit tests; the new width control's negative-label cases
-incorrectly assign to a different zero-based format. Keep exact-format positive
-controls and use an eight-bit destination with the SAME low bound for the
-negative control, isolating width rather than relaxing existing format rules.
-3968787 did NOT run tests (exit75): peer guarded service3963345 holds the shared
-slot running debug_info. Do not stop it or use an unguarded fallback; wait for
-its authoritative terminal status, then run the corrected alias/range matrix.
-
-Peer3963345 ended failed101; left it and its source alone. Focused owned job
-3972817 is terminal exited/success/0, peak1041022976: all566 library tests in
-both modes, all9 import controls in both modes, the eight-variant hardware
-operator matrix, and the new actual corpus case pass. That matrix executes36
-ordinary/debug native binaries and18 complete VCD comparisons across default
-and bitpack. Strict all-target/all-feature Clippy, fmt/diff and AST graph
-refresh6132/17104 pass. Source82323446 and corpusc83335ea are the candidate
-snapshot; no new commits. Next run full Rust/actual247-program corpora and the
-remaining frontend/example gates on that frozen snapshot at the measured3GiB
-budget required by unchanged-baseline companion_chains.
-
-Full acceptance is live as
-siox-job-3000-1792586026354150373-3980593.service, retained log beside the
-earlier guarded logs. It runs all stages with --no-fail-fast for both Rust
-suites, then both actual corpora, and retains individual logs/source hashes.
-Re-poll this service; launch is not acceptance. Freeze source/std/Rust/scripts
-and corpus while live. Keep this follow-up uncommitted until terminal green.
-
-Read-only follow-up tracing while3980593 runs: constructor-only alias imports
-can lose their last reference before the resolver's unused-import lint sees
-them (3940450's diagnostic output includes the warning). Reproduce separately
-with used/unused and privacy controls before changing expansion metadata;
-do not blanket-exempt alias imports. Also inspect the unused-private-import
-case: ImportSite.accessible documents cascade suppression, but
-lint_unused_imports currently does not consult it. These are next diagnostic
-probes, not changes or completion claims for the frozen alias/range snapshot.
-
-### 2026-10-21 — Codex — ranged constructors and numeric comparisons
-
-Acceptance3980593 is terminal failed1, not live: both full Rust suites/Clippy
-passed, but both corpora were246/247 at fixed_test.siox:108. The existing spec
-section3.17 requires numeric fixed/integer comparison and explicit integer(x)
-for raw bits. Old ranged Call/Index width0 bypassed promotion. Migrate the six
-stale raw-word checks to integer reads and add separate numeric/negative value
-and raw-vs-value controls. tests/fixed_and_printing.rs now checks native exit
-status and has a focused regression preserving raw and numeric expectations.
-No std, LLVM or runtime edits. AST graph update passes6133/17106 (known libfst
-extractor warnings remain). GitHub #143/#144/#178 coordination is posted.
-
-Guarded343280/343782 exited75; no tests ran. Claude's inspected flock287758
-is live in ci-local in siox-conv, so do not stop it or bypass the lock. Once
-free, launch the syntax-checked cache runner through guarded-run with3G/2816M
-(unchanged companion_chains measured need), not directly:
-/home/max/.cache/siox-jobs/tmp/operator-alias-resume-verify.sh
-It retains focused fixed suites,8 actual ordinary/debug native executions with
-VCD parity, then all full gates and before/after source/corpus hashes. No new
-commit/push until terminal green. Broader goal stays active.
-
-### 2026-10-21 — Codex — GitHub #178 generic alias expansion guard
-
-Claimed #178 in the issue and shared chat after Antigravity confirmed reporting
-only. Rewriter now shares an active alias-identity set across home rewriters;
-expand_alias rejects repeat identities before body substitution, even with
-transformed arguments, and removes identities after expansion. Existing
-E-P002 cycle diagnostic, no depth cap, dependencies or backend change.
-import_forms adds direct, growing, mutual, imported and constructor-cycle
-controls plus finite nested/repeated aliases. All Rewriter constructors were
-updated; fmt/diff checks pass. Graph refreshed6136/17111 with the known third-
-party extractor warnings only. Actual Rust/native verification still pending
-live peer flock287758 (bitpack Rust suite, inspected again); runner now also
-runs both import_forms suites before the native/full acceptance stages.
-
-### 2026-10-21 — Codex — queued acceptance behind verified live peer
-
-TTY session51109 is a lightweight waiter for inspected live peer flock287758;
-once that process exits it launches the cache acceptance runner through the
-unchanged guarded-run mechanism with3GiB/2816MiB and a2h timeout. No unguarded
-tests or parallel heavy job. Poll session51109 for the new service/log handle,
-then poll that service to terminal; do not start a duplicate acceptance job.
-Freeze owned source/std/tests/scripts and corpus until its result is observed.
-The script retains per-stage logs and before/after source/corpus hashes.
-
-Waiter51109 completed after peer287758 exited. Own acceptance is now live as
-siox-job-3000-1792615279683566502-369265.service with its retained siox-jobs log.
-Poll that unit; do not launch another run. Peer final corpus reported247/247,
-which is peer evidence only, not verification of this source candidate.
-
-Acceptance369265 ended failed101: the new test correctly exposed an additional
-compound-literal promotion bug. All printed raw words40/40/255/0/128/216 were
-right, but sfixed(-100)==(0-8) failed. value_ref_with_type folded arithmetic
-using the promotion's destination format before process_promoted_operand ran.
-Skip that raw-fold shortcut for expressions with checked promotions; their std
-From body now handles the value, while unpromoted vector arithmetic stays exact.
-Keep the original signed check and add unary/nested/positive literal controls.
-No std/backend changes. Temporary diagnostic dumps were removed; retry394968
-was failed75 (no tests). New acceptance395550 is live:
-siox-job-3000-1792615440255047571-395550.service
-evidence /home/max/.cache/siox-jobs/tmp/operator-alias-resume.j64qWM
-Both5-test fixed suites and11-test import suites pass; default actual fixed and
-alias cases pass ordinary/debug native runs with full VCD parity. Bitpack and
-full gates remain live. Freeze source/corpus and poll this unit, not369265.
-AST update6138/17113 passes (known libfst extractor warnings remain).
-
-### 2026-10-21 — Codex — accepted alias/promotion safety follow-up
-
-395550 is terminal exited/success/0, peak2968403968 bytes. Evidence is retained
-in operator-alias-resume.j64qWM. Full default/bitpack Rust suites (including all
-23 DWARF tests each), both actual247-program corpora, frontend-only check/strict
-Clippy, all-target/all-feature strict Clippy, fmt and required examples pass.
-Focused fixed/import suites pass in both modes;8 actual ordinary/debug native
-executions and4 full VCD parity comparisons pass. Earlier focused operator
-matrix is repeated in both full Rust suites. Sourcef0146f53 and corpused48eaf5
-match before/after. AST graph6138/17113 refreshed; no LLVM/runtime/std changes.
-
-Commit only owned alias/operator/range/promotion code, tests and this log here;
-commit only fixed_test and the new operator_alias_result_test in the actual
-corpus. Other agents' untracked cases/artifacts stay untouched. Latest main was
-fetched read-only at14373be; these results are NOT latest-main integration
-acceptance. #143/#144/#178 stay open until integration/review. No push. Broader
-bug fixing continues separately with test-first #186 in siox-port-types.
 ### 2026-10-22 — Codex — proposal foundations integrated candidate
 
 User authorized integrating the accepted 9d84a3c/0cffa4d fixes with latest main
@@ -5958,3 +5663,68 @@ No push, PR or wiki. Estimate stays about86% of foundations; applied contexts,
 typed values/defaults/static attributes, integer/fractional suffixes, remaining
 registries and residual hooks stay open. The clock/time domain question is
 non-blocking for the other work; no time or integer semantics have changed.
+
+### 2026-11-21 — Codex — integrate checked constant-source and alias-scope followups
+
+Own only source_processes.rs, its new native fixture, guard scripts/inventory
+and current status docs on accepted0e512120. Preserve peer/main/corpus edits.
+Process focus1883618 completed exited/success/0 at05:56:41, peak1,610,874,880
+bytes. Exact new test names, all817 frontend/14 imports, strict Clippy, new/old
+relevant native suites in both modes and12 direct ordinary/debug ACTUAL/VCD
+runs pass. Source6f2ccc89152c569cd8b905629fb7cb1ab1ef2c1dfea3eccbb349b9896287187a
+and corpus04c35557 match before/after. Delete the redundant module collector and
+per-process clone; retain ONLY selected-instance parameters as lexical state,
+not a renamed source declaration registry.
+
+Alias-scope focus1904350 completed exited/success/0 at05:57:00,
+peak242,483,200 bytes. All80 script tests, normal84-entry/40-debt baseline
+inventory and exact strict rejection pass at unchanged source43873fd01a2f10744e0208a3bb4177ac6be1099e39f5c62c114e407cd4beb1be.
+Preserve declaration-site contexts for alias bodies and caller contexts for
+generic arguments; keep import/opaque/general Rust-resolution limits explicit.
+
+Copy only tested code, not older chat/proposal snapshots. The primary inventory
+must replace only the actually deleted mixed constant field with the remaining
+parameter-only state entry:38 declaration migrations remain. Run the ENTIRE
+combined gate before acceptance/commit, with exact new names, all previous
+native/debug/GDB/Rust/corpus/UI/JSON/migration/fingerprint checks and normal
+limits/toolchain. These focused proofs alone do not authorize a new commit or
+push. All five sections remain required at about86% of foundations.
+
+Freeze the combined primary source, ACTUAL corpus and new constant-sources/
+alias-scope full/native drivers while queued/live. Keep all previously accepted
+matrix coverage and original CI GDB smoke. Add the exact new IR test name and
+native fixture in both modes; the CI script runner now includes80 tests and
+the strict ratchet must reject38 genuinely remaining declaration migrations.
+Normal shared lock/caps/Rust1.90/jobs1/threads2/hostdebug1 and dedicated primary
+target are unchanged. No commit or estimate increase before the complete gate;
+the clock/time-domain question remains non-blocking for this independent work.
+
+### 2026-11-22 — Codex — accept constant sources and registry alias scope locally
+
+Full combined service1795237211316578391-2005774 completed exited/success/0
+November21 06:00:11–07:03:30 CET, peak1,612,320,768 bytes. Reviewed actual
+manager status, retained drivers, every stage result and independent current
+fingerprints. All819 frontend/56 evaluator/14 imports,876default/855bitpack
+library cases,123 integration targets per mode, ALL48 GDB/DWARF cases and
+original four FIFO/wide CI GDB smoke checks pass. Both ACTUAL274 corpora,
+71UI/71JSON/56codes/two migrations per mode, strict Clippy,80 script tests/
+36 wave tests/12 artifacts,72 direct native/debug programs and four aggregate
+timeline/declaration/VCD/parity runs pass. Ratchet83 fields,38 actual migrations;
+strict rejection is expected debt, not a completed migration.
+
+Sourcee0aba04a8591090061561223a49f462d811e1cd65b3367a1d9be6c0142a8730a
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and current review. Code-only excluding Markdown:
+9ce460e64a6e7be27d88c195272ef1be7a51e76d97173a1e1cc4472b5e9ea41c.
+Only acceptance Markdown and Oct21 log pruning afterward; preserve every newer
+entry and all peer/main/corpus files. Normal limits, pinned libfst, Rust1.90,
+jobs1/threads2/host debug1 and generated debug checks remain unchanged.
+
+Accept only owned process-constant deletion/native fixture and alias-scope
+guard tests/inventory plus status docs. No push, PR or wiki. All five sections
+remain required at86%; no time/integer semantics changed. Isolated field/
+trait-default drafts are NOT in this source. Their first jobs failed101 at
+test compilation (sorting non-Ord DefIds), not semantic passes; set-based
+deduplication preserves their original assertions and new focused jobs
+2140153/2140427 run/queue on the normal lock with dedicated targets. Retain
+failed evidence and require their complete combined gate before acceptance.

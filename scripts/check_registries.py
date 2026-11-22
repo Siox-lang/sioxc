@@ -2,7 +2,7 @@
 """Ratchet string-keyed state tables after resolve; not a Rust type checker."""
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import sys
@@ -16,6 +16,7 @@ TOKEN = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|::|->|.")
 class Token:
     text: str
     line: int
+    aliases: dict | None = field(default=None, compare=False, repr=False)
 
 
 def tokens(source):
@@ -98,23 +99,31 @@ def split(values):
 class Alias:
     parameters: tuple
     body: list
+    environment: dict = field(default_factory=dict, compare=False, repr=False)
 
 
 def applied_alias(values, at, aliases):
-    # shortcut: alias spelling is not Rust name resolution; use Rust-aware analysis for imported or definition-site-shadowed keys.
+    # shortcut: Rust imports and opaque types are not resolved; use compiler-backed analysis when keys require them.
     alias = aliases[values[at].text]
     arguments = []
     if at + 1 < len(values) and values[at + 1].text == "<":
         arguments = list(split(values[at + 2:end_group(values, at + 1)]))
-    bindings = dict(zip(alias.parameters, arguments))
-    return [part for token in alias.body for part in bindings.get(token.text, [token])]
+    bindings = {
+        name: [Token(token.text, token.line, aliases if token.aliases is None else token.aliases)
+               for token in argument]
+        for name, argument in zip(alias.parameters, arguments)
+    }
+    return [part for token in alias.body for part in bindings.get(
+        token.text, [Token(token.text, token.line, alias.environment)])]
 
 
 def key_names(values, aliases, active=frozenset()):
     result = set()
     for at, token in enumerate(values):
-        if token.text in aliases and token.text not in active:
-            result.update(key_names(applied_alias(values, at, aliases), aliases, active | {token.text}))
+        context = aliases if token.aliases is None else token.aliases
+        alias = context.get(token.text)
+        if alias is not None and id(alias) not in active:
+            result.update(key_names(applied_alias(values, at, context), context, active | {id(alias)}))
         else:
             result.add(token.text)
     return result
@@ -123,7 +132,9 @@ def key_names(values, aliases, active=frozenset()):
 def has_name_key(values, aliases, active=frozenset()):
     at = 0
     while at < len(values):
-        name = values[at].text
+        token = values[at]
+        name = token.text
+        context = aliases if token.aliases is None else token.aliases
         if name in {"HashMap", "HashSet", "BTreeMap", "BTreeSet"} and at + 1 < len(values) and values[at + 1].text == "<":
             end = end_group(values, at + 1)
             arguments = list(split(values[at + 2:end]))
@@ -134,8 +145,9 @@ def has_name_key(values, aliases, active=frozenset()):
             if "DefId" in key:
                 at = end + 1
                 continue
-        if name in aliases and name not in active:
-            if has_name_key(applied_alias(values, at, aliases), aliases, active | {name}):
+        alias = context.get(name)
+        if alias is not None and id(alias) not in active:
+            if has_name_key(applied_alias(values, at, context), context, active | {id(alias)}):
                 return True
         at += 1
     return False
@@ -151,6 +163,13 @@ class Finding:
     @property
     def key(self):
         return f"{self.path}:{self.owner}.{self.field}"
+
+
+def visible_aliases(namespace, aliases):
+    visible = {}
+    for depth in range(len(namespace) + 1):
+        visible.update({name: alias for (scope, name), alias in aliases.items() if scope == namespace[:depth]})
+    return visible
 
 
 def findings(source, path):
@@ -197,11 +216,11 @@ def findings(source, path):
                 at = close + 1
                 continue
         at += 1
+    for (namespace, _), alias in aliases.items():
+        alias.environment.update(visible_aliases(namespace, aliases))
     result = []
     for namespace, owner, kind, body in bodies:
-        visible = {}
-        for depth in range(len(namespace) + 1):
-            visible.update({name: alias for (scope, name), alias in aliases.items() if scope == namespace[:depth]})
+        visible = visible_aliases(namespace, aliases)
         owner = "::".join((*namespace, owner))
         if kind == "enum":
             for variant in split(body):
