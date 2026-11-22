@@ -56,6 +56,16 @@ impl<'a> Interpreter<'a> {
         depth: u32,
     ) -> Option<Result<Value, NotConstant>> {
         let source = self.environment.source()?;
+        let mut fields = Vec::new();
+        let mut base = base;
+        while let Expr::Field {
+            base: inner, field, ..
+        } = base
+        {
+            fields.push(field);
+            base = inner;
+        }
+        // Only places with no calls or index expressions can ignore runtime contents.
         let local = match base {
             Expr::Path(path) => self.environment.local_key(path).and_then(|key| {
                 self.locals
@@ -69,7 +79,10 @@ impl<'a> Interpreter<'a> {
             _ => None,
         };
         let ty = local.or_else(|| source.declared_type(base))?;
-        let ty = self.instantiated_type(ty)?;
+        let mut ty = self.instantiated_type(ty)?;
+        for field in fields.into_iter().rev() {
+            ty = source.field_type(&ty, &field.text)?;
+        }
         let representation = source.array_representation(&ty)?;
         let Type::Indexed {
             index: Some(index), ..

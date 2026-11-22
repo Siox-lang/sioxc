@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, ImplItem, Item, Module, Params,
-    Path, Port, StructDecl, TraitDecl, Type, Using, UsingKind, ViewDecl,
+    ConstDecl, EntityDecl, EnumDecl, EnumVariant, Field, FnDecl, GenericArg, ImplDecl, ImplItem,
+    Item, Module, Params, Path, Port, StructDecl, TraitDecl, Type, Using, UsingKind, ViewDecl,
 };
 
 pub(crate) mod expand;
@@ -89,6 +89,75 @@ impl<'a> DeclarationIndex<'a> {
             Declaration::Constant(constant) => Some(&constant.ty),
             _ => None,
         }
+    }
+
+    /// Privacy and source spans belong to the original field, including inherited fields.
+    pub(crate) fn field_declaration(&self, owner: DefId, name: &str) -> Option<(DefId, &'a Field)> {
+        self.field_contract(owner, None, name, &mut HashSet::new(), false)
+            .map(|(owner, field, _)| (owner, field))
+    }
+
+    /// Instantiate only the selected field, keeping lexical parameter identities.
+    pub(crate) fn field_type(&self, ty: &Type, name: &str) -> Option<Cow<'a, Type>> {
+        self.field_contract_for_type(ty, name, &mut HashSet::new(), true)
+            .map(|(_, _, ty)| ty)
+    }
+
+    fn field_contract_for_type(
+        &self,
+        ty: &Type,
+        name: &str,
+        seen: &mut HashSet<DefId>,
+        applied: bool,
+    ) -> Option<(DefId, &'a Field, Cow<'a, Type>)> {
+        let normalized = self.normalize_type(ty)?;
+        let (path, arguments) = match normalized.as_ref() {
+            Type::Path(path) => (path, None),
+            Type::Generic { base, args, .. } => {
+                let Type::Path(path) = base.as_ref() else {
+                    return None;
+                };
+                (path, Some(args.as_slice()))
+            }
+            Type::View { target, .. } => {
+                return self.field_contract_for_type(target, name, seen, applied);
+            }
+            _ => return None,
+        };
+        self.field_contract(self.type_path_id(path)?, arguments, name, seen, applied)
+    }
+
+    fn field_contract(
+        &self,
+        owner: DefId,
+        arguments: Option<&[GenericArg]>,
+        name: &str,
+        seen: &mut HashSet<DefId>,
+        applied: bool,
+    ) -> Option<(DefId, &'a Field, Cow<'a, Type>)> {
+        if !seen.insert(owner) {
+            return None;
+        }
+        let structure = self.structure(owner)?;
+        // Visibility needs original declarations, not cloned/substituted field types.
+        let arguments = arguments
+            .filter(|_| applied)
+            .map(|arguments| self.arguments(&structure.params, arguments))
+            .transpose()
+            .ok()?;
+        let instantiate = |ty: &'a Type| match &arguments {
+            Some(arguments) => self.instantiate_type(arguments, ty),
+            None => Some(Cow::Borrowed(ty)),
+        };
+        if let Some(field) = structure
+            .fields
+            .iter()
+            .find(|field| field.name.text == name)
+        {
+            return Some((owner, field, instantiate(&field.ty)?));
+        }
+        let base = instantiate(structure.base.as_ref()?)?;
+        self.field_contract_for_type(&base, name, seen, applied)
     }
 
     pub(crate) fn new(resolved: &'a Resolved) -> Self {

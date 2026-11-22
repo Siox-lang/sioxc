@@ -904,7 +904,7 @@ impl<'a> Lowering<'a> {
         self.implemented_traits
             .get(ty)?
             .iter()
-            .filter_map(|tr| self.trait_decls.get(tr.as_str()))
+            .filter_map(|tr| self.free_fns.declarations().trait_decl(*tr))
             .flat_map(|t| t.items.iter())
             .find(|f| f.name.text == name && f.body.is_some())
     }

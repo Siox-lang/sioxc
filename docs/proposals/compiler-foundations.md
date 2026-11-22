@@ -9,7 +9,49 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest local acceptance (reviewed 2026-11-22): full combined service
+Latest local acceptance (2026-11-22): full combined service
+1795380680496268099-2179693 completed exited/success/0 at22:57:52 CET
+(started21:51:20), peak1,612,677,120 bytes under unchanged normal limits.
+Independent read-only review confirms all823 frontend/57 evaluator/14 imports,
+880 default/859 bitpack library cases and125 integration targets per mode,
+ALL48 GDB/DWARF cases and the original four FIFO/wide CI debugger smoke checks.
+Both ACTUAL274-program corpora,71 UI/71 JSON/56 codes/two apply-recompile
+migrations per mode, strict Clippy,80 script tests/36 waveform tests/12 specified
+artifacts,72 direct native/debug programs and four aggregate timeline/VCD/parity
+runs pass. Exact new frontend/native test names are present; no zero-test result
+is used as new-feature coverage.
+
+This accepts shared applied field contracts and nested static field metadata:
+the checker and evaluator borrow the same original inherited field owner/span;
+only selected field types are instantiated by resolved type/value arguments.
+Pure path/field shapes need no runtime signal contents; calls/index effects,
+private fields and static-function scope remain protected. Privacy-only queries
+avoid unused type instantiation. It also accepts deletion of Lowering.trait_decls:
+trait IDs borrow original default bodies from the shared declaration index.
+Named applied receiver keys explicitly remain debt.
+
+The ratchet classifies82 fields; strict mode correctly rejects37 actual remaining
+declaration migrations. Only the deleted trait table is removed from inventory.
+Focused field2140153/source93cbc481 and trait2140427/source9b425771 checks
+preceded this complete combined proof, which also covers the allocation review
+fix. Earlier2031802/2034604 test-compilation failures remain rejected evidence.
+
+Sourcef9436f78a581b46a1816be03e0398170f653c58d13a6b35e9270520426f8a41f
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent current review. Code-only excluding Markdown:
+6fc21fbf99dbd3216c6e8b7537130a0911fcd33c8685022368078e5bf22cea29.
+Only acceptance Markdown afterward; the pinned dependency, Rust1.90/jobs1/
+threads2/host debug1 and generated debug checks remain unchanged. Normal2GiB
+hard/1.5GiB soft/no-swap/no-core limits are verified from the actual service.
+
+Defaults and applied-type regression prototypes are NOT included or accepted.
+All FIVE sections stay required at about86% of foundations, not the compiler:
+fully applied generic/associated contexts, remaining typed values/defaults/
+static attributes, integer/fractional suffix migration, remaining registries
+and residual hooks remain open. No time/integer semantic changes or peer/main/
+corpus edits. No push, PR or wiki publication.
+
+Previous local acceptance (reviewed 2026-11-22): full combined service
 1795237211316578391-2005774 completed exited/success/0 on November21,
 06:00:11–07:03:30 CET, peak1,612,320,768 bytes under unchanged normal caps.
 All819 frontend/56 evaluator/14 import tests, complete Rust suites (876 default /

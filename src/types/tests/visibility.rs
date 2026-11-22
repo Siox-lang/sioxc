@@ -3,6 +3,36 @@
 use super::*;
 
 #[test]
+fn static_field_metadata_does_not_expose_private_inherited_fields() {
+    let mut sources = [
+        (
+            "module model;
+          pub struct Base<N: integer> { secret: integer[N], pub data: integer[N] }
+          pub struct Derived(Base<4>);",
+            FileId(0),
+        ),
+        (
+            "module client;
+          fn hidden(value: model::Derived) -> integer { return value.secret'length; }
+          fn visible(value: model::Derived) -> integer { return value.data'length; }",
+            FileId(1),
+        ),
+    ];
+    for _ in 0..2 {
+        let sink = check_modules(&sources);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+        assert_eq!(errors[0].code, Some(codes::PRIVATE_MEMBER));
+        assert!(errors[0].message.contains("Base.secret"), "{errors:?}");
+        sources.reverse();
+    }
+}
+
+#[test]
 fn rejected_record_array_newtypes_do_not_inherit_element_fields_during_recovery() {
     let model = "module model;
         pub struct Record { secret: integer, pub visible: real }

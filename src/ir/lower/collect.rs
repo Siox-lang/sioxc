@@ -42,7 +42,6 @@ impl<'a> Lowering<'a> {
             lint_defaulted: std::collections::HashSet::new(),
             impls: HashMap::new(),
             inherent_impls: HashMap::new(),
-            trait_decls: HashMap::new(),
             implemented_traits: HashMap::new(),
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
@@ -141,10 +140,6 @@ impl<'a> Lowering<'a> {
                                 .insert(self.free_fns.type_alias_decl_key(name), ty.clone());
                         }
                     }
-                    ast::Item::Trait(t) => {
-                        self.trait_decls
-                            .insert(self.free_fns.trait_decl_key(&t.name), t);
-                    }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
                         // A struct's or enum's impl constants are module
@@ -180,11 +175,14 @@ impl<'a> Lowering<'a> {
                             self.free_fns.insert_operator_impl(im);
                         }
                         let target = self.free_fns.type_head_key(&im.target);
-                        if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
+                        if let (Some(tr), Some(ty)) = (
+                            trait_path.and_then(|path| self.resolved.resolved(path.span)),
+                            target.as_ref(),
+                        ) {
                             self.implemented_traits
                                 .entry(ty.clone())
                                 .or_default()
-                                .push(tr.clone());
+                                .push(tr);
                         }
                         self.register_static_fns(im);
                         if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
@@ -267,7 +265,12 @@ impl<'a> Lowering<'a> {
             .implemented_traits
             .iter()
             .flat_map(|(ty, traits)| traits.iter().map(move |tr| (ty.clone(), tr)))
-            .filter_map(|(ty, tr)| self.trait_decls.get(tr.as_str()).map(|t| (ty, *t)))
+            .filter_map(|(ty, tr)| {
+                self.free_fns
+                    .declarations()
+                    .trait_decl(*tr)
+                    .map(|t| (ty, t))
+            })
             .flat_map(|(ty, t)| {
                 t.items
                     .iter()
@@ -1358,5 +1361,135 @@ fn is_constant_value(value: &Expr) -> bool {
             is_constant_value(cond) && is_constant_value(then) && is_constant_value(els)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trait_defaults_borrow_resolved_owners_without_a_trait_name_registry() {
+        let mut sources = [
+            "module left;
+             pub struct Token { pub value: integer }
+             impl Meter for Token {}
+             pub trait Meter {
+                 static fn tag() -> integer { return 11; }
+                 fn measure(self) -> integer { return 31; }
+             }",
+            "module right;
+             pub struct Token { pub value: integer }
+             impl Meter for Token {
+                 static fn tag() -> integer { return 22; }
+                 fn measure(self) -> integer { return 42; }
+             }
+             pub trait Meter {
+                 static fn tag() -> integer { return 99; }
+                 fn measure(self) -> integer { return 99; }
+             }",
+            "module client;
+             use Meter = left::Meter;
+             pub struct Foreign { pub value: integer }
+             impl Meter for Foreign {}",
+        ];
+        for reversed in [false, true] {
+            let mut sink = DiagnosticSink::default();
+            let mut modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(
+                        crate::diag::FileId(index as u32),
+                        source,
+                        &mut sink,
+                    )
+                })
+                .collect();
+            crate::syntax::imports::desugar(&mut modules, &mut sink);
+            if reversed {
+                for module in &mut modules {
+                    module.items.reverse();
+                }
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let mut lowering = Lowering::new(&mut sink, &resolved);
+            assert!(lowering.collect(&modules).is_empty());
+            let mut trait_owners = Vec::new();
+            for module in &modules {
+                let name = module.path.segments[0].text.as_str();
+                let implementation = module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        ast::Item::Impl(implementation) => Some(implementation),
+                        _ => None,
+                    })
+                    .unwrap();
+                let trait_id = resolved
+                    .resolved(implementation.trait_.as_ref().unwrap().span)
+                    .unwrap();
+                let trait_declaration = modules
+                    .iter()
+                    .flat_map(|module| &module.items)
+                    .find_map(|item| match item {
+                        ast::Item::Trait(declaration)
+                            if resolved.declared(declaration.name.span) == Some(trait_id) =>
+                        {
+                            Some(declaration)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(std::ptr::eq(
+                    lowering
+                        .free_fns
+                        .declarations()
+                        .trait_decl(trait_id)
+                        .unwrap(),
+                    trait_declaration,
+                ));
+                trait_owners.push(trait_id);
+                let key = lowering
+                    .free_fns
+                    .type_head_key(&implementation.target)
+                    .unwrap();
+                assert_eq!(lowering.implemented_traits[&key], vec![trait_id]);
+                let function = |member: &str| {
+                    if name == "right" {
+                        implementation
+                            .items
+                            .iter()
+                            .find_map(|item| match item {
+                                ast::ImplItem::Fn(function) if function.name.text == member => {
+                                    Some(function)
+                                }
+                                _ => None,
+                            })
+                            .unwrap()
+                    } else {
+                        trait_declaration
+                            .items
+                            .iter()
+                            .find(|function| function.name.text == member)
+                            .unwrap()
+                    }
+                };
+                assert!(std::ptr::eq(
+                    lowering.find_method(&key, "measure", None).unwrap(),
+                    function("measure")
+                ));
+                assert!(std::ptr::eq(
+                    lowering.free_fns.get_associated(&key, "tag").unwrap(),
+                    function("tag")
+                ));
+                assert!(lowering.find_method(&key, "absent", None).is_none());
+            }
+            assert_eq!(trait_owners.into_iter().collect::<HashSet<_>>().len(), 2);
+            drop(lowering);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            sources.reverse();
+        }
     }
 }

@@ -755,22 +755,10 @@ impl<'a> Checker<'a> {
     /// A field's privacy belongs to the declaration owner, not the derived type.
     pub(super) fn field_declaration(
         &self,
-        mut owner: DefId,
+        owner: DefId,
         field: &str,
     ) -> Option<(DefId, &'a Field)> {
-        let mut seen = HashSet::new();
-        while seen.insert(owner) {
-            let structure = self.declarations.structure(owner)?;
-            if let Some(field) = structure
-                .fields
-                .iter()
-                .find(|member| member.name.text == field)
-            {
-                return Some((owner, field));
-            }
-            owner = self.struct_base_id(owner)?;
-        }
-        None
+        self.declarations.field_declaration(owner, field)
     }
 
     fn struct_base_id(&self, owner: DefId) -> Option<DefId> {

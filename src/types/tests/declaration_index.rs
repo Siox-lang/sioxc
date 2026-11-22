@@ -48,6 +48,91 @@ fn normalized_indexed_aliases_fill_open_dimensions_without_losing_nested_shape()
     }
 }
 
+#[test]
+fn applied_field_contracts_share_inherited_owners_and_lexical_arguments() {
+    let mut sources = [
+        "module left;
+         pub const N: integer = 99;
+         pub struct Leaf { pub value: integer }
+         pub struct Base<T, N: integer> { pub data: T[N], pub token: Leaf }
+         pub struct Derived<T, N: integer>(Base<T, N>);
+         pub type Packet = Derived<integer, 5>;
+         view Source<T, N: integer> for Derived<T, N> { data out, token out }
+         fn probe(a: Base<integer, 2>, b: Packet,
+                  c: Derived<N = 4, T = integer>, d: Packet Source) {}",
+        "module right;
+         pub struct Leaf { pub value: real }
+         pub struct Base<T, N: integer> { pub data: T[N], pub token: Leaf }
+         pub struct Derived<T, N: integer>(Base<T, N>);
+         fn probe(a: Derived<integer, 7>) {}",
+    ];
+    for _ in 0..2 {
+        let (modules, resolved) = parse(&sources);
+        let declarations = DeclarationIndex::collect(&resolved, &modules);
+        let mut leaves = Vec::new();
+        for module in &modules {
+            let left = module.path.segments[0].text == "left";
+            let structure = |name| {
+                module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::Struct(structure) if structure.name.text == name => Some(structure),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let base = structure("Base");
+            let base_id = resolved.declared(base.name.span).unwrap();
+            let derived = resolved.declared(structure("Derived").name.span).unwrap();
+            let (owner, field) = declarations.field_declaration(derived, "data").unwrap();
+            assert_eq!(owner, base_id);
+            assert!(std::ptr::eq(field, &base.fields[0]));
+            let (_, token) = declarations.field_declaration(derived, "token").unwrap();
+            assert!(std::ptr::eq(token, &base.fields[1]));
+            let Item::Fn(function) = module.items.last().unwrap() else {
+                panic!("probe")
+            };
+            for (parameter, width) in
+                function
+                    .params
+                    .iter()
+                    .zip(if left { vec![2, 5, 4, 5] } else { vec![7] })
+            {
+                let ty = parameter.ty.as_ref().unwrap();
+                let field_ty = declarations.field_type(ty, "data").unwrap();
+                let Type::Indexed {
+                    base,
+                    index: Some(index),
+                    ..
+                } = field_ty.as_ref()
+                else {
+                    panic!("array field")
+                };
+                assert_eq!(
+                    declarations.scalar_type_id(base),
+                    resolved.builtin("integer")
+                );
+                assert_eq!(evaluate(index, &Source::new(&declarations), 0), Ok(width));
+                let token = declarations.field_type(ty, "token").unwrap();
+                let leaf = resolved.declared(structure("Leaf").name.span).unwrap();
+                assert_eq!(declarations.scalar_type_id(&token), Some(leaf));
+                leaves.push(leaf);
+                assert!(declarations.field_type(ty, "absent").is_none());
+            }
+        }
+        assert_eq!(
+            leaves
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            2,
+            "same-named fields retain module owners"
+        );
+        sources.reverse();
+    }
+}
+
 fn parse(sources: &[&str]) -> (Vec<Module>, Resolved) {
     let mut sink = DiagnosticSink::default();
     let modules: Vec<_> = sources

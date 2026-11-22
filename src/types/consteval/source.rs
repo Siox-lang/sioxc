@@ -49,6 +49,12 @@ impl<'i, 'a> Source<'i, 'a> {
         self.declarations.array_representation(ty)
     }
 
+    pub(super) fn field_type(&self, ty: &Type, name: &str) -> Option<Cow<'a, Type>> {
+        self.declarations
+            .field_type(ty, name)
+            .or_else(|| self.functions?.field_type(ty, name))
+    }
+
     /// Project a typed scalar only where a consumer requires its stored word.
     pub(crate) fn word(&self, value: Value) -> Option<i64> {
         match value {

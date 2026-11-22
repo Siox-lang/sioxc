@@ -5728,3 +5728,84 @@ test compilation (sorting non-Ord DefIds), not semantic passes; set-based
 deduplication preserves their original assertions and new focused jobs
 2140153/2140427 run/queue on the normal lock with dedicated targets. Retain
 failed evidence and require their complete combined gate before acceptance.
+
+### 2026-11-22 — Codex — integrate checked field contracts; trait defaults pending
+
+Own primary resolve/declarations.rs, types/collect.rs, constant aggregate/source
+adapters and their new source/native tests on accepted2e1d8be6. Field focus
+2140153 completed exited/success/0, peak1,612,693,504 bytes, at unchanged
+source93cbc481c874f4d0bdeefe6161cbdf84c287cc8130ea2ef0c9029781f5aac68c
+and ACTUAL corpus04c35557. All821 frontend/14 imports, strict frontend/new-test
+Clippy, original static-scope/visibility tests, relevant old/new native suites
+and12 direct ordinary/debug corpus/VCD runs pass in both modes. First failed
+test-compilation job2031802 is retained; no assertion or ID semantics weakened.
+
+Copy only owned code/native fixture, not older chat/proposal snapshots. During
+integration avoid applying/cloning unused field types for privacy-only queries;
+keep the one shared traversal, original owner/span and argument identity.
+This small additional review fix requires the new combined full gate too.
+Trait-default focus2140427 is live separately; do not include it as accepted.
+All five sections/remaining contexts/values/defaults/attributes/suffixes/
+registries/hooks remain required at86%. No main/peer/corpus edits or push.
+
+### 2026-11-22 — Codex — combine trait-default candidate for the full gate
+
+Own primary lower.rs/collect.rs/calls.rs, the new borrowed-trait native fixture
+and ONLY the actually deleted trait_decls inventory entry plus its relationship
+comment. Isolated focus2140427 is still live: all819 frontend/14 imports,
+strict frontend Clippy, source pointer/alias/order/override checks and both-mode
+new native ordinary/debug fixtures have passed; old native regressions/CLI
+checks are finishing. This is NOT terminal focused acceptance or commit proof.
+
+Integrate these owned candidate code deltas only, not older chat/proposal/
+inventory snapshots. Keep primary's accepted constant-source/alias-scope work,
+new shared field metadata and privacy-only no-instantiation review fix. Trait
+IDs now borrow shared declaration contracts; receiver names remain actual
+migration debt. The combined inventory must have82 fields/37 genuine migrations,
+not remove unrelated debt. Run the complete fresh full matrix on this exact
+combined source via the normal guarded lock, queued after the isolated focus.
+No commit or estimate increase before full success. No peer/main/corpus edits,
+push, PR or wiki; all five foundations sections and original remaining scope
+are still required. Preserve both earlier test-compilation failures as failures.
+
+Freeze the complete combined primary source, ACTUAL corpus and Nov22 fields/
+trait-default full/native drivers while queued/live. Keep all prior coverage,
+original CI GDB smoke and unchanged normal limits/Rust1.90/jobs1/threads2/host
+debug1; use the dedicated primary target, never another worktree's root
+artifacts. Add exact listing for all four new frontend tests and both new
+native fixtures, old/new native suites in both modes and strict rejection of
+exactly37 genuine migrations. Focus2140427 remains independently live before
+this full gate can take the same shared lock; launch is not acceptance.
+
+### 2026-11-22 — Codex — accept shared field metadata and borrowed trait defaults
+
+Full2179693 completed exited/success/0,21:51:20–22:57:52 CET,
+peak1,612,677,120 bytes. Independent retained-evidence audit verifies ALL823
+frontend/57 evaluator/14 imports,880default/859bitpack library cases and125
+integration targets per mode, ALL48 GDB/DWARF cases plus original four FIFO/
+wide CI debugger smoke checks, strict Clippy, BOTH ACTUAL274 corpora,71UI/
+71JSON/56codes/two migrations per mode,80 script tests/36 wave tests/12 artifacts,
+72 direct native/debug programs and four aggregate timeline/VCD/parity runs.
+Exact new test listings are present. Ratchet82 classified fields,37 actual
+migrations; expected strict rejection is not registry completion.
+
+Accept shared applied/inherited field contracts and nested pure static metadata,
+including the privacy-only no-instantiation review fix, plus deletion of the
+duplicate lowering trait table. Trait defaults borrow declarations by ID;
+named receiver keys remain debt. Original scope/privacy/call/index assertions
+and earlier failed2031802/2034604 compile-test evidence are preserved.
+
+Sourcef9436f78a581b46a1816be03e0398170f653c58d13a6b35e9270520426f8a41f
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and independent review. Code-only excluding Markdown:
+6fc21fbf99dbd3216c6e8b7537130a0911fcd33c8685022368078e5bf22cea29.
+Only acceptance Markdown afterward. Actual service caps remain2GiB hard/
+1.5GiB soft/no swap/no core; pinned libfst/Rust1.90/jobs1/threads2/hostdebug1 and
+generated debug checks unchanged. All peer/main/corpus changes preserved.
+
+Commit only explicit owned15 paths locally after unchanged-code/diff review.
+No push/PR/wiki. All five foundations sections and original remaining contexts/
+values/defaults/attributes/suffix/registry/hook work stay required at86%.
+Separate defaults2279417 and applied-identity baseline2248303 are NOT in this
+source; canceled/unexecuted default2220366 is not a pass. Baseline reproduction
+is a negative test, never a green compiler. No time/integer semantic changes.

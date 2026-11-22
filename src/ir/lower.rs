@@ -283,13 +283,9 @@ struct Lowering<'a> {
     /// hierarchy lowering, this must distinguish applied views that share a
     /// view declaration leaf but have different backing structs.
     inherent_impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
-    /// Trait name -> its declaration, for the defaulted methods an
-    /// implementing type inherits (spec 3.20: a trait body is a contract, and
-    /// a method *with* a body is a default the impl may omit — which the type
-    /// checker already allows, so dispatch has to find it).
-    trait_decls: HashMap<String, &'a ast::TraitDecl>,
-    /// Type head -> the traits it implements, for that fallback.
-    implemented_traits: HashMap<String, Vec<String>>,
+    /// Selected type head -> resolved traits; source defaults are borrowed
+    /// from the shared declaration index, never recovered by trait spelling.
+    implemented_traits: HashMap<String, Vec<DefId>>,
     /// Entity name -> its instance's concrete parameter values.
     entity_params: HashMap<DefId, HashMap<String, i64>>,
     /// Enum name -> variant name -> discriminant value.
