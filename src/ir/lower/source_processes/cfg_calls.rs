@@ -714,8 +714,17 @@ fn inline_call_once(
             }
         }
         ProcessValueKind::Field { base, field } => {
-            let owner =
-                process_value_type(base, context).and_then(|ty| process_type_key(&ty, context))?;
+            // A store field in a generic body (`self.keys.remove(at)` of
+            // `impl<K, V> ..`): its layout at this call names the store.
+            let owner = process_value_type(base, context)
+                .and_then(|ty| process_type_key(&ty, context))
+                .or_else(|| {
+                    let layout = store_field_layout(base, process, context.process_ir)?;
+                    process_type_key(
+                        &process_type_from_layout(layout, context.resolved)?,
+                        context,
+                    )
+                })?;
             (
                 context.functions.get_associated(&owner, &field)?,
                 Some(base),
@@ -817,6 +826,23 @@ fn inline_call_once(
                 .ret
                 .as_ref()
                 .and_then(|ty| process_declared_type(ty, context))
+        })
+        // `-> T` of a store's method (`self.keys.remove(at)` in a generic
+        // body): the store's element.
+        .or_else(|| {
+            let receiver = receiver?;
+            let store = process_value_type(receiver, context)
+                .filter(|ty| {
+                    runtime_array_element(Some(ty))
+                        .is_some_and(|element| is_concrete_type(element, context))
+                })
+                .or_else(|| {
+                    let layout = store_field_layout(receiver, process, context.process_ir)?;
+                    process_type_from_layout(layout, context.resolved)
+                })?;
+            runtime_array_element(Some(&store))
+                .filter(|element| is_concrete_type(element, context))
+                .cloned()
         });
     let result = result_local(&node, call, process, context);
     // `Ty` retains element count, not the source labels/direction. A return

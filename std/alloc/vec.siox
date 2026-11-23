@@ -42,4 +42,46 @@ impl<T> Vec<T> {
     pub fn clear() {
         self = [];
     }
+
+    // Inserts an element at `index`, shifting the ones after it up; an
+    // index past the end stops the test.
+    pub fn insert(index: integer, value: T) {
+        let count: integer = self'length;
+        if index == count {
+            self.push(value);
+        } else {
+            self.push(self[count - 1]);
+            // A range counts down when its end is below its start: only
+            // shift when there is something between.
+            if count - index >= 2 {
+                for step in 0 .. count - index - 2 {
+                    self[count - 1 - step] = self[count - 2 - step];
+                }
+            }
+            self[index] = value;
+        }
+    }
+
+    // Removes the element at `index` and returns it, shifting the ones
+    // after it down; out of range stops the test.
+    pub fn remove(index: integer) -> T {
+        let removed: T = self[index];
+        let count: integer = self'length;
+        if index < count - 1 {
+            for position in index .. count - 2 {
+                self[position] = self[position + 1];
+            }
+        }
+        let dropped: T = self.pop();
+        return removed;
+    }
+
+    // Shortens it to `length` elements; a longer `length` changes nothing.
+    pub fn truncate(length: integer) {
+        if length == 0 {
+            self = [];
+        } else if length < self'length {
+            self = self[0 .. length - 1];
+        }
+    }
 }

@@ -84,7 +84,10 @@ Landed:
   shape every collection here is written in;
 - `std::alloc::collections::VecDeque<T>`, re-exported as
   `std::collections::VecDeque`: `push_back`, `push_front`, `pop_front`,
-  `pop_back`, `front`, `back`, `get`, `len`, `is_empty`, `clear`.
+  `pop_back`, `front`, `back`, `get`, `len`, `is_empty`, `clear` (#785);
+- `BTreeMap<K, V>` (sorted keys and values; `insert`, `get`,
+  `contains_key`, `remove`, `keys`, `values`, `len`, `is_empty`, `clear`),
+  and `Vec`'s `insert`, `remove` and `truncate`.
 
 ## What siox takes
 

@@ -1,0 +1,91 @@
+module std::alloc::collections::btree_map;
+
+// `BTreeMap<K, V>`: an ordered map, as Rust's
+// `alloc::collections::BTreeMap` (SystemVerilog's associative array). Keys
+// are kept in order, so iterating is reproducible run to run; keys need
+// `Ord`. Its entries live in the simulator, so it is testbench storage with
+// no hardware form. See `docs/proposals/alloc.md`.
+//
+// ponytail: sorted key and value vectors with a linear search, O(n) per
+// operation; a B-tree or binary search if a testbench maps many keys.
+
+use std::alloc::vec::Vec;
+
+pub struct BTreeMap<K, V> {
+    keys: Vec<K>,
+    values: Vec<V>,
+}
+
+impl<K, V> BTreeMap<K, V> {
+    // The number of entries.
+    pub fn len() -> integer {
+        return self.keys.len();
+    }
+
+    // Whether it holds no entries.
+    pub fn is_empty() -> Bool {
+        return self.keys.len() == 0;
+    }
+
+    // Where `key` is, or would go: the first position whose key is not
+    // less than it.
+    fn position(key: K) -> integer {
+        let count: integer = self.keys.len();
+        if count == 0 {
+            return 0;
+        }
+        for index in 0 .. count - 1 {
+            if self.keys[index] >= key {
+                return index;
+            }
+        }
+        return count;
+    }
+
+    // Whether `key` has an entry.
+    pub fn contains_key(key: K) -> Bool {
+        let at: integer = self.position(key);
+        return at < self.keys.len() and self.keys[at] == key;
+    }
+
+    // Sets `key`'s value, replacing one already there.
+    pub fn insert(key: K, value: V) {
+        let at: integer = self.position(key);
+        if at < self.keys.len() and self.keys[at] == key {
+            self.values[at] = value;
+        } else {
+            self.keys.insert(at, key);
+            self.values.insert(at, value);
+        }
+    }
+
+    // `key`'s value, as Rust's `get` without its `Option`: a missing key
+    // stops the test (`contains_key` asks first).
+    pub fn get(key: K) -> V {
+        return self.values[self.position(key)];
+    }
+
+    // Removes `key`'s entry and returns its value; a missing key stops the
+    // test.
+    pub fn remove(key: K) -> V {
+        let at: integer = self.position(key);
+        let dropped: K = self.keys.remove(at);
+        return self.values.remove(at);
+    }
+
+    // The keys, in order.
+    pub fn keys() -> Vec<K> {
+        return self.keys;
+    }
+
+    // The values, in key order.
+    pub fn values() -> Vec<V> {
+        return self.values;
+    }
+
+    // Removes every entry.
+    pub fn clear() {
+        self.keys.clear();
+        self.values.clear();
+    }
+}

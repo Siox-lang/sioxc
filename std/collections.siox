@@ -4,3 +4,4 @@ module std::collections;
 // `std::collections` is from `alloc::collections`.
 
 pub use std::alloc::collections::vec_deque::VecDeque;
+pub use std::alloc::collections::btree_map::BTreeMap;
