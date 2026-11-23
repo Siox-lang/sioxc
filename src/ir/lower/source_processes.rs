@@ -3992,12 +3992,23 @@ fn inline_process_procedure_call(
     let (function, receiver) = match callee {
         ast::Expr::Field { base, field, .. } => {
             let receiver = value_ref(base, process, context);
+            // A store field read in a generic body (`self.buf.clear()` of
+            // `impl<T> Q<T>`) is typed with its element open: its layout at
+            // this call names the store.
             let owner = context
                 .process_ir
                 .values
                 .get(receiver.0 as usize)
                 .and_then(|value| value.ty.as_ref())
-                .and_then(|ty| process_type_key(ty, context))?;
+                .and_then(|ty| process_type_key(ty, context))
+                .or_else(|| {
+                    let layout = store_field_layout(receiver, process, context.process_ir)?;
+                    process_type_key(
+                        &process_type_from_layout(layout, context.resolved)?,
+                        context,
+                    )
+                });
+            let owner = owner?;
             (
                 context.functions.get_associated(&owner, &field.text)?,
                 Some(receiver),
@@ -10748,12 +10759,23 @@ fn inline_process_call(
     let (function, receiver) = match callee.as_ref() {
         ast::Expr::Field { base, field, .. } => {
             let receiver = value_ref(base, process, context);
+            // A store field read in a generic body (`self.buf.clear()` of
+            // `impl<T> Q<T>`) is typed with its element open: its layout at
+            // this call names the store.
             let owner = context
                 .process_ir
                 .values
                 .get(receiver.0 as usize)
                 .and_then(|value| value.ty.as_ref())
-                .and_then(|ty| process_type_key(ty, context))?;
+                .and_then(|ty| process_type_key(ty, context))
+                .or_else(|| {
+                    let layout = store_field_layout(receiver, process, context.process_ir)?;
+                    process_type_key(
+                        &process_type_from_layout(layout, context.resolved)?,
+                        context,
+                    )
+                });
+            let owner = owner?;
             (
                 context.functions.get_associated(&owner, &field.text)?,
                 Some(receiver),
@@ -11234,6 +11256,23 @@ fn operand_source_layout(
             process: owner,
             local,
         } if *owner == process.id => process.locals.get(local.0 as usize)?.layout.clone(),
+        ProcessValueKind::Field { .. } => {
+            store_field_layout(operand, process, context.process_ir).cloned()
+        }
+        // `self[i]` of a store, a variable or a field (`e.buf.pop()`): its
+        // element. In a generic body (`let last: T = self[..]`) the checker
+        // leaves the type open and this is where the local's shape comes
+        // from.
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::StringIndex,
+            arguments,
+        } => match operand_source_layout(*arguments.first()?, process, context)?.kind {
+            LayoutKind::Array {
+                range: None,
+                element,
+            } => Some(*element),
+            _ => None,
+        },
         _ => None,
     }
 }
