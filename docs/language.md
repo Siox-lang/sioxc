@@ -2965,7 +2965,14 @@ let p: Phase;                        // implicit: the default Phase
 let p2: Phase = Phase();             // explicit: the same default, written out
 let p3: Phase = Phase::default();    // and the trait spelling of it
 let n: unsigned[8] = unsigned[8]();  // == 0
+let row: integer[3] = integer[3](); // each element defaults to 0
+type Pair = (integer, real);
+let pair: Pair = Pair();            // == (0, 0.0)
 ```
+
+Aliases preserve default construction, including generic aliases and nested
+arrays. This does not add an array or tuple conversion: `integer[3](x)` and
+`Pair(x)` are still invalid. Build those values from their elements instead.
 
 **The derived default is structural** (VHDL's `T'LEFT`), applied recursively:
 

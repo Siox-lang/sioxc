@@ -5,8 +5,8 @@
 
 use crate::diag::Span;
 use crate::syntax::ast::{
-    expr_span, pattern_span, stmt_span, BinOp, ConstDecl, ElseBranch, Expr, FnDecl, FnParam, Ident,
-    IfStmt, ImplDecl, MatchArm, Path, Pattern, Stmt, Type, UnOp,
+    expr_span, pattern_span, stmt_span, BinOp, ConstDecl, ElseBranch, Expr, FnDecl, FnParam,
+    GenericArg, Ident, IfStmt, ImplDecl, MatchArm, Path, Pattern, Stmt, Type, UnOp,
 };
 
 use super::helpers::{unsigned_lit_magnitude, unsigned_lit_text};
@@ -16,6 +16,7 @@ use crate::resolve::DefId;
 use std::sync::Arc;
 
 mod aggregates;
+mod defaults;
 mod source;
 pub(crate) use source::Source;
 
@@ -462,7 +463,7 @@ pub(crate) fn evaluate_call(
         locals: Vec::new(),
         operators: Vec::new(),
     }
-    .call(callee, arguments, depth, expr_span(callee))
+    .call(callee, &[], arguments, depth, expr_span(callee))
 }
 
 struct LocalBinding<'a> {
@@ -649,9 +650,12 @@ impl<'a> Interpreter<'a> {
                     depth + 1,
                 )?
             }
-            Expr::Call { callee, args, .. } => {
-                self.call(callee, args, depth, expr_span(expression))?
-            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => self.call(callee, type_args, args, depth, expr_span(expression))?,
             _ => return Err(fail(Reason::Unsupported)),
         };
         self.checked_value(value, expr_span(expression))
@@ -919,6 +923,7 @@ impl<'a> Interpreter<'a> {
     fn call(
         &mut self,
         callee: &Expr,
+        type_args: &[GenericArg],
         args: &[Expr],
         depth: u32,
         span: Span,
@@ -930,6 +935,11 @@ impl<'a> Interpreter<'a> {
         let environment = self.environment;
         if let Some(source) = environment.source() {
             let receiver = self.locals.last().and_then(|frame| frame.receiver);
+            if args.is_empty() {
+                if let Some(ty) = source.default_target(callee, type_args) {
+                    return self.default_value(&ty, receiver, depth + 1, span);
+                }
+            }
             if let Some(target) = source.nominal_constructor(callee, receiver) {
                 let [argument] = args else {
                     return Err(fail(Reason::ArityMismatch));

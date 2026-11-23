@@ -7986,46 +7986,31 @@ fn lower_process_default(
     else {
         return None;
     };
-    if !type_args.is_empty() || !args.is_empty() || context.functions.get(callee).is_some() {
+    if !args.is_empty() || context.functions.get(callee).is_some() {
         return None;
     }
-    // `Counter::new()` the type declares (inherent or `impl Default`) is that
-    // function, not the structural default: it read as all zeros (#361).
-    if matches!(callee.as_ref(), ast::Expr::Path(_)) && context.functions.get(callee).is_some() {
-        return None;
-    }
-    let definition = match callee.as_ref() {
-        ast::Expr::Path(path)
-            if matches!(path.segments.last()?.text.as_str(), "default" | "new") =>
-        {
-            context
-                .resolved
-                .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span)
+    let source = context.functions.constant_source();
+    let declared = source.default_target(callee, type_args).or_else(|| {
+        // Preserve the deprecated T::new() spelling only when no function owns it.
+        let ast::Expr::Path(path) = callee.as_ref() else {
+            return None;
+        };
+        if path.segments.last()?.text != "new" || !type_args.is_empty() {
+            return None;
         }
-        ast::Expr::Path(path) => context.resolved.resolved(path.span),
-        ast::Expr::Index { base, .. } => match base.as_ref() {
-            ast::Expr::Path(path) => context.resolved.resolved(path.span),
-            _ => None,
-        },
-        _ => None,
-    }?;
-    let definition_kind = context.resolved.def(definition)?.kind;
-    if !matches!(
-        definition_kind,
-        crate::resolve::DefKind::Builtin
-            | crate::resolve::DefKind::Struct
-            | crate::resolve::DefKind::Enum
-            | crate::resolve::DefKind::TypeAlias
-    ) {
-        return None;
-    }
-    let target = target.cloned().or_else(|| {
-        matches!(
-            definition_kind,
-            crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
+        let prefix = path.segments[..path.segments.len().checked_sub(1)?].to_vec();
+        let span = prefix.last()?.span;
+        source.default_target(
+            &ast::Expr::Path(ast::Path {
+                segments: prefix,
+                span,
+            }),
+            &[],
         )
-        .then_some(crate::types::Ty::Named(definition))
     })?;
+    let target = target
+        .cloned()
+        .or_else(|| process_declared_type(&declared, context))?;
     if matches!(target, crate::types::Ty::Error) {
         return None;
     }

@@ -1328,25 +1328,29 @@ impl GenericArg {
     /// indexed name (`string`, `unsigned[8]`) as the type it spells. `None`
     /// for a value such as `32`.
     pub fn as_type(&self) -> Option<Type> {
-        fn expr_type(expression: &Expr) -> Option<Type> {
-            match expression {
-                Expr::Path(path) => Some(Type::Path(path.clone())),
-                Expr::Index { base, index, span } => Some(Type::Indexed {
-                    base: Box::new(expr_type(base)?),
-                    index: Some(index.clone()),
-                    span: *span,
-                }),
-                Expr::Tuple { elems, span } => Some(Type::Tuple {
-                    elems: elems.iter().map(expr_type).collect::<Option<_>>()?,
-                    span: *span,
-                }),
-                _ => None,
-            }
-        }
         match self {
             GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => Some(ty.clone()),
-            GenericArg::Positional(value) | GenericArg::Named { value, .. } => expr_type(value),
+            GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
+                type_from_expr(value)
+            }
         }
+    }
+}
+
+/// Preserve source spans when a path, index or tuple spells a type in an expression.
+pub fn type_from_expr(expression: &Expr) -> Option<Type> {
+    match expression {
+        Expr::Path(path) => Some(Type::Path(path.clone())),
+        Expr::Index { base, index, span } => Some(Type::Indexed {
+            base: Box::new(type_from_expr(base)?),
+            index: Some(index.clone()),
+            span: *span,
+        }),
+        Expr::Tuple { elems, span } => Some(Type::Tuple {
+            elems: elems.iter().map(type_from_expr).collect::<Option<_>>()?,
+            span: *span,
+        }),
+        _ => None,
     }
 }
 

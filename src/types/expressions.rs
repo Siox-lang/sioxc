@@ -724,6 +724,10 @@ impl<'a> Checker<'a> {
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`
                 // judge the name, so one mistake yields one diagnostic.
+                let default = args.is_empty()
+                    && consteval::Source::new(&self.declarations)
+                        .default_target(callee, type_args)
+                        .is_some();
                 match callee.as_ref() {
                     Expr::Field { base, field, .. } => {
                         self.check_expr(base, sym);
@@ -789,7 +793,7 @@ impl<'a> Checker<'a> {
                             // has no constructor either (#324). A `Logic[]`
                             // takes a vector family implicitly, by `Into`.
                             let enumeration = self.is_enum_ty(&self.path_ty(path));
-                            if kernel || record || enumeration {
+                            if !default && (kernel || record || enumeration) {
                                 let help = if enumeration && path.segments[0].text == "Logic" {
                                     "store the vector into a `Logic[N]` (`let v: Logic[4] = u;`), \
                                      which converts it, or slice or build the array"
@@ -831,19 +835,23 @@ impl<'a> Checker<'a> {
                     // name no conversion: `T(x)` is for a named type. Typed
                     // as an error, they passed silently and did not lower
                     // (#180).
-                    Expr::Tuple { .. } => self.error(
+                    Expr::Tuple { .. } if !default => self.error(
                         codes::TYPE_MISMATCH,
                         expr_span(callee),
                         "a tuple type cannot be called: write the tuple itself, `(a, b)`"
                             .to_string(),
                     ),
-                    Expr::Index { base, .. } if matches!(base.as_ref(), Expr::Index { .. }) => self
-                        .error(
+                    Expr::Index { base, .. }
+                        if !default && matches!(base.as_ref(), Expr::Index { .. }) =>
+                    {
+                        self.error(
                             codes::TYPE_MISMATCH,
                             expr_span(callee),
                             "an array type cannot be called: write the array itself, `[a, b]`"
                                 .to_string(),
-                        ),
+                        )
+                    }
+                    Expr::Tuple { .. } | Expr::Index { .. } if default => {}
                     _ => self.check_expr(callee, sym),
                 }
                 for a in args {

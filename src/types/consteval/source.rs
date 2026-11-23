@@ -7,7 +7,7 @@ use super::{Binding, Environment, LocalKey, Reason, SelectedFunction, Value};
 use crate::resolve::declarations::{AppliedArguments, DeclarationIndex};
 use crate::resolve::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    BinOp, Expr, FnDecl, FnParam, Ident, ImplItem, Path, StructDecl, Type, UnOp,
+    BinOp, Expr, FnDecl, FnParam, GenericArg, Ident, ImplItem, Path, StructDecl, Type, UnOp,
 };
 use crate::types::enum_values::EnumValues;
 
@@ -450,6 +450,157 @@ impl<'i, 'a> Source<'i, 'a> {
 
     pub(super) fn primitive_id(&self, name: &str) -> Option<DefId> {
         self.resolved().builtin(name)
+    }
+
+    pub(crate) fn default_target(&self, callee: &Expr, type_args: &[GenericArg]) -> Option<Type> {
+        if let Expr::Tuple { elems, span } = callee {
+            if !type_args.is_empty() {
+                return None;
+            }
+            return Some(Type::Tuple {
+                elems: elems
+                    .iter()
+                    .map(|element| self.default_target(element, &[]))
+                    .collect::<Option<_>>()?,
+                span: *span,
+            });
+        }
+        let mut root = callee;
+        while let Expr::Index { base, .. } = root {
+            root = base;
+        }
+        let Expr::Path(path) = root else {
+            return None;
+        };
+        let explicit = matches!(callee, Expr::Path(_))
+            && path.segments.last()?.text == "default"
+            && path.segments.len() > 1;
+        let function = explicit
+            .then(|| {
+                self.declarations
+                    .function_path(path)
+                    .or_else(|| self.functions?.function_path(path))
+            })
+            .flatten();
+        let path = if explicit {
+            let qualifier = &path.segments[path.segments.len() - 2];
+            Path {
+                segments: path.segments[..path.segments.len() - 1].to_vec(),
+                span: qualifier.span,
+            }
+        } else {
+            path.clone()
+        };
+        let owner = self.resolved().resolved(path.span)?;
+        let definition = self.resolved().def(owner)?;
+        let type_owner = matches!(
+            definition.kind,
+            DefKind::Builtin | DefKind::Struct | DefKind::Enum | DefKind::TypeAlias
+        ) || (definition.kind == DefKind::Local
+            && definition.span.is_none()
+            && definition.name == "Self");
+        if !type_owner {
+            return None;
+        }
+        if let Some(function) = function {
+            let target = self.type_id(&Type::Path(path.clone()), None)?;
+            let selected = self.default_function(target).ok()??;
+            if !std::ptr::eq(function, selected.function) {
+                return None;
+            }
+        }
+        let ty = if explicit {
+            Type::Path(path)
+        } else {
+            crate::syntax::ast::type_from_expr(callee)?
+        };
+        Some(if type_args.is_empty() {
+            ty
+        } else {
+            Type::Generic {
+                base: Box::new(ty),
+                args: type_args.to_vec(),
+                span: crate::syntax::ast::expr_span(callee),
+            }
+        })
+    }
+
+    pub(super) fn first_variant(&self, owner: DefId) -> Option<Value> {
+        let variant = self
+            .declarations
+            .enum_variants(owner)
+            .or_else(|| self.functions?.enum_variants(owner))?
+            .first()?
+            .0;
+        Some(Value::Variant { owner, variant })
+    }
+
+    pub(super) fn default_function(
+        &self,
+        target: DefId,
+    ) -> Result<Option<SelectedFunction<'a>>, Reason> {
+        let mut selected: Option<SelectedFunction<'a>> = None;
+        for implementation in self.declarations.implementations_for(target).chain(
+            self.functions
+                .into_iter()
+                .flat_map(|index| index.implementations_for(target)),
+        ) {
+            if implementation
+                .trait_
+                .as_ref()
+                .and_then(|path| self.resolved().resolved(path.span))
+                .and_then(|owner| self.resolved().lang_of(owner))
+                != Some("default")
+            {
+                continue;
+            }
+            if !implementation.params.params.is_empty() {
+                return Err(Reason::Unsupported);
+            }
+            let function = implementation
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ImplItem::Fn(function) if function.name.text == "default" => Some(function),
+                    _ => None,
+                })
+                .or_else(|| {
+                    let owner = self
+                        .resolved()
+                        .resolved(implementation.trait_.as_ref()?.span)?;
+                    self.declarations
+                        .trait_decl(owner)
+                        .or_else(|| self.functions?.trait_decl(owner))?
+                        .items
+                        .iter()
+                        .find(|function| function.name.text == "default")
+                })
+                .ok_or(Reason::Unsupported)?;
+            if function.body.is_none()
+                || !function.params.is_empty()
+                || !function.generics.params.is_empty()
+                || function
+                    .ret
+                    .as_ref()
+                    .and_then(|ty| self.type_id(ty, Some(target)))
+                    != Some(target)
+            {
+                return Err(Reason::Unsupported);
+            }
+            let candidate = self
+                .selected_impl_function(function, implementation)
+                .ok_or(Reason::Unsupported)?;
+            if selected.as_ref().is_some_and(|previous| {
+                !std::ptr::eq(previous.function, function)
+                    || previous
+                        .implementation
+                        .is_none_or(|previous| !std::ptr::eq(previous, implementation))
+            }) {
+                return Err(Reason::Unsupported);
+            }
+            selected = Some(candidate);
+        }
+        Ok(selected)
     }
 
     pub(crate) fn binding(&self, path: &Path) -> Option<Binding<'a>> {

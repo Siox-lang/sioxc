@@ -1234,3 +1234,53 @@ fn every_formatted_macro_checks_arity() {
         "a matching warning format argument is valid"
     );
 }
+
+#[test]
+fn aggregate_default_constructors_are_not_array_conversions() {
+    let fixture = |expression: &str, ty: &str| {
+        let source = format!(
+            "module defaults; type Row<N: integer> = integer[N];\n\
+             type Pair = (integer, real);\n\
+             fn sample() {{ let value: {ty} = {expression}; }}"
+        );
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &source, &mut sink);
+        let mut modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        crate::resolve::normalize_aliases(&mut modules, &resolved, &mut sink);
+        check(&modules, &resolved, &mut sink);
+        sink
+    };
+    for (expression, ty) in [
+        ("Row<3>()", "integer[3]"),
+        ("integer[3]()", "integer[3]"),
+        ("integer[3][2]()", "integer[3][2]"),
+        ("Pair()", "Pair"),
+    ] {
+        let sink = fixture(expression, ty);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "{expression}: {:?}",
+            sink.diagnostics()
+        );
+    }
+    for (expression, ty) in [
+        ("integer[3]([1, 2, 3])", "integer[3]"),
+        ("integer[3][2]([[1, 2, 3], [4, 5, 6]])", "integer[3][2]"),
+        ("Pair((1, 2.0))", "Pair"),
+    ] {
+        let sink = fixture(expression, ty);
+        assert_eq!(
+            sink.error_count(),
+            1,
+            "{expression}: {:?}",
+            sink.diagnostics()
+        );
+    }
+    assert_eq!(
+        check_src("module defaults; fn f() { let value: real[2] = integer[2](); }"),
+        1,
+        "a default constructor retains its element type"
+    );
+}

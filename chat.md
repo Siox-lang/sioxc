@@ -31,287 +31,6 @@ Older entries are in git history (`git log -p -- chat.md`).
 
 
 
-### 2026-10-22 — Codex — proposal foundations integrated candidate
-
-User authorized integrating the accepted 9d84a3c/0cffa4d fixes with latest main
-59583ae and upstream corpus migrations to unblock the proposal gate. Candidate
-is /home/max/siox-proposal-integration, feat/proposal-foundations; no commit
-before green. Shared root and old dirty operator-results worktree stay intact.
-Merged type/operator/result layouts, std signed conversions, import aliases
-and regression tests, preserving newer upstream constructor/named-width fixes.
-Use the per-desugaring alias-cycle guard instead of duplicate thread-local
-and scoped guards. Preserve the constructor's low label as well as its width.
-
-Integrated owned diagnostic UI runner/20 self-tests, CI/local wiring, 55 embedded
-explanation pages, catalogue/CLI tests, and proposal/TODO updates. UI coverage
-requires all 54 active codes; actual sibling corpus has 59 cases. The separate
-explanation focus passed (siox-job-3000-1792689072047306989-1674360, peak
-1505787904 bytes), including strict Clippy and real UI snapshots. This is not
-yet integrated acceptance. JSON diagnostics and other proposals remain.
-
-The actual corpus is merging origin/main b21817f locally. Preserve stronger
-fixed numeric/raw-bit assertions, explicit-process/default-write coverage,
-concurrent-driver X checks and dirty instances_test.siox. Apply upstream scalar
-indices rather than old single-element ranges. Do not weaken full-word partial
-write assertions: the migrated process has an explicit zero default; separate
-neutral-lane checks cover the no-default case. Existing probes/UI stay intact.
-
-### 2026-10-22 — Codex — first integrated regression check
-
-Focused operator results, aliases/imports, numeric fixed comparisons, enum
-arithmetic, signed-label returned arrays and explanation CLI tests passed in
-unit siox-job-3000-1792689634831716778-1694910. Wide-conversion tests exposed
-two old embedded concatenation initializers relying on implicit 3/5-to-8-bit
-widening, now correctly rejected by upstream's concat width inference. Migrate
-those initializers to explicit unsigned[8](...) conversions, preserving both
-numeric assertions and natural part-width checks. No compiler rule weakened.
-The unit is terminal exit101; peak1319186432 bytes, not a memory failure.
-
-### 2026-10-22 — Codex — wide conversion integration repaired; full gate next
-
-The migrated wide test then exposed upstream's named signed/unsigned fast
-paths bypassing the now-multiword-safe std From implementations. Arithmetic
-sign fill poisoned the entire output on X and lost individual Z/weak values.
-Removed both duplicated hardware/procedural shortcuts and their private helper
-functions, letting the ordinary source-owned conversion path handle every
-width. No LLVM/runtime changes or weakened assertions. Native ordinary/debug
-wide conversion and waveform parity now pass, alongside all 14 both-engines
-regressions: unit siox-job-3000-1792689811914704010-1697048 is terminal
-success/0, peak1328115712 bytes. Guarded-launcher self-tests also passed.
-
-Freezing the isolated candidate and actual corpus for full local CI in both
-modes, 59-case UI comparisons, strict Clippy, direct native regression runs
-and complete ordinary/debug VCD parity. AST-only graph refresh is included.
-Retain evidence under ~/.cache/siox-jobs/proposal-foundations-20261022. No
-commit or push while this integrated gate is pending or red.
-### 2026-10-22 — Codex — integrated diagnostic compatibility repair
-
-Full gate 1697797 reached a failing checker_issues_2 regression: #178 still
-correctly diagnoses recursive alias expansion, but the imported guard changed
-the rendered name from Tree to m::Tree. Stopped this owned gate after that
-confirmed failure rather than mutate its live sources or claim remaining
-checks passed. Restore upstream's exact message/help, retaining the local
-per-desugaring guard and recursion tests. No assertion changes. The AST-only
-refresh produced 6426 nodes/17717 edges; four vendored libfst files were only
-partially extracted. Formatting, runner tests, examples, frontend checks/Clippy
-and build passed before the failure; full acceptance remains outstanding.
-
-### 2026-10-22 — Codex — alias compatibility focus green
-
-Restored upstream's existing alias-cycle message/help without changing its
-stable code, spans or the scoped recursion guard. checker_issues_2 (4 tests)
-and import_forms (11 tests) pass: unit
-siox-job-3000-1792690243068975435-1709050 terminal success/0, peak677093376.
-Formatting is applied before freezing again. Restarting the complete matrix
-with separate retained logs at proposal-foundations-resume-20261022, and Rust
-1.90 pinned for plain Cargo consumers as well as explicit invocations. No
-commit/push; all remaining acceptance stages must actually finish green.
-### 2026-10-22 — Codex — diagnostic foundations integrated acceptance green
-
-Full guarded unit siox-job-3000-1792690281823980932-1709718 is terminal
-exited/success/0, peak1881366528 bytes (below the unchanged 2 GiB hard cap).
-Retained logs: ~/.cache/siox-jobs/proposal-foundations-resume-20261022, plus
-the matching unit log. Rust 1.90, one Cargo worker, two test threads. Passed:
-fmt; all 20 runner self-tests; Phase 1 examples; frontend-only check/strict
-Clippy; complete default/bitpack Rust suites, including all 23 DWARF tests
-each; all-target/all-feature strict Clippy; both actual 255-program corpora;
-and both 59-case UI suites with 54/54 active codes and no reblessing.
-
-Also built/executed 28 native binaries: fixed, alias-result, nested operators,
-wide signed conversions, returned negative-label real arrays, inactive bounds,
-and packed Logic indices, each ordinary/debug and default/bitpack. All 14
-complete ordinary/debug VCD comparisons match. Source a7d9987116060cf1 and
-corpus b43131b3d6fd6961 hashes match before/after. The AST graph refreshed to
-6428 nodes/17720 edges; four vendored libfst files were partially extracted.
-The isolated guard-launcher success/failure/serialization/OOM self-check passed.
-
-Commit only reviewed integration code, diagnostic runners/pages/fixtures,
-CI/status docs and this log. Corpus merge preserves stronger fixed raw/numeric,
-explicit-process/default-write and X/Z-neutral assertions. Include only the
-owned instances port-type correction and ui/ additions beyond the upstream
-merge; leave all pre-existing untracked probe sources/binaries alone. Do not
-sweep the dirty root, old candidates, pending port-check work or graph output.
-Only post-gate documentation/log changes follow this frozen-source acceptance.
-
-Completion estimate: compiler-foundations proposal roughly 25% (engineering
-estimate): diagnostic UI snapshots and explanations are complete; JSON/
-suggestions, shared constant evaluation, DefId registries and residual hook
-cleanup remain. Other language proposals are not implemented. Keep commits
-local; pushing remains a separate decision.
-### 2026-10-22 — Codex — final staging checks green
-
-Staging surfaced trailing blank EOF lines in new diagnostic Markdown pages,
-previously untracked during diff --check. Normalized only that formatting and
-reran diagnostic library tests, all explanation CLI pages, fresh binaries and
-all 59 UI snapshots in both modes. Unit
-siox-job-3000-1792691918583497160-1759205 exited/success/0, peak1660747776
-bytes. Whitespace checks now pass for every staged file. No compiler logic,
-std or corpus source changes after full matrix 1709718; no snapshots blessed.
-### 2026-10-22 — Codex — structured diagnostics ownership
-
-Continuing compiler-foundations section 2 after ece29b7/b9cbba7 acceptance.
-Own diag data/JSON writer, compiler render adapter, CLI --error-format and
-existing parser label/attribute migration diagnostics plus tests/docs. No
-syntax change, std, IR, LLVM or runtime edits. Use the existing sink and source
-map; preserve text output. JSON stderr must not contain progress/status text;
-expose source spans, labels, notes/help and applicability-tagged edits. Exercise
-real compilation failures, source Unicode/escaping and apply/recompile checks.
-No new dependency or commit/push before full required gates are green.
-### 2026-10-22 — Codex — JSON implementation and focused evidence
-
-Implemented NDJSON diagnostics through the existing sink/API, --error-format,
-Unicode-scalar coordinates with raw byte ranges, safe escaping and structured
-single/multipart suggestions. Human rendering remains unchanged. CLI JSON mode
-suppresses plain progress/status output; input/selection/backend and early
-compiler-option failures are JSON. Clap usage/help/version intentionally remain
-text. No dependencies, std/IR/LLVM/runtime edits or language grammar changes.
-
-Focused frontend diagnostic tests and all 61 parser tests passed in unit
-siox-job-3000-1792692844329451555-1762194 (success/0, peak1591660544).
-All-target/all-feature Clippy, all 61 real JSON/schema cases, both initial
-apply/recompile migration probes and all 61 unchanged/new human UI cases passed
-in siox-job-3000-1792693137869524875-1763741 (success/0, peak800337920).
-The preceding Clippy focus caught a deliberately reversed test range, rewritten
-as dynamic endpoints so the invalid-span test remains without a lint allow.
-
-Post-focus review found AST expression spans omit grouping parentheses, so
-attribute edits now copy the complete source value tail rather than an AST
-span; add grouped-value round-trip coverage. Suppress source edits for reparsed
-macro tokens until expansion identity can prove them safe. Comment-bearing/
-recovered metadata needs review; process comments and raw numeric spelling are
-retained. The test applier rejects overlapping edits, including insertions
-inside replacements, and preserves same-offset insertion order. All 24 current
-Python runner self-tests pass. CI/local CI and the wire-format/proposal docs
-are updated. The final full acceptance matrix is still required before commit.
-### 2026-10-22 — Codex — full JSON gate terminal; fixture-only correction
-
-Unit siox-job-3000-1792693551391532997-1764884 terminated exit1, peak1881653248.
-Both complete Rust suites (23 DWARF each), all516 frontend-only tests, all24
-runner tests, strict Clippy, both actual255-program corpora and both61-case
-human UI suites passed. Both JSON gates cover54/54 codes but failed only the
-metadata migration apply/recompile fixture (E-P007), plus its missing-fix
-summary. Manual post-run hashes still match source70b47837c005d115 and corpus
-7808e68c2ab62765, proving no live-source drift despite early script exit.
-
-The copied arithmetic payload was preserved correctly but the attribute-value
-checker currently accepts only Expr::Int for integer metadata. Correct the
-dedicated full-compile fixture to the valid parenthesized literal ((7)), keep
-the compound-expression parser regression and every apply/recompile assertion.
-Record the metadata constant-expression limitation under shared-consteval TODO.
-No compiler logic or Rust test source changes. Recheck fresh default/bitpack
-JSON/UI gates before committing; no old golden snapshots are reblessed.
-### 2026-10-22 — Codex — JSON and atomic suggestions acceptance complete
-
-Combined acceptance is green: full unit1764884 passed both complete Rust suites
-(all23 DWARF tests each), all516 frontend-only tests, all24 runner self-tests,
-strict frontend/all-target/all-feature Clippy and both actual255-program
-corpora. Its only red steps were the metadata fixture's unsupported arithmetic
-payload in each JSON apply/recompile check, not a compiler-code regression.
-The terminal job source/corpus hashes were manually verified unchanged before
-correcting that fixture; all compiler logic and Rust test sources stay identical.
-
-After the fixture-only correction to ((7)), final unit
-siox-job-3000-1792695251706234984-1815312 is exited/success/0, peak91414528.
-Fresh default/bitpack binaries each pass61 JSON/schema cases,54/54 active
-codes, both complete atomic-edit apply/recompile migrations and all61 human
-snapshots. Focused diagnostics/parser tests and all24 runner tests pass too.
-Hashes f57a87cd2e3e7d1b / cf825c14f3ab3f92 match before/after this final run.
-No existing59 golden snapshots were reblessed. No source-rewriting CLI was added.
-Metadata constant-expression support is explicitly retained in TODO. AST graph
-6498/17859 is current for the compiler code; vendor extraction warnings remain.
-
-Commit only owned diagnostic/CLI/parser migration API, runners/CI, docs and
-the two new corpus fixtures. Preserve all root/peer work and unrelated corpus
-probes/artifacts. No std/IR/LLVM/runtime/dependency changes. Completion estimate:
-compiler-foundations proposal roughly35% (engineering estimate), with diagnostic
-snapshots/explanations/JSON/initial atomic suggestions complete; shared const
-evaluation, declaration-ID registries and residual hook cleanup still remain.
-Keep commits local; no push. The broader proposals goal is not complete.
-
-### 2026-10-22 — Codex — shared integer constant evaluation
-
-Own types/consteval.rs and integer adapters in types/{patterns,indexing,calls}.
-Migrate checked integer analysis first, retaining the wider pattern-bound
-domain. Compare legacy answers over actual corpus/Rust tests before deleting
-folders; test overflow, division and constant cycles. Typed logical/bitwise
-operations, elab/IR, metadata and function evaluation remain subsequent
-migrations. Preserve peer work; guarded gates before commits, no push.
-
-### 2026-10-22 — Codex — integer evaluator parity passed
-
-Guarded unit siox-job-3000-1792696015672104583-1817530 is
-exited/success/0 (peak1881124864 bytes). With temporary side-by-side oracles,
-all523 frontend tests, the full Rust suite (including all23 DWARF tests) and
-the actual255-program corpus pass. Every old successful fold agreed with the
-shared evaluator; the legacy oracle's division/remainder were made checked
-to avoid reintroducing the known signed-minimum panic during comparison.
-
-Delete the three old implementations and temporary assertions now. Keep thin
-checker adapters, and avoid evaluating a literal twice in constant_value.
-Seven new tests cover arithmetic, failures/spans, numeric boundaries, declared
-constants/qualified lookup, parameter shadowing and cycles. Update proposal
-and TODO with explicit remaining elab/IR/typed-operator/metadata work. Final
-default+bitpack full gates and direct native constant examples next; no push.
-
-### 2026-10-22 — Codex — shared integer migration accepted
-
-Final guarded unit siox-job-3000-1792696836922667094-1842494 is
-exited/success/0, peak1881325568 bytes. Evidence is retained under
-/home/max/.cache/siox-jobs/consteval-final-20261022 and its service log.
-The final source has no legacy oracles/duplicate integer folders. All523
-frontend tests, both complete Rust suites (all23 DWARF tests each), strict
-frontend/all-target/all-feature Clippy, formatting, runner self-tests and
-example checks pass. Both actual255-program corpora pass; each representation
-also passes61 exact human snapshots and61 JSON/schema cases,54/54 active
-codes and both atomic migration apply/recompile checks. Eight directly built
-and executed native constant examples plus VCD checks pass (four per mode).
-Source hash67e980ae8abef7b3 / corpus hashcf825c14f3ab3f92 match before/after.
-
-AST graph refreshed to6523 nodes/17907 edges; existing vendored C extraction
-warnings remain, and no semantic/API extraction was requested. Corpus and
-peer/root work are unchanged. Commit only these owned eight files: checked
-integer evaluator/tests, checker adapters, proposal/TODO status and this log.
-Completion estimate: compiler-foundations roughly40%, an engineering estimate.
-Elab/IR and full typed const evaluation, metadata constants, declaration-ID
-registries and hook cleanup remain; broader language proposals are not done.
-Keep the commit local on feat/proposal-foundations; no push.
-
-### 2026-10-23 — Codex — cross-stage constant interpreter
-
-Own types/consteval.rs, elab.rs parameter adapter and IR builders.rs constant
-function adapters. Share expression traversal, checked arithmetic and pure
-function control flow, with explicit analysis/native-word domains and borrowed
-binding context. Keep legacy scalar logical/bitwise hooks visibly transitional
-pending typed source-owned operators. Preserve module constant identities and
-parameter shadowing, avoid cloning whole maps on calls, and propagate a
-selected branch's failure rather than silently falling through to a later
-return. Compare legacy answers on actual Rust/corpus sources before removal.
-Found an additional early folder in resolve::check_generic_arity; migration
-must respect resolve -> types layering. No unrelated issue fixes or push.
-
-### 2026-10-23 — Codex — cross-stage parity passed; final gate next
-
-Guarded siox-job-3000-1792712818923996669-2025417 is exited/success/0,
-peak1881366528. All531 frontend tests, the complete default Rust suite
-(all23 DWARF cases) and actual256-program corpus pass with old/new expression
-and statement oracles: every previous successful answer agreed. Removed all
-temporary oracles and legacy walkers afterwards. Final focused2051782 is
-exited/success/0: all16 evaluator tests and strict frontend Clippy pass.
-
-The shared interpreter borrows root bindings and parameter names, preserves
-analysis versus native-word intermediates, rejects failed selected branches
-instead of silently falling through, and walks long else-if chains without
-AST clones or extra function depth. The actual corpus has one owned new
-constant-call/width example and its README entry; peer probes are untouched.
-Explicit legacy scalar operator hooks remain transitional and are documented,
-not presented as completed typed source-owned evaluation. Additional resolve
-width folding and enum-valued table folding remain tracked with layering intact.
-
-Freeze code/docs for final full default+bitpack Rust/corpus/UI/JSON/Clippy gates,
-AST-only graph update and16 direct native ordinary/debug runs with VCD checks.
-Keep changes local until green; no push. Compiler-foundations roughly50%
-engineering estimate; typed const semantics and declaration-ID registries remain.
-
 ### 2026-10-23 — Codex — cross-stage scalar interpreter accepted
 
 Final guarded siox-job-3000-1792713740082085988-2052370 is
@@ -5809,3 +5528,77 @@ values/defaults/attributes/suffix/registry/hook work stay required at86%.
 Separate defaults2279417 and applied-identity baseline2248303 are NOT in this
 source; canceled/unexecuted default2220366 is not a pass. Baseline reproduction
 is a negative test, never a green compiler. No time/integer semantic changes.
+
+### 2026-11-22 — Codex — integrate typed defaults for the full combined gate
+
+Own the typed-default interpreter/query, omitted-field consumer, expression-
+to-type helper, checker constructor/type inference, tuple/alias type-callee
+normalization, Process default adapter, focused source/native tests and the
+language default examples. Copy ONLY these owned deltas from isolated defaults
+worktree onto a1a68ee0; preserve its newer field metadata and borrowed traits.
+Do not copy old chat/proposal snapshots or inventory; no peer/corpus edits.
+
+Focus2343916 completed exited/success/0 with source1b0ad0c5 and ACTUAL corpus
+04c35557 unchanged: all823 frontend/14 imports, exact three new interpreter
+and one checker regressions, strict frontend/all-feature fixture Clippy,
+old/new native suites in both modes and12 direct ordinary/debug corpus/VCD
+runs. The native fixture includes applied alias defaults, tuple and nested
+array execution with ordinary/debug waveform parity. Earlier2330838/2338311/
+2340090/2340303 failures stay rejected evidence, not accepted checks.
+
+This focused pass is not full acceptance. Freeze the integrated source, ACTUAL
+corpus and fresh typed-default full/native drivers before queueing the entire
+combined gate with all prior GDB/corpus/diagnostic/Clippy/script checks intact.
+Keep normal caps, dedicated primary target and generated debug checks. No
+commit until that gate passes; no push/PR/wiki. Generic/packed default ownership,
+remaining value/attribute/suffix/registry/hook contexts and all five foundation
+sections stay required at about86%. Applied-contracts draft is separate.
+
+### 2026-11-23 — Codex — retain timeout evidence and rerun the complete gate
+
+Full2351847 is terminal failed/timeout/status15: actual RuntimeMaxSec was1h,
+started Nov22 23:31:37 and stopped Nov23 00:31:38, peak1,612,705,792 bytes.
+It completed827 frontend/14 imports, focused native checks, original four
+GDB FIFO/wide smokes and CI full Rust/default+bitpack/Clippy/first ACTUAL274
+corpus/UI/JSON stages before termination during the bitpack corpus. This is
+not a completed acceptance and cannot authorize a commit. Preserve logs and
+staged artifacts; no source bug or OOM claim from the timeout.
+
+Own only this dated coordination entry and pending-proposal status. Rerun ALL
+the same full/native checks in fresh Nov23 artifact paths with SIOX_JOB_TIMEOUT
+3h to allow the measured workload plus queued focused compile. Do not raise
+memory limits, jobs or test threads, skip generated-debug checks, or resume
+only the unfinished corpus stage. Fresh source/corpus fingerprints and final
+terminal success remain required before any local commit. No push/PR/wiki.
+Prune Oct22 log entries per the one-month rule; peer work remains untouched.
+
+### 2026-11-23 — Codex — typed defaults full gate accepted locally
+
+Full2440795 completed exited/success/0 at12:40:47 CET, started11:40:52,
+peak1,305,010,176 bytes. Independent read-only review script passed all stages:
+827 frontend/60 evaluator/14 imports,884 default/863 bitpack library tests,
+126 integration targets per mode, ALL48 GDB/DWARF cases plus original four
+FIFO/wide debugger smokes, both ACTUAL274 corpora,71 UI/71 JSON/56 codes/two
+migrations per mode, strict Clippy,80 script/36 waveform tests/12 artifacts,
+72 direct ordinary/debug programs and four aggregate timeline/VCD/parity runs.
+Exact new source/native listings and executed tests are present in both modes.
+
+Accept supported typed constant defaults/omitted record fields and the shared
+resolved type-target query across evaluator/checker/alias/tuple/Process adapters.
+Array/tuple conversion rejection and original error/scope/identity assertions
+remain. Keep all failed/canceled focused evidence and one-hour timeout2351847;
+none is counted as passing. No production code changes after the full proof.
+
+Source55e3e2464106e9945dc4808b68a254e71e50f8a39dd27502e93e4cc330066e03
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after/current review. Code-only excluding Markdown:
+b739750cb9481b66ed1f97ca3bff3c21a2a3ff8997f38a890c48fc8133622f02.
+Only this acceptance Markdown afterward. Actual normal memory/no-swap/no-core
+caps and Rust/jobs/threads/host debug/generated-debug/pinned libfst are unchanged;
+only wall-clock allowance3h was set for measured workload plus queue.
+
+Commit ONLY the owned17 paths locally after a final unchanged-code/diff review.
+No push/PR/wiki or peer/main/corpus changes. Separate applied2481422 and real-
+storage2513466 candidates are NOT included and remain unaccepted. All five
+foundations sections stay open at86%: fully applied/value/attribute/suffix/
+registry/hook work, including native aggregate/default-body equivalence, remains.

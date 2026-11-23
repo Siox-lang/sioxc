@@ -164,6 +164,10 @@ fn constructor(ty: Type) -> Option<Expr> {
             index,
             span,
         }),
+        Type::Tuple { elems, span } => Some(Expr::Tuple {
+            elems: elems.into_iter().map(constructor).collect::<Option<_>>()?,
+            span,
+        }),
         _ => None,
     }
 }

@@ -496,7 +496,20 @@ impl Lower<'_, '_> {
                 args,
                 ..
             } => {
-                self.expr(callee);
+                // An alias-expanded tuple callee names a type, not tuple values.
+                if matches!(callee.as_ref(), Expr::Tuple { .. }) && args.is_empty() {
+                    if let Some(mut target) = type_from_expr(callee) {
+                        self.ty(&mut target);
+                        if let Type::Generic { base, args, .. } = target {
+                            if let Type::Path(path) = *base {
+                                **callee = Expr::Path(path);
+                                *type_args = args;
+                            }
+                        }
+                    }
+                } else {
+                    self.expr(callee);
+                }
                 for arg in type_args {
                     self.generic_arg(arg);
                 }

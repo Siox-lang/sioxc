@@ -522,113 +522,122 @@ impl<'a> Checker<'a> {
             // `unsigned[16](x)`, `signed[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call {
                 callee,
+                type_args,
                 args,
                 qualifier,
                 ..
-            } => match callee.as_ref() {
-                Expr::Index { base, index, .. } => {
-                    let head = match base.as_ref() {
-                        Expr::Path(path) => self.path_key(path),
-                        _ => None,
-                    };
-                    let (w, low) = self.index_shape(index);
-                    match head.filter(|key| self.array_families.contains(key)) {
-                        Some(head) => Ty::Array {
-                            elem: Box::new(self.array_element_ty(&head)),
-                            family: Some(head),
-                            len: w,
-                            low,
-                        },
-                        None => Ty::Error,
+            } => {
+                if args.is_empty() {
+                    if let Some(target) =
+                        consteval::Source::new(&self.declarations).default_target(callee, type_args)
+                    {
+                        return self.ast_ty(&target);
                     }
                 }
-                Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
-                    // A named struct/enum: a `From` conversion, typed as the
-                    // target (fn calls and kernel conversions fall through).
-                    name if name != "integer"
-                        && name != "resize"
-                        && match self.path_ty(p) {
-                            Ty::Named(id) => self
-                                .resolved
-                                .def(id)
-                                .is_some_and(|d| matches!(d.kind, DefKind::Struct | DefKind::Enum)),
-                            _ => false,
-                        } =>
-                    {
-                        self.path_ty(p)
-                    }
-                    "integer" => Ty::Integer,
-                    "natural" => Ty::Natural,
-                    "Char" => self.ty_from_head("Char"),
-                    // Resize keeps the argument's element and nominal family.
-                    "resize" => {
-                        // A named width too: `resize(v, WIDTH)` (#239).
-                        let w = args
-                            .get(1)
-                            .and_then(|width| self.constant_value(width))
-                            .unwrap_or(0)
-                            .max(0) as u32;
-                        let (elem, family) = match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Array { elem, family, .. }) => (elem, family),
-                            _ => (Box::new(self.ty_from_head("Logic")), None),
+                match callee.as_ref() {
+                    Expr::Index { base, index, .. } => {
+                        let head = match base.as_ref() {
+                            Expr::Path(path) => self.path_key(path),
+                            _ => None,
                         };
-                        Ty::Array {
-                            elem,
-                            family,
-                            len: w,
-                            low: 0,
+                        let (w, low) = self.index_shape(index);
+                        match head.filter(|key| self.array_families.contains(key)) {
+                            Some(head) => Ty::Array {
+                                elem: Box::new(self.array_element_ty(&head)),
+                                family: Some(head),
+                                len: w,
+                                low,
+                            },
+                            None => Ty::Error,
                         }
                     }
-                    _ => self.free_call_return_type(p, args, sym),
-                },
-                Expr::Path(path) if path.segments.len() >= 2 => {
-                    let Some(owner) = self.associated_owner_key(path) else {
-                        return Ty::Error;
-                    };
-                    let name = &path.segments[path.segments.len() - 1].text;
-                    match self.methods.get(&(owner.clone(), name.clone())) {
-                        // `ufixed<6, 2>::resize(x)`: the applied type is
-                        // `Self`, and so is a result of the bare family.
-                        Some(Some(ret)) if qualifier.is_some() => {
-                            let applied = qualifier
-                                .as_deref()
-                                .map_or(Ty::Error, |qualifier| self.ast_ty(qualifier));
-                            if matches!(ret, Type::Path(_))
-                                && self.type_key(ret).as_deref() == Some(owner.as_str())
-                            {
-                                applied
-                            } else {
-                                self.ast_ty_for_owner(ret, &applied)
+                    Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
+                        // A named struct/enum: a `From` conversion, typed as the
+                        // target (fn calls and kernel conversions fall through).
+                        name if name != "integer"
+                            && name != "resize"
+                            && match self.path_ty(p) {
+                                Ty::Named(id) => self.resolved.def(id).is_some_and(|d| {
+                                    matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                                }),
+                                _ => false,
+                            } =>
+                        {
+                            self.path_ty(p)
+                        }
+                        "integer" => Ty::Integer,
+                        "natural" => Ty::Natural,
+                        "Char" => self.ty_from_head("Char"),
+                        // Resize keeps the argument's element and nominal family.
+                        "resize" => {
+                            // A named width too: `resize(v, WIDTH)` (#239).
+                            let w = args
+                                .get(1)
+                                .and_then(|width| self.constant_value(width))
+                                .unwrap_or(0)
+                                .max(0) as u32;
+                            let (elem, family) = match args.first().map(|a| self.type_of(a, sym)) {
+                                Some(Ty::Array { elem, family, .. }) => (elem, family),
+                                _ => (Box::new(self.ty_from_head("Logic")), None),
+                            };
+                            Ty::Array {
+                                elem,
+                                family,
+                                len: w,
+                                low: 0,
                             }
                         }
-                        Some(Some(ret)) => self.ast_ty_for_owner(
-                            ret,
-                            &self.associated_owner_ty(path).unwrap_or(Ty::Error),
-                        ),
-                        Some(None) => Ty::Void,
-                        None if matches!(name.as_str(), "default" | "new") => self
-                            .associated_conversion_ty(path)
-                            .unwrap_or_else(|| self.free_call_return_type(path, args, sym)),
-                        None => self.free_call_return_type(path, args, sym),
+                        _ => self.free_call_return_type(p, args, sym),
+                    },
+                    Expr::Path(path) if path.segments.len() >= 2 => {
+                        let Some(owner) = self.associated_owner_key(path) else {
+                            return Ty::Error;
+                        };
+                        let name = &path.segments[path.segments.len() - 1].text;
+                        match self.methods.get(&(owner.clone(), name.clone())) {
+                            // `ufixed<6, 2>::resize(x)`: the applied type is
+                            // `Self`, and so is a result of the bare family.
+                            Some(Some(ret)) if qualifier.is_some() => {
+                                let applied = qualifier
+                                    .as_deref()
+                                    .map_or(Ty::Error, |qualifier| self.ast_ty(qualifier));
+                                if matches!(ret, Type::Path(_))
+                                    && self.type_key(ret).as_deref() == Some(owner.as_str())
+                                {
+                                    applied
+                                } else {
+                                    self.ast_ty_for_owner(ret, &applied)
+                                }
+                            }
+                            Some(Some(ret)) => self.ast_ty_for_owner(
+                                ret,
+                                &self.associated_owner_ty(path).unwrap_or(Ty::Error),
+                            ),
+                            Some(None) => Ty::Void,
+                            None if matches!(name.as_str(), "default" | "new") => self
+                                .associated_conversion_ty(path)
+                                .unwrap_or_else(|| self.free_call_return_type(path, args, sym)),
+                            None => self.free_call_return_type(path, args, sym),
+                        }
                     }
-                }
-                // A method call `recv.method(args)` types as the method's
-                // declared return type (spec 3.20); the receiver's type head
-                // selects the impl. An unknown method or a `self`-only method
-                // (no return) is opaque (`Error` suppresses further checks).
-                Expr::Field { base, field, .. } => {
-                    let recv = self.type_of(base, sym);
-                    match self
-                        .ty_head(&recv)
-                        .and_then(|h| self.methods.get(&(h, field.text.clone())))
-                    {
-                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &recv),
-                        Some(None) => Ty::Void,
-                        None => Ty::Error,
+                    // A method call `recv.method(args)` types as the method's
+                    // declared return type (spec 3.20); the receiver's type head
+                    // selects the impl. An unknown method or a `self`-only method
+                    // (no return) is opaque (`Error` suppresses further checks).
+                    Expr::Field { base, field, .. } => {
+                        let recv = self.type_of(base, sym);
+                        match self
+                            .ty_head(&recv)
+                            .and_then(|h| self.methods.get(&(h, field.text.clone())))
+                        {
+                            Some(Some(ret)) => self.ast_ty_for_owner(ret, &recv),
+                            Some(None) => Ty::Void,
+                            None => Ty::Error,
+                        }
                     }
+                    _ => Ty::Error,
                 }
-                _ => Ty::Error,
-            },
+            }
             // A data field access (`p.data`, `self.data`): the field's declared
             // type. This was `Ty::Error`, which suppresses every check that
             // consults it — so the strict assignment-width rule had nothing to

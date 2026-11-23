@@ -4,7 +4,7 @@ use super::*;
 use crate::syntax::ast::type_span;
 
 impl<'a> Interpreter<'a> {
-    fn instantiated_type<'t>(&self, ty: &'t Type) -> Option<std::borrow::Cow<'t, Type>>
+    pub(super) fn instantiated_type<'t>(&self, ty: &'t Type) -> Option<std::borrow::Cow<'t, Type>>
     where
         'a: 't,
     {
@@ -241,7 +241,7 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn contract(
+    pub(super) fn contract(
         &mut self,
         ty: &Type,
         receiver: Option<DefId>,
@@ -299,7 +299,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn array_bounds(
+    pub(super) fn array_bounds(
         &mut self,
         index: Option<&Expr>,
         inferred: Option<usize>,
@@ -744,7 +744,12 @@ impl<'a> Interpreter<'a> {
                     } else if let Some(Value::Record { fields, .. }) = &previous {
                         fields.get(position).cloned().ok_or_else(fail)?
                     } else {
-                        return Err(fail());
+                        self.default_value(
+                            &field.ty,
+                            Some(owner),
+                            depth + 1,
+                            expr_span(expression),
+                        )?
                     };
                     fields.push(value);
                 }

@@ -9,6 +9,65 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
+Latest accepted local candidate (2026-11-23): full service
+1795430452700746442-2440795 completed exited/success/0 at12:40:47 CET
+(started11:40:52), peak1,305,010,176 bytes. Independent read-only audit passed:
+827 frontend/60 evaluator/14 imports,884 default/863 bitpack library tests,
+126 integration targets per mode, ALL48 GDB/DWARF cases plus the original four
+FIFO/wide CI debugger smoke checks, both ACTUAL274-program corpora,71 UI/
+71 JSON/56 diagnostic codes/two apply-recompile migrations per mode, strict
+Clippy,80 script tests/36 waveform tests/12 artifacts,72 direct ordinary/debug
+programs and four aggregate timeline/VCD/parity runs. New source/native tests
+are exact-listed and executed, not inferred from a zero-test success.
+
+This accepts shared typed default evaluation for supported constant contexts
+and omitted record fields, registered Default selection and original source
+enum/implementation identity. Explicit applications and alias-expanded tuple/
+nested-array default constructors retain their types through checking, tuple
+normalization and Process lowering. Ordinary one-argument array/tuple conversion
+rejections and unsupported/effectful/ambiguous/recursive evaluator failures
+remain intact. No std values, grammar, peer or corpus sources were changed.
+
+Source55e3e2464106e9945dc4808b68a254e71e50f8a39dd27502e93e4cc330066e03
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after and current independent review. Code-only excluding Markdown:
+b739750cb9481b66ed1f97ca3bff3c21a2a3ff8997f38a890c48fc8133622f02.
+Only acceptance Markdown follows the proof. Actual2GiB hard/1.5GiB soft/no-swap/
+no-core caps, jobs1/threads2/Rust1.90/host debug1, generated debug checks and
+pinned dependency remain unchanged. The3h wall-clock allowance covers measured
+work/queue; prior one-hour timeout2351847 remains failed evidence, not a pass.
+
+All FIVE sections remain required at about86%, not the entire compiler. This
+is not completion of generic/packed/open-value defaults, remaining attributes/
+suffixes,37 declaration registries or residual hooks. Runtime explicit aggregate
+overrides/helper/branch bodies and differently named registered default providers
+still need native equivalence/reproduction and a shared typed-value consumer;
+the legacy word/layout default pipeline is not claimed solved. Applied-contract
+and duplicate-real-map drafts are NOT included. No push, PR or wiki publication.
+
+Integrated candidate history (2026-11-22): typed default construction and
+omitted record fields share the existing interpreter, registered Default
+selection and source enum identities. Explicit applications and alias-expanded
+array/tuple type callees survive checking, tuple normalization and Process
+lowering. Ordinary one-argument array/tuple conversions remain rejected.
+Isolated focus2343916 completed exited/success/0 with unchanged source1b0ad0c5
+and ACTUAL corpus04c35557:823 frontend/14 imports, four exact new regressions,
+strict Clippy, old/new native suites in both modes,12 direct ordinary/debug
+corpus/VCD runs and new default/tuple/nested-array waveform parity. Earlier
+focused failures remain rejected evidence. This is NOT full acceptance: the
+fresh combined full gate is still required before committing. Generic/packed
+nominal default ownership and all original remaining foundations work stay
+open at about86%; no peer/corpus edits or push. The applied-contracts draft is
+separate and not part of this candidate.
+
+Full2351847 subsequently timed out at its actual one-hour RuntimeMaxSec during
+the second corpus run (Nov23 00:31:38 CET), not an OOM or reported assertion.
+All preceding full Rust/default+bitpack, debugger, first corpus/UI/JSON/Clippy
+stages passed, but that incomplete job is NOT acceptance. The full unchanged
+scope must rerun with fresh artifacts and a3h wall-clock allowance for the
+measured workload/queue; memory, parallelism and generated-debug checks stay
+unchanged. No local commit is authorized by the failed gate.
+
 Latest local acceptance (2026-11-22): full combined service
 1795380680496268099-2179693 completed exited/success/0 at22:57:52 CET
 (started21:51:20), peak1,612,677,120 bytes under unchanged normal limits.
