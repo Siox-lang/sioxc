@@ -9,7 +9,41 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Latest accepted local candidate (2026-11-23): full service
+Latest accepted constant-storage checkpoint (2026-11-23):
+Lowering.consts_real and its two per-scope clones are removed. Existing
+const_values owns typed reals and the literal fallback; exact scalar/table
+hits remain constant-time before descendant scans. Only that deleted map
+leaves the inventory:81 classified fields/36 actual migrations remain.
+
+Isolated focus2601778 finished exited/success/0 at13:05:06 CET, source d6e28e68
+and ACTUAL corpus04c35557 unchanged. All824 frontend/14 imports, new unit,
+strict frontend/native Clippy, old native suites and new real-owner/function/
+impl/nested-local scopes in both modes, plus16 direct ordinary/debug real/time
+programs with VCD checks passed. The nested scope keeps held=7/COPY=9 and
+verifies outer COPY=7 afterward. The original fixture incorrectly expected a
+later same-block local not to shadow before initialization; Siox deliberately
+hoists block locals. That forward-read diagnostic/runtime gap remains open;
+this cleanup neither changes scoping nor adds a spelling-based fallback.
+
+Full2624118 finished exited/success/0 at14:15:41 CET (started13:06:55), peak
+1,612,423,168 bytes under normal caps. Independent read-only audit passed all
+828 frontend/60 evaluator/14 imports,885 default/864 bitpack library tests,
+127 integration targets per mode, ALL48 GDB/DWARF cases and four original
+FIFO/wide smokes, both ACTUAL274 corpora,71 UI/71 JSON/56 codes/two migrations
+per mode, strict Clippy,80 script/36 waveform tests/12 artifacts,88 direct
+ordinary/debug programs and four aggregate timeline/VCD/parity runs. Exact
+new source/native names and executed tests are present in both storage modes.
+
+Sourcef844fcf666ea0ca88745500c9c9e8ff9e4fd9ab41d6857e6018b8c86ddd165d2
+and corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after/current review. Code-only excluding Markdown:
+850c1a116d55dde56398e04ad2fcb175d4de94023d257ec154f298169bf53e2c.
+Only acceptance Markdown follows. Earlier failed/canceled and expected-failure
+baseline jobs remain distinct from passing compiler checks. Applied contracts
+and the isolated DefId derivation-guard followup are NOT included. All FIVE
+foundations sections stay required at about86%; no push, PR or wiki publication.
+
+Previous accepted local candidate (2026-11-23): full service
 1795430452700746442-2440795 completed exited/success/0 at12:40:47 CET
 (started11:40:52), peak1,305,010,176 bytes. Independent read-only audit passed:
 827 frontend/60 evaluator/14 imports,884 default/863 bitpack library tests,

@@ -26,7 +26,6 @@ impl<'a> Lowering<'a> {
             self.consts.remove(name);
             self.const_values.remove(name);
             self.const_arrays.remove(name);
-            self.consts_real.remove(name);
             self.const_ranges.remove(name);
             let member = |key: &String| {
                 key.strip_prefix(name.as_str())
@@ -127,7 +126,6 @@ impl<'a> Lowering<'a> {
         let saved_consts = self.consts.clone();
         let saved_const_values = self.const_values.clone();
         let saved_const_arrays = self.const_arrays.clone();
-        let saved_consts_real = self.consts_real.clone();
         let saved_const_ranges = self.const_ranges.clone();
         self.fold_impl_constants(entity_id, &mut renamed);
         let env = &renamed;
@@ -1050,7 +1048,6 @@ impl<'a> Lowering<'a> {
         self.consts = saved_consts;
         self.const_values = saved_const_values;
         self.const_arrays = saved_const_arrays;
-        self.consts_real = saved_consts_real;
         self.const_ranges = saved_const_ranges;
         self.cur_instance_path = saved_instance_path;
         ports

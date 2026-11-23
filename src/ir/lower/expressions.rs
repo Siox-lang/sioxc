@@ -135,9 +135,6 @@ impl<'a> Lowering<'a> {
                     if let Some(&v) = self.cur_env.get(&key) {
                         return Expr::Const(v as u64);
                     }
-                    if let Some(&f) = self.consts_real.get(&key) {
-                        return Expr::Real(f);
-                    }
                 }
                 if path.segments.len() >= 2 {
                     return self

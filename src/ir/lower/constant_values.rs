@@ -49,9 +49,7 @@ impl Lowering<'_> {
                         self.consts.insert(name.to_string(), word);
                     }
                 }
-                Expr::Real(value) => {
-                    self.consts_real.insert(name.to_string(), *value);
-                }
+                Expr::Real(_) => {}
                 _ => return false,
             },
             Val::Fields(fields) => {

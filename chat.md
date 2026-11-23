@@ -5602,3 +5602,59 @@ No push/PR/wiki or peer/main/corpus changes. Separate applied2481422 and real-
 storage2513466 candidates are NOT included and remain unaccepted. All five
 foundations sections stay open at86%: fully applied/value/attribute/suffix/
 registry/hook work, including native aggregate/default-body equivalence, remains.
+
+### 2026-11-23 — Codex — integrate focused duplicate-real-storage cleanup
+
+Own the next primary Lowering cleanup: lower.rs, lower/body.rs, collect.rs,
+constant_values.rs, expressions.rs, the one deleted registry inventory row,
+new scalar_constant_values integration test and this proposal/log update.
+Transfer ONLY these owned changes from the isolated constant-facts worktree;
+do not copy its older docs/log wholesale or touch peer/main/applied sources.
+
+Nested-scopes focus2601778 completed exited/success/0 at13:05:06 CET after
+12:58:42, peak1,612,550,144 bytes under normal caps. All824 frontend/14 imports,
+strict frontend and all-feature native Clippy, new scalar-map unit, old native
+suites including36 build-binary tests per mode, new native real-owner/scoped
+assertions in both modes and16 direct ordinary/debug real/time simulations
+with VCD checks passed. Source d6e28e68 and ACTUAL corpus04c35557 are unchanged.
+No failed/canceled earlier fixture or baseline-reproduction job is acceptance.
+
+The initial same-block COPY fixture assumed non-hoisted locals incorrectly.
+Resolver/checker/interpreter deliberately hoist; the corrected nested scope
+keeps held=7/COPY=9 and verifies outer COPY=7 afterward. Preserve that language
+rule; the retained pre-initialization forward-read diagnostic/runtime gap is
+separate, not fixed by deleting the real map. No new evaluator/name fallback.
+
+const_values already owns typed reals; remove consts_real and both scope clones,
+preserving direct exact-key hits before descendant scans. Candidate inventory
+becomes81 classified fields/36 actual migrations, not a completed registry
+migration overall. Freeze integrated source and rerun the ENTIRE defaults-era
+full/native gate plus new unit/native/real checks before any local commit.
+No push/PR/wiki. All five sections remain required at about86%.
+
+### 2026-11-23 — Codex — real-storage combined gate accepted locally
+
+Full2624118 completed exited/success/0 at14:15:41 CET, started13:06:55,
+peak1,612,423,168 bytes. Independent read-only audit passed all828 frontend/
+60 evaluator/14 imports,885 default/864 bitpack library cases and127 integration
+targets per mode, ALL48 GDB/DWARF cases and the original four FIFO/wide smokes,
+both ACTUAL274-program corpora,71 UI/71 JSON/56 codes/two apply-recompile
+migrations per mode, strict Clippy,80 script/36 waveform tests/12 artifacts,
+88 direct ordinary/debug runs and four aggregate timeline/VCD/parity runs.
+Exact new unit/native names and actual executions are verified in both modes.
+
+Source f844fcf666ea0ca88745500c9c9e8ff9e4fd9ab41d6857e6018b8c86ddd165d2
+and ACTUAL corpus04c355570b5c35d44ceb8a387e3ad735b606b9764886295c178d3d5356ffb4cf
+match before/after/current review. Code-only excluding Markdown:
+850c1a116d55dde56398e04ad2fcb175d4de94023d257ec154f298169bf53e2c.
+Normal caps/no-swap/no-core, Rust1.90/jobs1/threads2/host debug1/generated-debug
+checks and pinned libfst are unchanged. Only these acceptance Markdown updates
+follow the proof. Earlier native-fixture failures and expected-failure baseline
+reproduction are retained, not counted as passing compiler evidence.
+
+Commit ONLY the owned9 constant-storage paths locally after final code-hash/
+diff review. No push/PR/wiki or main/peer/corpus changes. Separate applied
+diagnostic2634244 failed with missing layouts on two aggregate INITIALIZERS
+(Named owner40 with no arguments); guard2647781 failed on its invalid newtype-
+plus-fields fixture syntax. Neither draft is included or accepted. All five
+foundation sections and86% estimate remain; no word/layout/hook debt erased.

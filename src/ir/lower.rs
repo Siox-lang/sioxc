@@ -418,16 +418,14 @@ struct Lowering<'a> {
     source_calls: Vec<source_calls::SourceCallFrame>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
-    /// Exact literal values for module constants, including values wider than
-    /// the signed width/parameter evaluator can represent.
+    /// Exact scalar values for module constants, including reals and values
+    /// wider than the signed width/parameter evaluator can represent.
     const_values: HashMap<String, Expr>,
     /// Constant lookup tables (`const TAB: unsigned[8][4] = [..]`), whose
     /// elements are folded individually. `const_values` holds one scalar
     /// per name and has no room for a sequence, so an indexed read of a
     /// const array used to find nothing and lower to `Unknown`.
     const_arrays: HashMap<String, Vec<Expr>>,
-    /// Module-level `real` constants (`const PI: real = 3.14159...`).
-    consts_real: HashMap<String, f64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
     /// (left, right) so direction is preserved.
     const_ranges: HashMap<String, (i64, i64)>,

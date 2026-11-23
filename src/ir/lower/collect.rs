@@ -81,7 +81,6 @@ impl<'a> Lowering<'a> {
             consts: HashMap::new(),
             const_values: HashMap::new(),
             const_arrays: HashMap::new(),
-            consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
             cur_env: HashMap::new(),
@@ -309,7 +308,6 @@ impl<'a> Lowering<'a> {
         for (key, constant) in constant_decls {
             let folded = self.consts.contains_key(key)
                 || self.const_values.contains_key(key)
-                || self.consts_real.contains_key(key)
                 || self.const_arrays.contains_key(key)
                 || self.const_ranges.contains_key(key);
             // ponytail: integer constants only; another type's call may fold
@@ -383,7 +381,6 @@ impl<'a> Lowering<'a> {
             let saved_consts = self.consts.clone();
             let saved_const_values = self.const_values.clone();
             let saved_const_arrays = self.const_arrays.clone();
-            let saved_consts_real = self.consts_real.clone();
             let saved_const_ranges = self.const_ranges.clone();
             self.fold_impl_constants(entity_id, &mut env);
             self.persist_testbench_layouts(entity_id, root_path, &env);
@@ -391,7 +388,6 @@ impl<'a> Lowering<'a> {
             self.consts = saved_consts;
             self.const_values = saved_const_values;
             self.const_arrays = saved_const_arrays;
-            self.consts_real = saved_consts_real;
             self.const_ranges = saved_const_ranges;
             return;
         }
@@ -867,7 +863,8 @@ impl<'a> Lowering<'a> {
             })
         };
         if self.consts.contains_key(name)
-            || self.consts_real.contains_key(name)
+            || self.const_values.contains_key(name)
+            || self.const_arrays.contains_key(name)
             || self.const_ranges.contains_key(name)
         {
             return true;
@@ -1000,7 +997,6 @@ impl<'a> Lowering<'a> {
     ) -> bool {
         if self.const_ranges.contains_key(name)
             || self.consts.contains_key(name)
-            || self.consts_real.contains_key(name)
             || self.const_values.contains_key(name)
             || self.const_arrays.contains_key(name)
         {
@@ -1131,7 +1127,8 @@ impl<'a> Lowering<'a> {
         } else if let ast::Expr::Int { text, .. } = &constant.value {
             if text.contains('.') {
                 if let Ok(value) = text.replace('_', "").parse::<f64>() {
-                    self.consts_real.insert(name.to_string(), value);
+                    self.const_values
+                        .insert(name.to_string(), Expr::Real(value));
                     return true;
                 }
             } else if let Some(value) = integer_const(text) {
@@ -1367,6 +1364,118 @@ fn is_constant_value(value: &Expr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_constant_values_keep_real_owners_aliases_and_literal_fallbacks() {
+        fn real_value(lowering: &Lowering<'_>, expression: &Expr) -> Option<f64> {
+            match expression {
+                Expr::Real(value) => Some(*value),
+                Expr::Canonical { value, .. } => {
+                    let arena = lowering.source_values.borrow();
+                    let mut id = *value;
+                    for _ in 0..arena.ir.values.len() {
+                        match &arena.ir.values.get(id.0 as usize)?.kind {
+                            ProcessValueKind::Number(ProcessNumber::Real(bits)) => {
+                                return Some(f64::from_bits(*bits))
+                            }
+                            ProcessValueKind::RawResize { operand } => id = *operand,
+                            _ => return None,
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+
+        let sources = [
+            "module left; pub const VALUE: real = 1.25; pub const COPY: real = VALUE;
+             pub const NEG: real = -0.5; fn read() -> real { return COPY; }",
+            "module right; pub const VALUE: real = 2.5; pub const COPY: real = VALUE;
+             fn read() -> real { return COPY; }",
+        ];
+        for reverse in [false, true] {
+            let mut sink = DiagnosticSink::default();
+            let mut modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    crate::syntax::parse_module(
+                        crate::diag::FileId(index as u32),
+                        source,
+                        &mut sink,
+                    )
+                })
+                .collect();
+            if reverse {
+                modules.reverse();
+                for module in &mut modules {
+                    module.items.reverse();
+                }
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let mut lowering = Lowering::new(&mut sink, &resolved);
+            let constants = lowering.collect(&modules);
+            assert_eq!(constants.len(), 5);
+            lowering.fold_module_constants(&constants);
+            assert!(
+                !lowering.sink.has_errors(),
+                "{:?}",
+                lowering.sink.diagnostics()
+            );
+            for module in &modules {
+                let value = if module.path.segments[0].text == "left" {
+                    1.25f64
+                } else {
+                    2.5
+                };
+                for item in &module.items {
+                    match item {
+                        ast::Item::Const(constant) => {
+                            let key = lowering.free_fns.constant_decl_key(constant);
+                            assert!(lowering.has_const_leaves(&key));
+                            let expected = if constant.name.text == "NEG" {
+                                -0.5
+                            } else {
+                                value
+                            };
+                            assert_eq!(
+                                real_value(&lowering, &lowering.const_values[&key]),
+                                Some(expected)
+                            );
+                            if constant.name.text == "VALUE" {
+                                lowering.const_values.remove(&key);
+                                assert!(lowering.fold_const_literal(
+                                    &key,
+                                    constant,
+                                    &HashMap::new()
+                                ));
+                                assert_eq!(
+                                    real_value(&lowering, &lowering.const_values[&key]),
+                                    Some(expected)
+                                );
+                            }
+                        }
+                        ast::Item::Fn(function) => {
+                            let Some(ast::Stmt::Return {
+                                value: Some(expression),
+                                ..
+                            }) = function.body.as_ref().and_then(|body| body.stmts.first())
+                            else {
+                                panic!("return");
+                            };
+                            assert_eq!(
+                                real_value(&lowering, &lowering.lower_expr(expression)),
+                                Some(value)
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn trait_defaults_borrow_resolved_owners_without_a_trait_name_registry() {

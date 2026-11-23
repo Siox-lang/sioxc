@@ -22,7 +22,6 @@ src/ir/lower.rs:Lowering.const_arrays | migration | array constant phase facts n
 src/ir/lower.rs:Lowering.const_ranges | migration | range constant phase facts need resolved constant owners
 src/ir/lower.rs:Lowering.const_values | migration | scalar constant phase facts need resolved constant owners
 src/ir/lower.rs:Lowering.consts | migration | integer constant facts must not be recovered by declaration names
-src/ir/lower.rs:Lowering.consts_real | migration | real constant facts must not be recovered by declaration names
 src/ir/lower.rs:Lowering.cur_env | state | bound numeric values for the current generated instance and loop
 src/ir/lower.rs:Lowering.cur_type_env | state | concrete argument bindings within the selected entity specialization
 src/ir/lower.rs:Lowering.enum_bases | migration | source enum derivation must retain owner DefIds before output serialization
