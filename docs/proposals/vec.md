@@ -3,7 +3,9 @@
 Status: **proposed**, with a proof of concept (2026-11-16): `std::vec::Vec<T>`
 names the simulator's growable store, has `len`, `is_empty`, `last`, `pop` and
 `clear` written in siox, and is rejected in hardware. Phases 2–5 below are not
-started.
+started. [`alloc.md`](alloc.md) (2026-11-23) widens this into the allocation
+layer siox takes from Rust's `alloc` crate, and proposes phase 2 as store
+primitives with `Vec` written entirely in std.
 
 Ruling it builds on (2026-11-05): a growable array is its own type, as Rust's
 `Vec<T>`; `T[]` is never dynamic. Ten open issues are runtime-array bugs that
@@ -133,7 +135,9 @@ Each phase is its own PR, in this order.
    runtime store of `T`, its methods dispatch through `method_head` and
    `process_type_key`, and a hardware `Vec` is reported. `T[]` runtime arrays
    keep working.
-2. **A nominal type.** `Vec<T>` stops being the same checked type as `T[]`:
+2. **A nominal type** (superseded by `alloc.md`'s store primitives: `Vec<T>`
+   becomes a std struct over intrinsics, nominal by construction).
+   `Vec<T>` stops being the same checked type as `T[]`:
    `Ty::Named(vec, [T])`, which carries its argument since the generics work
    (#739). Runtime operations are keyed on it, and `push` on a `T[]` warns,
    pointing at `Vec<T>`.
