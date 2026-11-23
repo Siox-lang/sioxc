@@ -12,6 +12,7 @@ module core::macros;
 //   warn!(cond, "message")          the non-fatal sibling: reported and
 //                                   counted while the test still passes
 //   print!("fmt {}", args)          print one formatted line
+//   format!("fmt {}", args)         the same text, as a `String`
 //   write!(f, "fmt {}", args)       append to the output, in Display::fmt
 //   error!("message")               fail unconditionally, like Rust's panic!
 //
@@ -23,6 +24,10 @@ pub macro assert($cond: expr, $rest: expr...) { builtin # assert($cond, $rest) }
 pub macro warn($cond: expr, $rest: expr...) { builtin # warn($cond, $rest) }
 
 pub macro print($args: expr...) { builtin # print($args) }
+
+// `format!("fmt {}", args)` is the text `print!` would write, as a `String`
+// (testbench only).
+pub macro format($args: expr...) { builtin # format($args) }
 
 // `write!(f, "fmt {}", args)` appends to the output inside a `Display::fmt`.
 pub macro write($f: expr, $rest: expr...) { builtin # write($f, $rest) }

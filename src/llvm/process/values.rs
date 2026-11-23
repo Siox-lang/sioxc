@@ -1145,6 +1145,41 @@ pub(super) fn process_value<'ctx>(
             index_sites,
             cache,
         )?,
+        // `format!`: the message as a print renders it, registered as a new
+        // runtime string.
+        ProcessValueKind::Format { parts } => {
+            let pointer = context.ptr_type(AddressSpace::default());
+            let text = emit_process_format(
+                context,
+                module,
+                builder,
+                design,
+                ProcessId(u32::MAX),
+                siox::ir::ProcessBlockId(id.0),
+                0,
+                parts,
+                index_sites,
+                cache,
+            )?;
+            let from = module
+                .get_function("sx_runtime_string_from_utf8")
+                .unwrap_or_else(|| {
+                    module.add_function(
+                        "sx_runtime_string_from_utf8",
+                        context.i64_type().fn_type(&[pointer.into()], false),
+                        Some(Linkage::External),
+                    )
+                });
+            let handle = match builder
+                .build_call(from, &[text.into()], "process.format.string")
+                .ok()?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(handle) => handle.into_int_value(),
+                _ => return None,
+            };
+            fit(builder, handle, width)?
+        }
         ProcessValueKind::HostCall {
             operation,
             arguments,

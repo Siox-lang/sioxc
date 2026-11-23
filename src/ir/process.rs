@@ -1209,6 +1209,12 @@ pub enum ProcessValueKind {
         /// Normalized service arguments in source order.
         arguments: Vec<ProcessValueId>,
     },
+    /// Text formatted when the test runs, as a new runtime string: Rust's
+    /// `format!`. The parts are a `print!`'s.
+    Format {
+        /// The message, as a runtime print's format.
+        parts: Vec<ProcessFormatPart>,
+    },
     /// A struct/entity aggregate literal.
     Construct {
         /// Concrete result type, when type checking supplied one.
@@ -2498,6 +2504,10 @@ fn try_for_each_process_value_dependency(
         | ProcessValueKind::HostCall { arguments, .. } => {
             arguments.iter().try_for_each(|id| visit(*id))
         }
+        ProcessValueKind::Format { parts } => parts.iter().try_for_each(|part| match part {
+            ProcessFormatPart::Value { value, .. } => visit(*value),
+            _ => std::ops::ControlFlow::Continue(()),
+        }),
         ProcessValueKind::Construct { fields, spread, .. } => {
             fields
                 .iter()
@@ -2583,6 +2593,13 @@ pub(crate) fn remap_process_value_dependencies(
         }
         ProcessValueKind::ForeignCall { arguments, .. }
         | ProcessValueKind::HostCall { arguments, .. } => arguments.iter_mut().for_each(remap),
+        ProcessValueKind::Format { parts } => {
+            for part in parts {
+                if let ProcessFormatPart::Value { value, .. } = part {
+                    remap(value);
+                }
+            }
+        }
         ProcessValueKind::Construct { fields, spread, .. } => {
             fields
                 .iter_mut()

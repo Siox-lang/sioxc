@@ -93,7 +93,10 @@ Landed:
   `push`, `pop`, `peek`) and `LinkedList<T>` (over a `VecDeque`), each with
   `len`, `is_empty`, `clear`. That is every collection of Rust's
   `alloc::collections`; their `Option` results and iterators wait for
-  payload enums and an iteration design.
+  payload enums and an iteration design (#787);
+- `format!` (core macro, `ProcessValueKind::Format`: a print's parts
+  rendered into a new runtime string), and `String`'s `push`, `push_str`
+  and `clear`, written in std over it.
 
 ## What siox takes
 

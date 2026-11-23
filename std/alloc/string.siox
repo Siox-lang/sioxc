@@ -20,4 +20,21 @@ impl String {
     pub fn is_empty() -> Bool {
         return self'length == 0;
     }
+
+    // Appends a character.
+    // ponytail: copies the text each time; an in-place runtime append if a
+    // testbench builds long strings a character at a time.
+    pub fn push(c: Char) {
+        self = format!("{}{}", self, c);
+    }
+
+    // Appends text: another `String`, or fixed text.
+    pub fn push_str(text: String) {
+        self = format!("{}{}", self, text);
+    }
+
+    // Removes every character.
+    pub fn clear() {
+        self = "";
+    }
 }

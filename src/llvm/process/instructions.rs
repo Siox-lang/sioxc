@@ -110,6 +110,28 @@ pub(super) fn emit_format_character<'ctx>(
     Some(())
 }
 
+/// Whether `value` formats a message of its own to be computed: a `format!`
+/// in it or in anything it reads.
+fn builds_format(design: &Design, value: ProcessValueId) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![value];
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(node) = design.process_ir.values.get(id.0 as usize) else {
+            continue;
+        };
+        if matches!(node.kind, ProcessValueKind::Format { .. }) {
+            return true;
+        }
+        crate::ir::process::for_each_process_value_dependency(&node.kind, |operand| {
+            pending.push(operand)
+        });
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_process_format<'ctx>(
     context: &'ctx Context,
@@ -124,6 +146,26 @@ pub(super) fn emit_process_format<'ctx>(
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<PointerValue<'ctx>> {
     let pointer = context.ptr_type(AddressSpace::default());
+    // A `format!` among the parts formats into the same runtime buffer:
+    // evaluated inside this message it reset what was already written
+    // (`print!("[{}]", format!(..))` lost its `[`). Evaluate those first;
+    // the message then reads them from the cache.
+    for part in format {
+        if let ProcessFormatPart::Value { value, .. } = part {
+            if builds_format(design, *value) {
+                process_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *value,
+                    None,
+                    index_sites,
+                    cache,
+                )?;
+            }
+        }
+    }
     let begin = module
         .get_function("sx_runtime_format_begin")
         .unwrap_or_else(|| {
