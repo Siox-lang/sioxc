@@ -154,7 +154,7 @@ impl SourceLayout {
                 (*range)?.len()?.checked_mul(element.bit_width()?)
             }
             LayoutKind::Struct { fields, .. } => fields.iter().try_fold(0u64, |total, field| {
-                total.checked_add(field.layout.bit_width()?)
+                total.checked_add(u64::from(field.layout.field_width()?))
             }),
             LayoutKind::Opaque { width, .. } => width.map(u64::from),
         }
@@ -171,6 +171,19 @@ impl SourceLayout {
         u32::try_from(self.bit_width()?)
             .ok()
             .filter(|width| *width != 0)
+    }
+
+    /// The width this layout takes as a struct field. An unranged array
+    /// field is a runtime-owned handle (a `Vec` or `String` field): 64
+    /// bits. Anywhere else an unranged array is unconstrained, sized by its
+    /// use (`fn f(v: Logic[])`), and has no width of its own.
+    // ponytail: a generic `T[N]` field before `N` is bound reads as a
+    // handle too; give handles their own `LayoutKind` if that ever matters.
+    pub fn field_width(&self) -> Option<u32> {
+        match &self.kind {
+            LayoutKind::Array { range: None, .. } => Some(64),
+            _ => self.packed_width(),
+        }
     }
 
     /// Number of scalar storage leaves after recursive aggregate flattening.

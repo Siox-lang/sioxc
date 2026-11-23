@@ -2976,6 +2976,12 @@ fn lower_statement(
                     initializer,
                     span: declaration.span,
                 });
+            if let (Some(_), Some(layout)) =
+                (initializer, process.locals[local.0 as usize].layout.clone())
+            {
+                let place = cfg_calls::local_value(local, process, context);
+                copy_store_fields(place, &layout, declaration.span, process, block, context);
+            }
             Some(block)
         }
         // `s = States([..])`: element by element, as the `let` form (#561).
@@ -4432,7 +4438,7 @@ fn assign_construct_fields(
         let place = push_value(
             arg.span,
             field_type.clone(),
-            field_layout.packed_width(),
+            field_layout.field_width(),
             ProcessValueKind::Field {
                 base,
                 field: field.text.clone(),
@@ -5110,6 +5116,63 @@ fn push_element(
 /// typed source lowerer is constructing Process IR. Expression
 /// typing does not retain a standalone type for every field/index expression,
 /// but the storage/local declaration does retain the authoritative layout.
+/// The layout of `base.field`, `base` a struct of the process being lowered
+/// (whose locals are not published yet) or of any other.
+fn field_layout<'a>(
+    base: ProcessValueId,
+    field: &str,
+    process: &'a ProcessCfg,
+    process_ir: &'a ProcessIr,
+) -> Option<&'a crate::ir::SourceLayout> {
+    let layout = match &process_ir.values.get(base.0 as usize)?.kind {
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id
+            && process_ir
+                .value_layouts
+                .get(base.0 as usize)
+                .is_none_or(Option::is_none) =>
+        {
+            process.locals.get(local.0 as usize)?.layout.as_ref()?
+        }
+        ProcessValueKind::Field {
+            base: outer,
+            field: name,
+        } if process_ir
+            .value_layouts
+            .get(base.0 as usize)
+            .is_none_or(Option::is_none) =>
+        {
+            field_layout(*outer, name, process, process_ir)?
+        }
+        _ => process_value_source_layout(base, process_ir)?,
+    };
+    let LayoutKind::Struct { fields, .. } = &layout.kind else {
+        return None;
+    };
+    fields
+        .iter()
+        .find(|candidate| candidate.name == field)
+        .map(|candidate| &candidate.layout)
+}
+
+/// The layout of a `Vec` or `String` field read (`q.items`): its runtime
+/// handle, an unranged array. A field typed as an unsized array but laid out
+/// with a length (`payload: unsigned[8][N]` at `N = 3`) is not one.
+fn store_field_layout<'a>(
+    value: ProcessValueId,
+    process: &'a ProcessCfg,
+    process_ir: &'a ProcessIr,
+) -> Option<&'a crate::ir::SourceLayout> {
+    let ProcessValueKind::Field { base, field } = &process_ir.values.get(value.0 as usize)?.kind
+    else {
+        return None;
+    };
+    field_layout(*base, field, process, process_ir)
+        .filter(|layout| matches!(layout.kind, LayoutKind::Array { range: None, .. }))
+}
+
 fn process_value_source_layout(
     value: ProcessValueId,
     process_ir: &ProcessIr,
@@ -6001,9 +6064,21 @@ fn assign_process_value(
             span,
         },
     };
+    let immediate = matches!(
+        instruction,
+        ProcessInstruction::Assign {
+            semantics: ProcessAssignment::ImmediateLocal,
+            ..
+        }
+    );
     process.blocks[block.0 as usize]
         .instructions
         .push(instruction);
+    if immediate {
+        if let Some(layout) = context.process_ir.value_layouts[target.0 as usize].clone() {
+            copy_store_fields(target, &layout, span, process, block, context);
+        }
+    }
     if settle {
         let resume = process.push_block();
         process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
@@ -7697,6 +7772,94 @@ fn sized_by_value(
         span: *span,
     });
     Some(sized)
+}
+
+/// Give each `Vec` field of the struct at `place` (nested structs included)
+/// its own copy of the elements: a struct is a value, and `let r: Q = q;`
+/// shared `q.items` with `r` (alloc proposal). A `String` field stays
+/// shared: runtime strings are never written in place.
+fn copy_store_fields(
+    place: ProcessValueId,
+    layout: &SourceLayout,
+    span: crate::diag::Span,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+    context: &mut LoweringContext<'_>,
+) {
+    let LayoutKind::Struct { fields, .. } = &layout.kind else {
+        return;
+    };
+    for field in fields {
+        let store = match &field.layout.kind {
+            LayoutKind::Array {
+                range: None,
+                element,
+            } => !matches!(
+                element.kind,
+                LayoutKind::Scalar {
+                    domain: crate::ir::ScalarDomain::Character,
+                    ..
+                }
+            ),
+            LayoutKind::Struct { .. } => false,
+            _ => continue,
+        };
+        let kind = ProcessValueKind::Field {
+            base: place,
+            field: field.name.clone(),
+        };
+        let width = field.layout.field_width();
+        let projected = push_value(span, None, width, kind, context);
+        context.process_ir.value_layouts[projected.0 as usize] = Some(field.layout.clone());
+        if !store {
+            copy_store_fields(projected, &field.layout, span, process, block, context);
+            continue;
+        }
+        // Nested stores (`Vec<Vec<T>>`) are copied as deep as they go.
+        let mut levels = 0u64;
+        let mut inner = &field.layout;
+        while let LayoutKind::Array {
+            range: None,
+            element,
+        } = &inner.kind
+        {
+            inner = element;
+            levels += u64::from(matches!(
+                element.kind,
+                LayoutKind::Array { range: None, .. }
+            ));
+        }
+        let depth = push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![levels])),
+            context,
+        );
+        let copy = push_value(
+            span,
+            None,
+            Some(64),
+            ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::ArrayCopy,
+                arguments: vec![projected, depth],
+            },
+            context,
+        );
+        context.process_ir.value_layouts[copy.0 as usize] = Some(field.layout.clone());
+        let Some(semantics) = process_place_assignment(projected, context.process_ir) else {
+            continue;
+        };
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics,
+                driver_context: None,
+                target: projected,
+                value: copy,
+                span,
+            });
+    }
 }
 
 /// Whether a `let` declares std's `String` (lang `String`): growable text.
@@ -10247,12 +10410,23 @@ fn runtime_array_copy(
                 },
             );
         if let (true, Some(len)) = (inner != value || fixed.is_some(), fixed) {
-            context.process_ir.values[value.0 as usize].ty = Some(crate::types::Ty::Array {
+            let fixed = crate::types::Ty::Array {
                 elem: Box::new(crate::types::Ty::Char),
                 len,
                 family: None,
                 low: 0,
-            });
+            };
+            // Its layout too: one taken from a runtime target (a `String`
+            // field) is the handle's, not this text's.
+            if context.process_ir.value_layouts[value.0 as usize]
+                .as_ref()
+                .is_some_and(|layout| layout.index_range().is_none())
+            {
+                let span = context.process_ir.values[value.0 as usize].span;
+                context.process_ir.value_layouts[value.0 as usize] =
+                    process_layout_for_type(&fixed, span, context);
+            }
+            context.process_ir.values[value.0 as usize].ty = Some(fixed);
         }
     }
     if runtime_string
@@ -10423,6 +10597,10 @@ fn process_value_is_runtime_string(
     match &value.kind {
         ProcessValueKind::InlineCall { operand, .. } => {
             process_value_is_runtime_string(*operand, process, context)
+        }
+        // A `Vec` or `String` field (`q.items`) is its handle.
+        ProcessValueKind::Field { .. } => {
+            store_field_layout(id, process, context.process_ir).is_some()
         }
         // An element of `integer[][]` is a runtime array itself.
         ProcessValueKind::HostCall {
@@ -14531,6 +14709,14 @@ fn source_value_width(
                 .map(|signal| Some(context.design.signals.get(signal.0 as usize)?.width))
                 .sum::<Option<u32>>()
                 .filter(|width| *width != 0);
+        }
+        // A `Vec` or `String` field is its runtime handle.
+        ProcessValueKind::Field { base, field }
+            if field_layout(*base, field, process, context.process_ir).is_some_and(|layout| {
+                matches!(layout.kind, LayoutKind::Array { range: None, .. })
+            }) =>
+        {
+            return Some(64);
         }
         _ => {}
     }
