@@ -1573,6 +1573,19 @@ pub(super) fn process_value<'ctx>(
                         ],
                     )
                 }
+                ProcessHostValueOp::StringEquals => {
+                    let [left, right] = arguments.as_slice() else {
+                        return None;
+                    };
+                    (
+                        "sx_runtime_string_equals",
+                        i64.fn_type(&[i64.into(), i64.into()], false),
+                        vec![
+                            scalar_argument(*left, cache)?,
+                            scalar_argument(*right, cache)?,
+                        ],
+                    )
+                }
             };
             let function = module
                 .get_function(name)

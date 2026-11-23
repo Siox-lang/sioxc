@@ -1,0 +1,23 @@
+module std::alloc::string;
+
+// `String`: growable text, as Rust's `alloc::string::String`. Fixed text is
+// `Char[N]` (a literal `"abc"` is a `Char[3]`); a `Char[N]` assigns into a
+// `String`, never the reverse. Its characters live in the simulator, so a
+// `String` is testbench storage with no hardware form. See
+// `docs/proposals/alloc.md`.
+
+pub struct String {}
+
+attr lang for String = "String";
+
+impl String {
+    // The number of characters.
+    pub fn len() -> integer {
+        return self'length;
+    }
+
+    // Whether it holds no characters.
+    pub fn is_empty() -> Bool {
+        return self'length == 0;
+    }
+}

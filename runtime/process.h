@@ -129,6 +129,8 @@ uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
 /* Explicit UTF-8 byte length preserves embedded NUL characters. */
 uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
                                        uint64_t length);
+/* Two runtime strings by their text; an unset handle is the empty string. */
+uint64_t sx_runtime_string_equals(uint64_t left, uint64_t right);
 
 /* Read-only debugger snapshots borrow immutable content until test cleanup.
  * An unset/stale handle yields an empty view without changing runtime errors. */

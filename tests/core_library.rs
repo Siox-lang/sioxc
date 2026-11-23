@@ -104,10 +104,7 @@ fn a_variant_named_like_a_type_does_not_capture_it() {
         std::env::temp_dir().join(format!("siox_core_std_variant_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&std_copy);
     std::fs::create_dir_all(&std_copy).unwrap();
-    for entry in std::fs::read_dir(STD).unwrap() {
-        let path = entry.unwrap().path();
-        std::fs::copy(&path, std_copy.join(path.file_name().unwrap())).unwrap();
-    }
+    copy_tree(std::path::Path::new(STD), &std_copy);
     std::fs::write(
         std_copy.join("style.siox"),
         "module std::style;\npub enum Style { Auto, Logic }\n",
@@ -122,4 +119,18 @@ fn a_variant_named_like_a_type_does_not_capture_it() {
     );
     let _ = std::fs::remove_dir_all(&std_copy);
     assert!(ok, "{rendered}");
+}
+
+/// Copy a directory with its subdirectories (`std/alloc/`).
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else {
+            std::fs::copy(&path, target).unwrap();
+        }
+    }
 }

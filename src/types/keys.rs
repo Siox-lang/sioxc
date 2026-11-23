@@ -240,6 +240,12 @@ impl<'a> Checker<'a> {
     /// declared `m: Bus Master` has the view's own head. Looked up by that
     /// alone, no view method was found and every check of the call was
     /// skipped (#607).
+    /// Whether `t` is std's `String` (the `String` lang item): growable text
+    /// (alloc proposal).
+    pub(super) fn is_string(&self, t: &Ty) -> bool {
+        matches!(t, Ty::Named(id, _) if self.resolved.lang("String") == Some(*id))
+    }
+
     /// The key of std's `Vec` (the `vec` lang item), when it is loaded.
     pub(super) fn vec_key(&self) -> Option<String> {
         self.definition_key(self.resolved.lang("vec")?)

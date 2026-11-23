@@ -498,6 +498,8 @@ pub enum ProcessHostValueOp {
     StringIndex,
     /// Compare a runtime-owned string handle with a retained UTF-8 literal.
     StringEqualsUtf8,
+    /// Compare two runtime-owned string handles by their text.
+    StringEquals,
     /// Save one value of a recursive function's activation on the current
     /// process's runtime frame stack. Its result is zero.
     FramePush,
@@ -2083,6 +2085,7 @@ impl ProcessIr {
                         | ProcessHostValueOp::StringFrom => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
+                        | ProcessHostValueOp::StringEquals
                         | ProcessHostValueOp::ReadArray
                         | ProcessHostValueOp::ReadSymbols
                         | ProcessHostValueOp::ArrayPush

@@ -450,6 +450,19 @@ fn process_declared_type_inner(
     aliases: &mut std::collections::HashSet<crate::resolve::DefId>,
 ) -> Option<crate::types::Ty> {
     match ty {
+        // `String` (std's `String` lang item) is the runtime string (alloc
+        // proposal).
+        ast::Type::Path(path)
+            if context.resolved.resolved(path.span).is_some()
+                && context.resolved.resolved(path.span) == context.resolved.lang("String") =>
+        {
+            Some(crate::types::Ty::Array {
+                elem: Box::new(crate::types::Ty::Char),
+                len: 0,
+                family: None,
+                low: 0,
+            })
+        }
         ast::Type::Path(path) => {
             if let Some((definition, aliased)) =
                 context.resolved.resolved(path.span).and_then(|definition| {
@@ -2855,7 +2868,11 @@ fn lower_statement(
                 &process.locals[local.0 as usize].ty,
                 declaration.value.as_ref(),
             ) {
-                if matches!(elem.as_ref(), crate::types::Ty::Char) {
+                // A `String` stays growable: only the lowercase `string`,
+                // being retired, is sized (alloc proposal).
+                if !declares_string(declaration, context)
+                    && matches!(elem.as_ref(), crate::types::Ty::Char)
+                {
                     if let Some(sized @ crate::types::Ty::Array { len, .. }) =
                         context.typed.expr_type(ast::expr_span(value)).cloned()
                     {
@@ -7682,6 +7699,13 @@ fn sized_by_value(
     Some(sized)
 }
 
+/// Whether a `let` declares std's `String` (lang `String`): growable text.
+fn declares_string(declaration: &ast::LetDecl, context: &LoweringContext<'_>) -> bool {
+    matches!(&declaration.ty, Some(ast::Type::Path(path))
+        if context.resolved.resolved(path.span).is_some()
+            && context.resolved.resolved(path.span) == context.resolved.lang("String"))
+}
+
 fn push_local(
     process: &mut ProcessCfg,
     declaration: &ast::LetDecl,
@@ -7695,10 +7719,13 @@ fn push_local(
     // A sized declaration is the local's type: `let u: signed[8] = 0 - 100;`
     // is a `signed[8]`, not the `integer` its initializer computes in. A
     // width-generic one (`let r: unsigned = v;`) takes the initializer's.
+    // A `String` is growable whatever initializes it (alloc proposal).
     let ty = declared
         .clone()
         .filter(|ty| {
-            !matches!(ty, crate::types::Ty::Array { len: 0, .. }) && is_concrete_type(ty, context)
+            declares_string(declaration, context)
+                || !matches!(ty, crate::types::Ty::Array { len: 0, .. })
+                    && is_concrete_type(ty, context)
         })
         .or_else(|| match (&declared, declaration.value.as_ref()) {
             // `let xs: T[] = [a, b, c];` takes the literal's length.
@@ -7968,6 +7995,15 @@ fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Opt
         } if !matches!(elem.as_ref(), crate::types::Ty::Char) => context
             .resolved
             .lang("vec")
+            .and_then(|definition| context.functions.nominal_type_key(definition)),
+        // A runtime string dispatches to std's `String` (alloc proposal).
+        crate::types::Ty::Array {
+            len: 0,
+            family: None,
+            ..
+        } => context
+            .resolved
+            .lang("String")
             .and_then(|definition| context.functions.nominal_type_key(definition)),
         crate::types::Ty::Array { family: None, .. }
         | crate::types::Ty::Tuple(_)
@@ -9655,6 +9691,7 @@ fn lower_process_host_call(
         | ProcessHostValueOp::StringLength
         | ProcessHostValueOp::StringIndex
         | ProcessHostValueOp::StringEqualsUtf8
+        | ProcessHostValueOp::StringEquals
         | ProcessHostValueOp::FramePush
         | ProcessHostValueOp::FramePop
         | ProcessHostValueOp::FrameRestore
@@ -13697,26 +13734,27 @@ fn value_ref_with_type_inner(
                 )
             };
             if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
-                let operands = if process_value_is_runtime_string(left, process, context)
-                    && process_value_is_string_literal(right, context)
-                {
-                    Some((left, right))
-                } else if process_value_is_runtime_string(right, process, context)
-                    && process_value_is_string_literal(left, context)
-                {
-                    Some((right, left))
+                let left_handle = process_value_is_runtime_string(left, process, context);
+                let right_handle = process_value_is_runtime_string(right, process, context);
+                let operands = if left_handle && process_value_is_string_literal(right, context) {
+                    Some((ProcessHostValueOp::StringEqualsUtf8, left, right))
+                } else if right_handle && process_value_is_string_literal(left, context) {
+                    Some((ProcessHostValueOp::StringEqualsUtf8, right, left))
+                } else if left_handle && right_handle {
+                    // Two `String`s compare by their text (alloc proposal).
+                    Some((ProcessHostValueOp::StringEquals, left, right))
                 } else {
                     None
                 };
-                if let Some((handle, literal)) = operands {
+                if let Some((operation, handle, other)) = operands {
                     let bool_type = ty.clone();
                     let equals = push_value(
                         span,
                         bool_type.clone(),
                         Some(1),
                         ProcessValueKind::HostCall {
-                            operation: ProcessHostValueOp::StringEqualsUtf8,
-                            arguments: vec![handle, literal],
+                            operation,
+                            arguments: vec![handle, other],
                         },
                         context,
                     );

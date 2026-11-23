@@ -166,7 +166,7 @@ Each phase is its own PR, in this order.
 
 ## Proof of concept
 
-- `std/vec.siox`: `struct Vec<T>`, `attr lang for Vec = "vec"`, and
+- `std/alloc/vec.siox` (re-exported as `std::vec`): `struct Vec<T>`, `attr lang for Vec = "vec"`, and
   `len`/`is_empty`/`last`/`pop`/`clear`.
 - `src/types/ast_types.rs`: `Vec<T>` is checked as the runtime store of `T`.
 - `src/types/keys.rs`, `src/types/members.rs`: a store's methods resolve to
