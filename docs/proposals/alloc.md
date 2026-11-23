@@ -52,7 +52,38 @@ Uses include stimulus and response queues, scoreboards, sparse memory
 models, expected-value tables, coverage bins and log messages. siox has
 `Vec` (phase 1) and nothing else of this list.
 
+## `std::alloc`: the module
+
+Ruled 2026-11-23: std has an `alloc` module that acts as Rust's `alloc`
+crate does; the only thing left out is pointers. Its layout is Rust's, and
+std re-exports it as Rust's std does (`std::vec::Vec` is
+`std::alloc::vec::Vec`):
+
+| Module | Holds | std re-export |
+| ------ | ----- | ------------- |
+| `std::alloc::vec` | `Vec<T>` (`vec!` later) | `std::vec` |
+| `std::alloc::string` | `String`, `ToString` | `std::string` |
+| `std::alloc::collections` | `VecDeque`, `LinkedList`, `BTreeMap`, `BTreeSet`, `BinaryHeap` | `std::collections` |
+| `std::alloc::fmt` | `format`, `format!` | `std::fmt` |
+| `std::alloc::slice`, `std::alloc::str` | the allocating methods of arrays and text (`to_vec`, `concat`, `join`, `repeat`, `to_uppercase`, stable `sort`) | |
+
+Left out, because they are pointers or exist only to manage them: Rust's
+`alloc::alloc` (`Allocator`, `GlobalAlloc`, `Layout`, raw `alloc`/
+`dealloc`), `boxed`, `rc`, `sync` (`Arc`), `task` (`Wake` over `Arc`),
+`borrow` (`Cow`, which borrows), `ffi` (`CString`, a pointer for C), and the
+raw-part methods of the kept types (`as_ptr`, `from_raw_parts`,
+`into_raw_parts`, `leak`, `spare_capacity_mut`). A method that hands out a
+reference in Rust (`get_mut`, `iter_mut`, `entry`) takes the copy-in/
+copy-out form siox already uses for parameters, or waits for a later ruling.
+
+Landed: the layout, with `Vec<T>` and `String` (step 1 below) moved under
+it and re-exported.
+
 ## What siox takes
+
+The lists below were written before that ruling; it moves `LinkedList`
+from "not taken" to taken, and makes the rest of Rust's API on the kept
+types the target, not only the listed methods.
 
 ### Needed
 
@@ -102,8 +133,6 @@ models, expected-value tables, coverage bins and log messages. siox has
 - **`Box`, `Rc`, `Arc`, `Weak`, `Cow`**: they exist to own or share through
   references, which siox does not have. A recursive structure is a `Vec`
   with indices.
-- **`LinkedList`**: rarely the right structure even in Rust; `VecDeque`
-  covers queues.
 - **`Allocator`, `GlobalAlloc`, `Layout`**: the simulator owns memory; there
   is no allocator to choose.
 
@@ -152,7 +181,8 @@ Steps, each its own PR:
 1. `std::string::String` (in the prelude) beside the existing `string`:
    a lang type over the runtime string store, `Char[N]` assignable into it,
    `len`/`is_empty`/indexing/`==`/`{}`, rejected in hardware. Nothing
-   existing changes.
+   existing changes. **Landed** (`std::alloc::string`,
+   `tests/string_type.rs`).
 2. core and std move to `String` or `Char[..]`, with the compiler's own
    references to `string`.
 3. The tests and the corpus (siox-tests) move, then `string` is removed.

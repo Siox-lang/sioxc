@@ -10,3 +10,4 @@ module std::prelude;
 pub use std::logic::{Bit, Logic};
 pub use std::bits::{unsigned, signed, sext};
 pub use std::sim::{time, frequency};
+pub use std::alloc::string::String;

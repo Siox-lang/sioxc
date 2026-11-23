@@ -607,7 +607,10 @@ impl<'a> Checker<'a> {
                 if !matches!(op, BinOp::Custom { .. }) {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
                         let intrinsic_enum_equality = matches!(op_str, "==" | "!=")
-                            && self.enum_operand_name(&self.type_of(lhs, sym)).is_some();
+                            && (self.enum_operand_name(&self.type_of(lhs, sym)).is_some()
+                                // Text compares by its characters: a `String`
+                                // with a `String` or fixed text.
+                                || self.is_string(&self.type_of(lhs, sym)));
                         let intrinsic_vector_operator = (is_comparison(op)
                             || matches!(
                                 op,

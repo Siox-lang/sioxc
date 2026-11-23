@@ -376,6 +376,10 @@ impl<'a> Checker<'a> {
             Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
             Expr::Index { base, index, .. } => {
                 let base_ty = self.type_of(base, sym);
+                // `s[i]` of a `String` is one of its characters.
+                if self.is_string(&base_ty) {
+                    return Ty::Char;
+                }
                 let is_range = matches!(
                     index.as_ref(),
                     Expr::Range { .. } | Expr::PartialRange { .. }

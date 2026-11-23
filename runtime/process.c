@@ -828,6 +828,15 @@ uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
         && memcmp(string->utf8, text, (size_t)length) == 0;
 }
 
+uint64_t sx_runtime_string_equals(uint64_t left, uint64_t right) {
+    sx_runtime_string *a = sx_runtime_string_for(left);
+    sx_runtime_string *b = sx_runtime_string_for(right);
+    uint64_t a_length = a ? a->byte_length : 0;
+    uint64_t b_length = b ? b->byte_length : 0;
+    return a_length == b_length
+        && (a_length == 0 || memcmp(a->utf8, b->utf8, (size_t)a_length) == 0);
+}
+
 static void sx_clear_error(void) {
     if (sx_error != sx_error_fallback) free(sx_error);
     sx_error = 0;

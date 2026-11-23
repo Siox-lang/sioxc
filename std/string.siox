@@ -1,0 +1,6 @@
+module std::string;
+
+// `String`, re-exported from `std::alloc::string` as Rust's `std::string` is
+// from `alloc::string`.
+
+pub use std::alloc::string::String;

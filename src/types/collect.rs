@@ -209,8 +209,17 @@ impl<'a> Checker<'a> {
 
     /// Finish checking and hand back the recorded expression types.
     pub(super) fn finish(self) -> Typed {
+        // Lowering stores a `String` as the runtime string it already knows:
+        // the nominal type is the checker's (alloc proposal).
+        let string = self.resolved.lang("String");
+        let mut expr_types = self.expr_types.into_inner();
+        if let Some(string) = string {
+            for ty in expr_types.values_mut() {
+                runtime_string(ty, string);
+            }
+        }
         Typed {
-            expr_types: self.expr_types.into_inner(),
+            expr_types,
             type_attr_reads: self.type_attr_reads,
             promotions: self.promotions,
             conversions: self.conversions,
@@ -1438,4 +1447,32 @@ fn array_element(mut ty: &Type) -> &Type {
         ty = base;
     }
     ty
+}
+
+/// `String` (lang `String`) as the runtime string lowering stores, anywhere
+/// in `ty`.
+fn runtime_string(ty: &mut Ty, string: DefId) {
+    match ty {
+        Ty::Named(id, arguments) => {
+            if *id == string {
+                *ty = Ty::Array {
+                    elem: Box::new(Ty::Char),
+                    len: 0,
+                    family: None,
+                    low: 0,
+                };
+            } else {
+                for argument in arguments {
+                    runtime_string(argument, string);
+                }
+            }
+        }
+        Ty::Array { elem, .. } => runtime_string(elem, string),
+        Ty::Tuple(elems) => {
+            for elem in elems {
+                runtime_string(elem, string);
+            }
+        }
+        _ => {}
+    }
 }

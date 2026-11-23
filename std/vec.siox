@@ -1,45 +1,6 @@
 module std::vec;
 
-// `Vec<T>`: a growable array, as Rust's `std::vec::Vec`. Its elements live in
-// the simulator, so a vector is testbench storage: it has no hardware form.
-// `push`, indexing (`v[i]`), `v'length` and `for x in v` are built in;
-// the methods below are ordinary siox over them. See
-// `docs/proposals/vec.md`.
+// `Vec<T>`, re-exported from `std::alloc::vec` as Rust's `std::vec` is from
+// `alloc::vec`.
 
-pub struct Vec<T> {}
-
-attr lang for Vec = "vec";
-
-impl<T> Vec<T> {
-    // The number of elements.
-    pub fn len() -> integer {
-        return self'length;
-    }
-
-    // Whether it holds no elements.
-    pub fn is_empty() -> Bool {
-        return self'length == 0;
-    }
-
-    // The last element; reading an empty vector stops the test.
-    pub fn last() -> T {
-        return self[self'length - 1];
-    }
-
-    // Removes the last element and returns it, as Rust's `pop` without its
-    // `Option`: an empty vector stops the test.
-    pub fn pop() -> T {
-        let last: T = self[self'length - 1];
-        if self'length == 1 {
-            self = [];
-        } else {
-            self = self[0 .. self'length - 2];
-        }
-        return last;
-    }
-
-    // Removes every element.
-    pub fn clear() {
-        self = [];
-    }
-}
+pub use std::alloc::vec::Vec;

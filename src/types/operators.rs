@@ -704,6 +704,15 @@ impl<'a> Checker<'a> {
     /// Whether `value` may be assigned to `lhs`. Widths are strict, but a
     /// contextual literal adopts the target's type.
     pub(super) fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
+        // A `String` takes fixed text (`Char[N]`, a literal) or another
+        // `String`; a `String` never becomes a `Char[N]` (alloc proposal).
+        if self.is_string(lhs) {
+            let value_ty = self.type_of(value, sym);
+            return self.is_string(&value_ty)
+                || matches!(&value_ty, Ty::Array { elem, family: None, .. }
+                    if matches!(elem.as_ref(), Ty::Char))
+                || matches!(value_ty, Ty::Error);
+        }
         // An unsized result (`slice_lo<W>(v) -> unsigned[W]`, `W` bound by
         // nothing else) takes the target's width, recorded for lowering to
         // bind `W` from (#564).

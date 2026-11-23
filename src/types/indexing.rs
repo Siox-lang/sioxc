@@ -241,7 +241,8 @@ impl<'a> Checker<'a> {
             }
         }
         let base_ty = self.type_of(base, sym);
-        if matches!(base_ty, Ty::Array { .. }) {
+        // A `String` indexes as text does: a `Char` (alloc proposal).
+        if matches!(base_ty, Ty::Array { .. }) || self.is_string(&base_ty) {
             return;
         }
         let Some(owner) = self.type_kind_name(&base_ty) else {

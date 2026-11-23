@@ -814,6 +814,9 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                     (ProcessHostValueOp::StringEqualsUtf8, [handle, literal]) => {
                         scalar(*handle) && process_string(design, *literal).is_some()
                     }
+                    (ProcessHostValueOp::StringEquals, [left, right]) => {
+                        scalar(*left) && scalar(*right)
+                    }
                     _ => false,
                 }
             }
