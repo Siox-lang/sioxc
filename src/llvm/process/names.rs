@@ -78,8 +78,10 @@ pub(super) fn array_loop_shape(
     (length != 0).then_some((layout, element, length))
 }
 
+/// In a process frame an unranged array is a runtime-owned handle: 64 bits
+/// (`SourceLayout::field_width`).
 pub(super) fn layout_width(layout: &siox::ir::SourceLayout) -> Option<u32> {
-    layout.packed_width()
+    layout.field_width()
 }
 
 /// Dynamic UTF-8 strings cross the fixed runtime ABI as opaque handles. Their

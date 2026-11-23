@@ -351,7 +351,9 @@ pub(super) fn layout_default_value<'ctx>(
             }
             Some(value)
         }
-        LayoutKind::Array { range: None, .. } => None,
+        // A runtime handle (a `Vec` or `String` field) starts as handle
+        // zero: the empty store.
+        LayoutKind::Array { range: None, .. } => Some(ty.const_zero()),
     }
 }
 

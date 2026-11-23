@@ -225,6 +225,36 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// The element layout of std's `Vec<T>` (lang `vec`) or `String` (lang
+    /// `String`): a runtime-owned store, held as its handle (an unranged
+    /// array) wherever it sits, a struct field included.
+    fn runtime_store_element(
+        &self,
+        ty: &ast::Type,
+        env: &HashMap<String, i64>,
+        expanding: &mut HashSet<String>,
+    ) -> Option<SourceLayout> {
+        let is = |path: &ast::Path, role: &str| {
+            self.resolved.resolved(path.span).is_some()
+                && self.resolved.resolved(path.span) == self.resolved.lang(role)
+        };
+        match ty {
+            ast::Type::Path(path) if is(path, "String") => Some(SourceLayout {
+                span: path.span,
+                kind: LayoutKind::Scalar {
+                    width: 32,
+                    domain: ScalarDomain::Character,
+                    nominal: None,
+                    value_range: None,
+                },
+            }),
+            ast::Type::Generic { base, args, .. } if matches!(base.as_ref(), ast::Type::Path(path) if is(path, "vec")) => {
+                Some(self.source_layout_at(&args.first()?.as_type()?, env, expanding))
+            }
+            _ => None,
+        }
+    }
+
     /// The source layout for a type in `env`, recursing through fields and
     /// elements.
     pub(super) fn source_layout_at(
@@ -241,6 +271,15 @@ impl<'a> Lowering<'a> {
         let ty = self.normalize_layout_type(ty);
         let span = source_type_span(&ty);
         let rendered = crate::syntax::pretty::type_str(&ty);
+        if let Some(element) = self.runtime_store_element(&ty, env, expanding) {
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Array {
+                    range: None,
+                    element: Box::new(element),
+                },
+            };
+        }
 
         if let Some(fields) = self.struct_fields(&ty).filter(|fields| !fields.is_empty()) {
             let recursion_key = rendered.clone();

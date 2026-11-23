@@ -529,7 +529,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     let size = if normalized {
                         inspection_bits(&field.layout)?
                     } else {
-                        field.layout.bit_width()?
+                        u64::from(field.layout.field_width()?)
                     };
                     members.push(
                         self.builder
