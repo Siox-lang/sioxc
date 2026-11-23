@@ -1,0 +1,61 @@
+module std::alloc::collections::linked_list;
+
+// `LinkedList<T>`: a list with both ends open, as Rust's
+// `alloc::collections::LinkedList`. siox has no pointers, so it is a
+// `VecDeque` underneath; its API is Rust's. Testbench storage with no
+// hardware form. See `docs/proposals/alloc.md`.
+
+use std::alloc::collections::vec_deque::VecDeque;
+
+pub struct LinkedList<T> {
+    items: VecDeque<T>,
+}
+
+impl<T> LinkedList<T> {
+    // The number of elements.
+    pub fn len() -> integer {
+        return self.items.len();
+    }
+
+    // Whether it holds no elements.
+    pub fn is_empty() -> Bool {
+        return self.items.is_empty();
+    }
+
+    // Appends an element to the back.
+    pub fn push_back(value: T) {
+        self.items.push_back(value);
+    }
+
+    // Prepends an element to the front.
+    pub fn push_front(value: T) {
+        self.items.push_front(value);
+    }
+
+    // Removes the first element and returns it; an empty list stops the
+    // test.
+    pub fn pop_front() -> T {
+        return self.items.pop_front();
+    }
+
+    // Removes the last element and returns it; an empty list stops the
+    // test.
+    pub fn pop_back() -> T {
+        return self.items.pop_back();
+    }
+
+    // The first element; an empty list stops the test.
+    pub fn front() -> T {
+        return self.items.front();
+    }
+
+    // The last element; an empty list stops the test.
+    pub fn back() -> T {
+        return self.items.back();
+    }
+
+    // Removes every element.
+    pub fn clear() {
+        self.items.clear();
+    }
+}

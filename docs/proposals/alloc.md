@@ -87,7 +87,13 @@ Landed:
   `pop_back`, `front`, `back`, `get`, `len`, `is_empty`, `clear` (#785);
 - `BTreeMap<K, V>` (sorted keys and values; `insert`, `get`,
   `contains_key`, `remove`, `keys`, `values`, `len`, `is_empty`, `clear`),
-  and `Vec`'s `insert`, `remove` and `truncate`.
+  and `Vec`'s `insert`, `remove` and `truncate` (#786);
+- `BTreeSet<T>` (`insert`/`remove` returning whether they changed it,
+  `contains`, `first`, `last`, `to_vec`), `BinaryHeap<T>` (a max-heap:
+  `push`, `pop`, `peek`) and `LinkedList<T>` (over a `VecDeque`), each with
+  `len`, `is_empty`, `clear`. That is every collection of Rust's
+  `alloc::collections`; their `Option` results and iterators wait for
+  payload enums and an iteration design.
 
 ## What siox takes
 

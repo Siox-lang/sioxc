@@ -158,10 +158,42 @@ fn normalize_contents(
             _ => false,
         };
         match &mut instruction {
-            ProcessInstruction::Declare { initializer, .. } => {
+            ProcessInstruction::Declare {
+                initializer, local, ..
+            } => {
                 if let Some(value) = initializer {
                     *value =
                         normalize_value(*value, false, &mut block, process, context, &mut memo)?;
+                    // A local of an open type (`let dropped: T = self.items
+                    // .remove(at)` in a generic body) is its call's result.
+                    let declared = &process.locals[local.0 as usize];
+                    if declared.ty.is_none() && declared.layout.is_none() {
+                        let result = match &context.process_ir.values[value.0 as usize].kind {
+                            ProcessValueKind::Local {
+                                process: owner,
+                                local: result,
+                            } if *owner == process.id => {
+                                let result = &process.locals[result.0 as usize];
+                                Some((result.ty.clone(), result.layout.clone()))
+                            }
+                            _ => None,
+                        };
+                        if let Some((ty, layout)) = result {
+                            // Reads lowered before the call was expanded
+                            // (`return last;`) take the shape too.
+                            let width = layout.as_ref().and_then(SourceLayout::packed_width);
+                            for read in &mut context.process_ir.values {
+                                if matches!(read.kind, ProcessValueKind::Local { process: owner, local: read_local }
+                                    if owner == process.id && read_local == *local)
+                                {
+                                    read.ty = read.ty.take().or_else(|| ty.clone());
+                                    read.bit_width = read.bit_width.or(width);
+                                }
+                            }
+                            process.locals[local.0 as usize].ty = ty;
+                            process.locals[local.0 as usize].layout = layout;
+                        }
+                    }
                 }
             }
             ProcessInstruction::Assign { target, value, .. }
@@ -829,21 +861,7 @@ fn inline_call_once(
         })
         // `-> T` of a store's method (`self.keys.remove(at)` in a generic
         // body): the store's element.
-        .or_else(|| {
-            let receiver = receiver?;
-            let store = process_value_type(receiver, context)
-                .filter(|ty| {
-                    runtime_array_element(Some(ty))
-                        .is_some_and(|element| is_concrete_type(element, context))
-                })
-                .or_else(|| {
-                    let layout = store_field_layout(receiver, process, context.process_ir)?;
-                    process_type_from_layout(layout, context.resolved)
-                })?;
-            runtime_array_element(Some(&store))
-                .filter(|element| is_concrete_type(element, context))
-                .cloned()
-        });
+        .or_else(|| store_element_type(receiver?, process, context));
     let result = result_local(&node, call, process, context);
     // `Ty` retains element count, not the source labels/direction. A return
     // frame must keep the function's declared shape, including nested ranges.
