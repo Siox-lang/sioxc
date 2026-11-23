@@ -4,3 +4,6 @@ module std::alloc::collections;
 
 pub use std::alloc::collections::vec_deque::VecDeque;
 pub use std::alloc::collections::btree_map::BTreeMap;
+pub use std::alloc::collections::btree_set::BTreeSet;
+pub use std::alloc::collections::binary_heap::BinaryHeap;
+pub use std::alloc::collections::linked_list::LinkedList;

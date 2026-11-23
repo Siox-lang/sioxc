@@ -1,0 +1,85 @@
+module std::alloc::collections::binary_heap;
+
+// `BinaryHeap<T>`: a priority queue, as Rust's
+// `alloc::collections::BinaryHeap`: a max-heap, so `pop` returns the
+// greatest element. Elements need `Ord`. Testbench storage with no
+// hardware form. See `docs/proposals/alloc.md`.
+
+use std::alloc::vec::Vec;
+
+pub struct BinaryHeap<T> {
+    data: Vec<T>,
+}
+
+impl<T> BinaryHeap<T> {
+    // The number of elements.
+    pub fn len() -> integer {
+        return self.data.len();
+    }
+
+    // Whether it holds no elements.
+    pub fn is_empty() -> Bool {
+        return self.data.len() == 0;
+    }
+
+    // Adds an element, moving it up past every smaller parent.
+    pub fn push(value: T) {
+        self.data.push(value);
+        let child: integer = self.data.len() - 1;
+        for step in 0 .. self.data.len() {
+            if child == 0 {
+                return;
+            }
+            let parent: integer = (child - 1) / 2;
+            if self.data[parent] >= self.data[child] {
+                return;
+            }
+            let moved: T = self.data[parent];
+            self.data[parent] = self.data[child];
+            self.data[child] = moved;
+            child = parent;
+        }
+    }
+
+    // The greatest element, as Rust's `peek` without its `Option`: an
+    // empty heap stops the test.
+    pub fn peek() -> T {
+        return self.data[0];
+    }
+
+    // Removes the greatest element and returns it, as Rust's `pop` without
+    // its `Option`: an empty heap stops the test.
+    pub fn pop() -> T {
+        let top: T = self.data[0];
+        let last: T = self.data.pop();
+        let count: integer = self.data.len();
+        if count == 0 {
+            return top;
+        }
+        self.data[0] = last;
+        let parent: integer = 0;
+        for step in 0 .. count {
+            let left: integer = parent * 2 + 1;
+            if left >= count {
+                return top;
+            }
+            let larger: integer = left;
+            if left + 1 < count and self.data[left + 1] > self.data[left] {
+                larger = left + 1;
+            }
+            if self.data[parent] >= self.data[larger] {
+                return top;
+            }
+            let moved: T = self.data[parent];
+            self.data[parent] = self.data[larger];
+            self.data[larger] = moved;
+            parent = larger;
+        }
+        return top;
+    }
+
+    // Removes every element.
+    pub fn clear() {
+        self.data.clear();
+    }
+}

@@ -39,6 +39,7 @@ fn a_vec_deque_pushes_and_pops_at_both_ends() {
         "pop=9 pop=2 empty=true",
         "cleared=true",
         "field clear=0 pop=2 len=1",
+        "single front=1 back=2",
     ] {
         assert!(stdout.contains(line), "{stdout}");
     }
@@ -76,6 +77,10 @@ impl Tb {
         d.add(1);
         d.add(2);
         print!("field clear={} pop={} len={}\n", cleared, d.take(), d.n());
+        let one: VecDeque<integer>;
+        one.push_back(2);
+        one.push_front(1);
+        print!("single front={} back={}\n", one.front(), one.back());
     }
 }
 "#;

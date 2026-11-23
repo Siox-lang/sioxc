@@ -7890,6 +7890,25 @@ fn copy_store_fields(
     }
 }
 
+/// The element type of the store `receiver` (a `Vec` variable or field),
+/// when it is concrete: what a store method's `-> T` is at this call.
+fn store_element_type(
+    receiver: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    let concrete = |ty: &crate::types::Ty| {
+        runtime_array_element(Some(ty)).is_some_and(|element| is_concrete_type(element, context))
+    };
+    let store = process_value_type(receiver, context)
+        .filter(concrete)
+        .or_else(|| {
+            let layout = store_field_layout(receiver, process, context.process_ir)?;
+            process_type_from_layout(layout, context.resolved).filter(concrete)
+        })?;
+    runtime_array_element(Some(&store)).cloned()
+}
+
 /// Whether a `let` declares std's `String` (lang `String`): growable text.
 fn declares_string(declaration: &ast::LetDecl, context: &LoweringContext<'_>) -> bool {
     matches!(&declaration.ty, Some(ast::Type::Path(path))
@@ -11481,7 +11500,10 @@ fn expand_process_function(
             .filter(|ty| is_concrete_type(ty, context))
             .cloned()
             .or(generic_return)
-            .or(declared),
+            .or(declared)
+            // `-> T` of a store's method (`self.items.remove(at)` in a
+            // generic body): the store's element.
+            .or_else(|| store_element_type(receiver?, process, context)),
     };
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);

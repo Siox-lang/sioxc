@@ -45,8 +45,12 @@ impl<T> VecDeque<T> {
         } else {
             let last: integer = self.buf.len() - 1;
             self.buf.push(self.buf[last]);
-            for step in 0 .. last - 1 {
-                self.buf[last - step] = self.buf[last - step - 1];
+            // A range counts down when its end is below its start: with one
+            // element there is nothing between to shift.
+            if last >= 1 {
+                for step in 0 .. last - 1 {
+                    self.buf[last - step] = self.buf[last - step - 1];
+                }
             }
             self.buf[0] = value;
         }

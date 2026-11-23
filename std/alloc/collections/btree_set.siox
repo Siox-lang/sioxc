@@ -1,0 +1,88 @@
+module std::alloc::collections::btree_set;
+
+// `BTreeSet<T>`: an ordered set, as Rust's `alloc::collections::BTreeSet`.
+// Elements are kept in order and need `Ord`; iterating reproduces run to
+// run. Testbench storage with no hardware form. See
+// `docs/proposals/alloc.md`.
+//
+// ponytail: a sorted vector with a linear search, O(n) per operation; a
+// B-tree or binary search if a testbench holds many elements.
+
+use std::alloc::vec::Vec;
+
+pub struct BTreeSet<T> {
+    items: Vec<T>,
+}
+
+impl<T> BTreeSet<T> {
+    // The number of elements.
+    pub fn len() -> integer {
+        return self.items.len();
+    }
+
+    // Whether it holds no elements.
+    pub fn is_empty() -> Bool {
+        return self.items.len() == 0;
+    }
+
+    // Where `value` is, or would go: the first position not less than it.
+    fn position(value: T) -> integer {
+        let count: integer = self.items.len();
+        if count == 0 {
+            return 0;
+        }
+        for index in 0 .. count - 1 {
+            if self.items[index] >= value {
+                return index;
+            }
+        }
+        return count;
+    }
+
+    // Whether `value` is in the set.
+    pub fn contains(value: T) -> Bool {
+        let at: integer = self.position(value);
+        return at < self.items.len() and self.items[at] == value;
+    }
+
+    // Adds `value`; returns whether it was new, as Rust's `insert`.
+    pub fn insert(value: T) -> Bool {
+        let at: integer = self.position(value);
+        if at < self.items.len() and self.items[at] == value {
+            return false;
+        }
+        self.items.insert(at, value);
+        return true;
+    }
+
+    // Removes `value`; returns whether it was there, as Rust's `remove`.
+    pub fn remove(value: T) -> Bool {
+        let at: integer = self.position(value);
+        if at < self.items.len() and self.items[at] == value {
+            let dropped: T = self.items.remove(at);
+            return true;
+        }
+        return false;
+    }
+
+    // The smallest element, as Rust's `first` without its `Option`: an
+    // empty set stops the test.
+    pub fn first() -> T {
+        return self.items[0];
+    }
+
+    // The largest element; an empty set stops the test.
+    pub fn last() -> T {
+        return self.items[self.items.len() - 1];
+    }
+
+    // The elements, in order.
+    pub fn to_vec() -> Vec<T> {
+        return self.items;
+    }
+
+    // Removes every element.
+    pub fn clear() {
+        self.items.clear();
+    }
+}
