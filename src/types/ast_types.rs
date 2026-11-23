@@ -132,10 +132,29 @@ impl<'a> Checker<'a> {
     pub(super) fn ast_ty_for_owner(&self, t: &Type, owner: &Ty) -> Ty {
         if matches!(t, Type::Path(path) if path.segments.len() == 1 && path.segments[0].text == "Self")
         {
-            owner.clone()
-        } else {
-            self.ast_ty(t)
+            return owner.clone();
         }
+        // An impl's parameters at the receiver's arguments: `-> V` of
+        // `impl<K, V> M<K, V>`, called on an `M<integer, Bit>`, is a `Bit`.
+        let positions = match owner {
+            Ty::Named(_, arguments) if !arguments.is_empty() => self
+                .ty_head(owner)
+                .and_then(|head| self.type_param_positions.get(&head)),
+            _ => None,
+        };
+        let (Some(positions), Ty::Named(_, arguments)) = (positions, owner) else {
+            return self.ast_ty(t);
+        };
+        let mut bindings = self.type_bindings.borrow().clone();
+        for (name, position) in positions {
+            if let Some(argument) = arguments.get(*position) {
+                bindings.insert(name.clone(), argument.clone());
+            }
+        }
+        let saved = self.type_bindings.replace(bindings);
+        let ty = self.ast_ty(t);
+        self.type_bindings.replace(saved);
+        ty
     }
 
     /// A resolved type-name span as a `Ty`. A **type parameter** (`T` in a

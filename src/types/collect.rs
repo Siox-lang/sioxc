@@ -478,6 +478,30 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // Where each type parameter of `impl<K, V> M<K, V>` sits in
+                // the target's arguments: a method's `-> V` on an
+                // `M<integer, Bit>` is a `Bit` (`ast_ty_for_owner`).
+                if let (None, Type::Generic { args, .. }, Some(ty)) =
+                    (&im.trait_, &im.target, self.type_key(&im.target))
+                {
+                    for (position, argument) in args.iter().enumerate() {
+                        if let Some(Type::Path(path)) = argument.as_type() {
+                            if let [name] = path.segments.as_slice() {
+                                if im
+                                    .params
+                                    .params
+                                    .iter()
+                                    .any(|p| p.name.text == name.text && !p.is_value())
+                                {
+                                    self.type_param_positions
+                                        .entry(ty.clone())
+                                        .or_default()
+                                        .insert(name.text.clone(), position);
+                                }
+                            }
+                        }
+                    }
+                }
                 // Record `impl Trait for Type` so trait-driven checks (e.g.
                 // conditions) can ask "does T implement Trait?".
                 if let (Some(tr), Some(ty)) = (&im.trait_, self.type_key(&im.target)) {

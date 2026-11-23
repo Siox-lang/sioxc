@@ -691,7 +691,24 @@ impl<'a> Checker<'a> {
                     .as_ref()
                     .and_then(|head| self.field_decl_ty(head, &field.text))
                 {
-                    Some(ty) => self.ast_ty(&ty),
+                    // A generic struct's field at the receiver's arguments:
+                    // `items: Vec<T>` of a `Q<integer>` is a `Vec<integer>`.
+                    Some(ty) => {
+                        match (&recv, head.as_ref().and_then(|h| self.struct_params.get(h))) {
+                            (Ty::Named(_, arguments), Some(names))
+                                if !arguments.is_empty() && names.len() == arguments.len() =>
+                            {
+                                let mut bindings = self.type_bindings.borrow().clone();
+                                bindings
+                                    .extend(names.iter().cloned().zip(arguments.iter().cloned()));
+                                let saved = self.type_bindings.replace(bindings);
+                                let ty = self.ast_ty(&ty);
+                                self.type_bindings.replace(saved);
+                                ty
+                            }
+                            _ => self.ast_ty(&ty),
+                        }
+                    }
                     // An instance's port (`dut.z`): its declared type. As an
                     // error it read untyped, and `print!("{}", dut.z)` of an
                     // aggregate port found no way to print it.

@@ -3723,11 +3723,28 @@ fn lower_call(
     // `xs.push(v)` on a runtime array: append, then keep the handle (a new
     // one when the array was empty).
     if let (ast::Expr::Field { base, field, .. }, [pushed]) = (callee, arguments) {
-        let ty = context
+        let mut ty = context
             .typed
             .expr_type(ast::expr_span(base))
             .cloned()
             .filter(|_| field.text == "push");
+        // In a generic body (`self.items.push(x)` of `impl<T> Q<T>`) the
+        // element type is a parameter the checker left open: the store's
+        // layout at this call has it.
+        if field.text == "push"
+            && runtime_array_element(ty.as_ref())
+                .is_none_or(|element| matches!(element, crate::types::Ty::Error))
+        {
+            let first = context.process_ir.values.len();
+            let handle = value_ref(base, process, context);
+            let laid_out = store_field_layout(handle, process, context.process_ir)
+                .and_then(|layout| process_type_from_layout(layout, context.resolved));
+            truncate_process_values(context, first);
+            if let Some(laid_out) = laid_out.filter(|ty| runtime_array_element(Some(ty)).is_some())
+            {
+                ty = Some(laid_out);
+            }
+        }
         if let Some(element) = runtime_array_element(ty.as_ref()).cloned() {
             let handle = value_ref(base, process, context);
             let literal = literal_type(pushed, Some(&element));
