@@ -3,3 +3,4 @@ module std::alloc::collections;
 // Collection types, as Rust's `alloc::collections`.
 
 pub use std::alloc::collections::vec_deque::VecDeque;
+pub use std::alloc::collections::btree_map::BTreeMap;

@@ -136,13 +136,21 @@ impl<'a> Checker<'a> {
         }
         // An impl's parameters at the receiver's arguments: `-> V` of
         // `impl<K, V> M<K, V>`, called on an `M<integer, Bit>`, is a `Bit`.
-        let positions = match owner {
-            Ty::Named(_, arguments) if !arguments.is_empty() => self
-                .ty_head(owner)
-                .and_then(|head| self.type_param_positions.get(&head)),
-            _ => None,
+        // A runtime store is a `Vec` of its element: `-> T` of `Vec::pop` on
+        // a `Vec<integer>` is an `integer`.
+        let (arguments, head) = match owner {
+            Ty::Named(_, arguments) if !arguments.is_empty() => {
+                (arguments.clone(), self.ty_head(owner))
+            }
+            Ty::Array {
+                elem,
+                len: 0,
+                family: None,
+                ..
+            } => (vec![elem.as_ref().clone()], self.method_head(owner)),
+            _ => (Vec::new(), None),
         };
-        let (Some(positions), Ty::Named(_, arguments)) = (positions, owner) else {
+        let Some(positions) = head.and_then(|head| self.type_param_positions.get(&head)) else {
             return self.ast_ty(t);
         };
         let mut bindings = self.type_bindings.borrow().clone();
