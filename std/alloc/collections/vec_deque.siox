@@ -1,0 +1,99 @@
+module std::alloc::collections::vec_deque;
+
+// `VecDeque<T>`: a double-ended queue, as Rust's
+// `alloc::collections::VecDeque` (SystemVerilog's queue `T q[$]`). Its
+// elements live in the simulator, so it is testbench storage with no
+// hardware form. See `docs/proposals/alloc.md`.
+//
+// Rust keeps a ring buffer; here the elements sit in a `Vec` from `head`
+// on. `pop_front` moves `head` and the space is reclaimed when the queue
+// empties; `push_front` reuses space before `head`, or shifts the elements
+// up one when there is none.
+// ponytail: `push_front` on a queue with no free space in front is O(n);
+// a ring buffer over a fixed-capacity store if a testbench needs it fast.
+
+use std::alloc::vec::Vec;
+
+pub struct VecDeque<T> {
+    buf: Vec<T>,
+    head: integer,
+}
+
+impl<T> VecDeque<T> {
+    // The number of elements.
+    pub fn len() -> integer {
+        return self.buf.len() - self.head;
+    }
+
+    // Whether it holds no elements.
+    pub fn is_empty() -> Bool {
+        return self.buf.len() == self.head;
+    }
+
+    // Appends an element to the back.
+    pub fn push_back(value: T) {
+        self.buf.push(value);
+    }
+
+    // Prepends an element to the front.
+    pub fn push_front(value: T) {
+        if self.head > 0 {
+            self.head = self.head - 1;
+            self.buf[self.head] = value;
+        } else if self.buf.len() == 0 {
+            self.buf.push(value);
+        } else {
+            let last: integer = self.buf.len() - 1;
+            self.buf.push(self.buf[last]);
+            for step in 0 .. last - 1 {
+                self.buf[last - step] = self.buf[last - step - 1];
+            }
+            self.buf[0] = value;
+        }
+    }
+
+    // Removes the first element and returns it, as Rust's `pop_front`
+    // without its `Option`: an empty queue stops the test.
+    pub fn pop_front() -> T {
+        let first: T = self.buf[self.head];
+        self.head = self.head + 1;
+        if self.head == self.buf.len() {
+            self.buf.clear();
+            self.head = 0;
+        }
+        return first;
+    }
+
+    // Removes the last element and returns it, as Rust's `pop_back`
+    // without its `Option`: an empty queue stops the test.
+    pub fn pop_back() -> T {
+        let last: T = self.buf.pop();
+        if self.head == self.buf.len() {
+            self.buf.clear();
+            self.head = 0;
+        }
+        return last;
+    }
+
+    // The first element; reading an empty queue stops the test.
+    pub fn front() -> T {
+        return self.buf[self.head];
+    }
+
+    // The last element; reading an empty queue stops the test.
+    pub fn back() -> T {
+        return self.buf[self.buf.len() - 1];
+    }
+
+    // The element `index` places from the front, as Rust's `get` without
+    // its `Option`: out of range stops the test.
+    pub fn get(index: integer) -> T {
+        return self.buf[self.head + index];
+    }
+
+    // Removes every element.
+    pub fn clear() {
+        self.buf.clear();
+        self.head = 0;
+    }
+}

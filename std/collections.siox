@@ -1,0 +1,6 @@
+module std::collections;
+
+// Collection types, re-exported from `std::alloc::collections` as Rust's
+// `std::collections` is from `alloc::collections`.
+
+pub use std::alloc::collections::vec_deque::VecDeque;

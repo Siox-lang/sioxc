@@ -76,8 +76,15 @@ raw-part methods of the kept types (`as_ptr`, `from_raw_parts`,
 reference in Rust (`get_mut`, `iter_mut`, `entry`) takes the copy-in/
 copy-out form siox already uses for parameters, or waits for a later ruling.
 
-Landed: the layout, with `Vec<T>` and `String` (step 1 below) moved under
-it and re-exported.
+Landed:
+- the layout, with `Vec<T>` and `String` (step 1 below) moved under it and
+  re-exported (#782);
+- structs holding `Vec`/`String` fields, copied as values (#783), and
+  generic structs over them (`struct Q<T> { items: Vec<T> }`, #784): the
+  shape every collection here is written in;
+- `std::alloc::collections::VecDeque<T>`, re-exported as
+  `std::collections::VecDeque`: `push_back`, `push_front`, `pop_front`,
+  `pop_back`, `front`, `back`, `get`, `len`, `is_empty`, `clear`.
 
 ## What siox takes
 
