@@ -914,7 +914,9 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::CheckedIndex {
                 index, left, right, ..
             } => !index_never_fails(design, *index, (*left).min(*right), (*left).max(*right)),
-            ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. } => true,
+            ProcessValueKind::ForeignCall { .. }
+            | ProcessValueKind::HostCall { .. }
+            | ProcessValueKind::Format { .. } => true,
             ProcessValueKind::Parameter { .. } => false,
             kind if arithmetic_can_fail(design, kind) => true,
             ProcessValueKind::Field { base, .. }

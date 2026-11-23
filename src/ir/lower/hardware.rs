@@ -399,7 +399,8 @@ fn normalized_value_width(
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
         ProcessValueKind::Number(ProcessNumber::Real(_))
         | ProcessValueKind::ForeignCall { .. }
-        | ProcessValueKind::HostCall { .. } => Some(64),
+        | ProcessValueKind::HostCall { .. }
+        | ProcessValueKind::Format { .. } => Some(64),
         ProcessValueKind::BitString { width, .. } => Some(*width),
         ProcessValueKind::Parameter { .. } => value.bit_width,
         ProcessValueKind::Char(_) => Some(1),

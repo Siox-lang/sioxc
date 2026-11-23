@@ -10476,6 +10476,22 @@ fn runtime_array_copy(
             context.process_ir.values[value.0 as usize].ty = Some(fixed);
         }
     }
+    // `""` into a `String`: the empty string, handle zero.
+    if runtime_string
+        && matches!(
+            &context.process_ir.values[value.0 as usize].kind,
+            ProcessValueKind::String(text) if text.is_empty()
+        )
+    {
+        let span = context.process_ir.values[value.0 as usize].span;
+        return push_value(
+            span,
+            ty.cloned(),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+            context,
+        );
+    }
     if runtime_string
         && (matches!(
             process_value_type(value, context),
@@ -13255,6 +13271,48 @@ fn value_ref_with_type_inner(
         context.process_ir.value_layouts[value.0 as usize] = layout;
         return value;
     }
+    // `format!("..", args)`: the message a `print!` would write, as a new
+    // runtime string (alloc proposal).
+    if let ast::Expr::Call {
+        callee,
+        args,
+        bang: true,
+        span,
+        ..
+    } = expression
+    {
+        if matches!(callee.as_ref(), ast::Expr::Path(path) if path_name(path) == "format") {
+            let lowered = args
+                .iter()
+                .skip(1)
+                .map(|argument| value_ref(argument, process, context))
+                .collect::<Vec<_>>();
+            let lowered = std::iter::once(ProcessValueId(u32::MAX))
+                .chain(lowered)
+                .collect::<Vec<_>>();
+            let string = crate::types::Ty::Array {
+                elem: Box::new(crate::types::Ty::Char),
+                len: 0,
+                family: None,
+                low: 0,
+            };
+            let Some(parts) =
+                lower_process_format(&ProcessRuntimeOp::Print, args, &lowered, process, context)
+            else {
+                return push_value(*span, None, None, ProcessValueKind::Default, context);
+            };
+            let value = push_value(
+                *span,
+                Some(string.clone()),
+                Some(64),
+                ProcessValueKind::Format { parts },
+                context,
+            );
+            context.process_ir.value_layouts[value.0 as usize] =
+                process_layout_for_type(&string, *span, context);
+            return value;
+        }
+    }
     if let ast::Expr::Call {
         callee,
         type_args,
@@ -14867,7 +14925,8 @@ fn source_value_width(
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
         ProcessValueKind::Number(ProcessNumber::Real(_))
         | ProcessValueKind::ForeignCall { .. }
-        | ProcessValueKind::HostCall { .. } => Some(64),
+        | ProcessValueKind::HostCall { .. }
+        | ProcessValueKind::Format { .. } => Some(64),
         ProcessValueKind::Suffixed { number, .. } => match number {
             ProcessNumber::Integer(_) | ProcessNumber::Real(_) => Some(64),
         },

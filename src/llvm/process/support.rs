@@ -17,6 +17,56 @@ impl std::ops::Deref for ProcessValueSupport {
 }
 
 /// Assertions, warnings, and prints use a deliberately small fixed ABI.
+/// Whether every part of a runtime message can be rendered from finalized
+/// Process metadata (a `print!`'s, or a `format!` value's).
+pub(super) fn format_parts_supported(
+    design: &Design,
+    parts: &[ProcessFormatPart],
+    values: &[bool],
+) -> bool {
+    parts.iter().all(|part| match part {
+        ProcessFormatPart::Text(_) | ProcessFormatPart::Open { .. } | ProcessFormatPart::Close => {
+            true
+        }
+        ProcessFormatPart::Value {
+            value,
+            kind: ProcessDisplayKind::String,
+            ..
+        } => {
+            process_string(design, *value).is_some()
+                || dynamic_string_value(design, *value)
+                    && values.get(value.0 as usize).copied().unwrap_or(false)
+                || process_empty_string(design, *value)
+                || values.get(value.0 as usize).copied().unwrap_or(false)
+                    && process_value_layout(design, *value)
+                        .and_then(process_fixed_string_layout)
+                        .is_some()
+        }
+        ProcessFormatPart::Value { value, kind, .. } => {
+            values.get(value.0 as usize).copied().unwrap_or(false)
+                && design
+                    .process_ir
+                    .values
+                    .get(value.0 as usize)
+                    .and_then(|value| value.bit_width)
+                    .is_some_and(|width| {
+                        width > 0
+                            && width <= super::super::emit::LLVM_MAX_INT_BITS
+                            && match kind {
+                                ProcessDisplayKind::Real => width == 64,
+                                ProcessDisplayKind::Character => width <= 32,
+                                ProcessDisplayKind::Enum(name)
+                                | ProcessDisplayKind::Symbol(name) => {
+                                    width <= 64 && design.enum_syms.contains_key(name)
+                                }
+                                ProcessDisplayKind::Unsigned | ProcessDisplayKind::Signed => true,
+                                ProcessDisplayKind::String => false,
+                            }
+                    })
+        }
+    })
+}
+
 /// Accept formatting only when finalized Process metadata is sufficient to
 /// render the value without consulting source syntax.
 pub(super) fn runtime_instruction_supported(
@@ -26,51 +76,8 @@ pub(super) fn runtime_instruction_supported(
     format: &Option<Vec<ProcessFormatPart>>,
     values: &[bool],
 ) -> bool {
-    let format_supported = |parts: &[ProcessFormatPart]| {
-        parts.iter().all(|part| match part {
-            ProcessFormatPart::Text(_)
-            | ProcessFormatPart::Open { .. }
-            | ProcessFormatPart::Close => true,
-            ProcessFormatPart::Value {
-                value,
-                kind: ProcessDisplayKind::String,
-                ..
-            } => {
-                process_string(design, *value).is_some()
-                    || dynamic_string_value(design, *value)
-                        && values.get(value.0 as usize).copied().unwrap_or(false)
-                    || process_empty_string(design, *value)
-                    || values.get(value.0 as usize).copied().unwrap_or(false)
-                        && process_value_layout(design, *value)
-                            .and_then(process_fixed_string_layout)
-                            .is_some()
-            }
-            ProcessFormatPart::Value { value, kind, .. } => {
-                values.get(value.0 as usize).copied().unwrap_or(false)
-                    && design
-                        .process_ir
-                        .values
-                        .get(value.0 as usize)
-                        .and_then(|value| value.bit_width)
-                        .is_some_and(|width| {
-                            width > 0
-                                && width <= super::super::emit::LLVM_MAX_INT_BITS
-                                && match kind {
-                                    ProcessDisplayKind::Real => width == 64,
-                                    ProcessDisplayKind::Character => width <= 32,
-                                    ProcessDisplayKind::Enum(name)
-                                    | ProcessDisplayKind::Symbol(name) => {
-                                        width <= 64 && design.enum_syms.contains_key(name)
-                                    }
-                                    ProcessDisplayKind::Unsigned | ProcessDisplayKind::Signed => {
-                                        true
-                                    }
-                                    ProcessDisplayKind::String => false,
-                                }
-                        })
-            }
-        })
-    };
+    let format_supported =
+        |parts: &[ProcessFormatPart]| format_parts_supported(design, parts, values);
     let condition = arguments
         .first()
         .and_then(|id| values.get(id.0 as usize))
@@ -693,6 +700,11 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                         has(&supported, *argument)
                             || pointer_arguments.get(index).copied().unwrap_or(false)
                     })
+            }
+            // `format!`: its parts render as a print's would, into a handle.
+            ProcessValueKind::Format { parts } => {
+                value.bit_width == Some(64)
+                    && format_parts_supported(design, parts, &supported.values)
             }
             ProcessValueKind::HostCall {
                 operation,

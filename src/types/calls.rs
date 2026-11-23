@@ -386,7 +386,7 @@ impl<'a> Checker<'a> {
         // `assert!`/`warn!(cond, "msg", args..)` and `write!(f, "msg", args..)`
         // put the format string second.
         let fmt_at = match name {
-            "print" => 0,
+            "print" | "format" => 0,
             "assert" | "warn" | "write" => 1,
             _ => return,
         };
@@ -744,6 +744,11 @@ impl<'a> Checker<'a> {
             "seed" | "print" | "assert" | "warn" | "write" | "await" | "wait" | "tick"
             | "clock" | "stop" | "finish" => Ty::Void,
             "read" | "resize" => Ty::Error,
+            // `format!`: a `String` (alloc proposal).
+            "format" => self
+                .resolved
+                .lang("String")
+                .map_or(Ty::Error, |string| Ty::Named(string, Vec::new())),
             _ => Ty::Error,
         }
     }
@@ -1080,7 +1085,9 @@ impl<'a> Checker<'a> {
                 );
                 return;
             }
-        } else if matches!(function, "print" | "assert" | "warn" | "write") && args.is_empty() {
+        } else if matches!(function, "print" | "assert" | "warn" | "write" | "format")
+            && args.is_empty()
+        {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(callee),
@@ -1090,6 +1097,7 @@ impl<'a> Checker<'a> {
         } else if !matches!(
             function,
             "print"
+                | "format"
                 | "assert"
                 | "warn"
                 | "write"

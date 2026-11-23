@@ -1081,7 +1081,7 @@ impl Expander<'_> {
                 if *bang {
                     let builtin = matches!(callee.as_ref(), Expr::Path(p)
                         if p.segments.len() == 1
-                            && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn" | "write"));
+                            && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn" | "write" | "format"));
                     match self.take_args(*span) {
                         // `builtin # …`: a bang call with no argument tokens.
                         // Only `core`'s macro bodies may write it, and it
