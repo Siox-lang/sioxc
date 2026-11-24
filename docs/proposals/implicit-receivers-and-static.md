@@ -7,8 +7,10 @@ Status: **accepted, mostly implemented** (owner, 2026-10-31; landed
 `static let` in processes and functions with variable semantics, one copy per
 function (#371), testbench storage (#372) and hardware process registers
 (#373), and bare field names (`value` for `self.value`, shadowed by
-parameters and locals). Remaining: public entity methods, a hardware function's `static let`, and promoting the migration
-warning to an error. The implemented language is
+parameters and locals). A written `self` parameter is an error since
+2026-11-24 (it was a migration warning). Remaining: a hardware function's
+`static let`; public entity methods are tracked in
+[entity-methods](entity-methods.md). The implemented language is
 [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md).
 
 ## Decision
