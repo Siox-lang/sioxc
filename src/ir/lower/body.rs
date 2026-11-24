@@ -304,7 +304,10 @@ impl<'a> Lowering<'a> {
                         if let Some((requested, fpath)) =
                             l.value.as_ref().and_then(Self::fs_read_call)
                         {
-                            if self.type_resolves_to(requested, "string") {
+                            if self.type_resolves_to(requested, "string")
+                                || matches!(requested, ast::Type::Indexed { base, .. }
+                                    if self.type_resolves_to(base, "Char"))
+                            {
                                 match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                     Ok(text) => {
                                         let chars: Vec<char> = text.chars().collect();
@@ -512,7 +515,10 @@ impl<'a> Lowering<'a> {
                     // requested destination representation.
                     if let Some((requested, fpath)) = l.value.as_ref().and_then(Self::fs_read_call)
                     {
-                        if self.type_resolves_to(requested, "string") {
+                        if self.type_resolves_to(requested, "string")
+                            || matches!(requested, ast::Type::Indexed { base, .. }
+                                    if self.type_resolves_to(base, "Char"))
+                        {
                             if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
                                 match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                     Ok(text) => {

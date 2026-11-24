@@ -370,6 +370,15 @@ fn declared_nominal_type(ty: Option<&ast::Type>, resolved: &Resolved) -> Option<
         return None;
     };
     let definition = resolved.resolved(path.span)?;
+    // A `String` is held as the runtime string (alloc proposal).
+    if resolved.lang("String") == Some(definition) {
+        return Some(crate::types::Ty::Array {
+            elem: Box::new(crate::types::Ty::Char),
+            len: 0,
+            family: None,
+            low: 0,
+        });
+    }
     matches!(
         resolved.def(definition)?.kind,
         crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
@@ -2671,6 +2680,13 @@ fn lower_ordered_storage_initializer(
         context,
     );
     let value = value_ref_with_type(initializer, process, context, ty.as_ref());
+    // A `String` is a runtime handle: fixed text initializing it becomes a
+    // runtime string, as a local's does (alloc proposal).
+    let value = if declares_string(declaration, context) {
+        runtime_array_copy(value, ty.as_ref(), context)
+    } else {
+        value
+    };
     if matches!(process.activation, ProcessActivation::Initialization) {
         context.process_ir.storages[storage.0 as usize].initializer = Some(value);
     }
@@ -10003,7 +10019,7 @@ fn lower_process_file_call(
     };
     let return_type = return_type.or(requested.as_ref());
     let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
-            if type_leaf(requested) == Some("string"));
+            if matches!(type_leaf(requested), Some("string" | "String")));
     let operation = if builtin_callee_is(callee, "read", context) {
         if process_type_is_string(return_type) || return_type.is_none() && direct_string {
             match return_type {
@@ -10405,6 +10421,40 @@ fn runtime_array_copy(
         Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
             if matches!(elem.as_ref(), crate::types::Ty::Char)
     );
+    // `let s: String = if c { "pos" } else { "neg" };`: each arm becomes a
+    // runtime string, and the selection picks a handle. Selecting the fixed
+    // texts first was as wide as the text, not a handle, and did not lower.
+    if runtime_string {
+        if let ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } = context.process_ir.values[value.0 as usize].kind.clone()
+        {
+            let then_value = runtime_array_copy(then_value, ty, context);
+            let else_value = runtime_array_copy(else_value, ty, context);
+            let handles = [then_value, else_value]
+                .iter()
+                .all(|arm| context.process_ir.values[arm.0 as usize].bit_width == Some(64));
+            if handles {
+                let span = context.process_ir.values[value.0 as usize].span;
+                let select = push_value(
+                    span,
+                    ty.cloned(),
+                    Some(64),
+                    ProcessValueKind::Select {
+                        condition,
+                        then_value,
+                        else_value,
+                    },
+                    context,
+                );
+                context.process_ir.value_layouts[select.0 as usize] =
+                    ty.and_then(|ty| process_layout_for_type(ty, span, context));
+                return select;
+            }
+        }
+    }
     // A call returning a fixed string through a `string` result (`echo(
     // "hello")` of `fn echo(s: string) -> string`) carries that `Char[5]`:
     // typed as the unsized result, it was stored as a runtime handle it is
@@ -10694,13 +10744,21 @@ fn process_value_is_runtime_string(
                 | ProcessHostValueOp::StringFrom,
             ..
         } => true,
+        // A `String` storage is one whatever initialized it (`""` is handle
+        // zero), as a runtime local is.
         ProcessValueKind::Storage(storage) => context
             .process_ir
             .storages
             .get(storage.0 as usize)
-            .and_then(|storage| storage.initializer)
-            .is_some_and(|initializer| {
-                process_value_is_runtime_string(initializer, process, context)
+            .is_some_and(|storage| {
+                storage.initializer.is_some_and(|initializer| {
+                    process_value_is_runtime_string(initializer, process, context)
+                }) || storage.initializer.is_some_and(|initializer| {
+                    matches!(
+                        context.process_ir.values[initializer.0 as usize].kind,
+                        ProcessValueKind::Number(_)
+                    )
+                }) && runtime_handle_width(storage.layout.as_ref()).is_some()
             }),
         // A runtime array local is one whatever it was initialized with (an
         // unset one, `[]`, holds the empty array).
@@ -14010,7 +14068,7 @@ fn value_ref_with_type_inner(
             // before its declaration identity disappears.
             let mut left_type = operand_type(lhs, process, context);
             let mut right_type = operand_type(rhs, process, context);
-            let (left, right) = if matches!(left_type, Some(crate::types::Ty::Real))
+            let (mut left, mut right) = if matches!(left_type, Some(crate::types::Ty::Real))
                 || matches!(right_type, Some(crate::types::Ty::Real))
             {
                 // Integer literals in a real arithmetic/comparison context
@@ -14048,8 +14106,29 @@ fn value_ref_with_type_inner(
                 )
             };
             if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
-                let left_handle = process_value_is_runtime_string(left, process, context);
-                let right_handle = process_value_is_runtime_string(right, process, context);
+                let mut left_handle = process_value_is_runtime_string(left, process, context);
+                let mut right_handle = process_value_is_runtime_string(right, process, context);
+                // Fixed text beside a `String` (`s == u` of a `Char[5]` and a
+                // `String`) compares as text: it becomes a runtime string.
+                let fixed_text = |value: ProcessValueId, context: &LoweringContext<'_>| {
+                    !process_value_is_string_literal(value, context)
+                        && matches!(process_value_type(value, context),
+                            Some(crate::types::Ty::Array { elem, len, family: None, .. })
+                                if len > 0 && matches!(elem.as_ref(), crate::types::Ty::Char))
+                };
+                let runtime = crate::types::Ty::Array {
+                    elem: Box::new(crate::types::Ty::Char),
+                    len: 0,
+                    family: None,
+                    low: 0,
+                };
+                if left_handle && fixed_text(right, context) {
+                    right = runtime_array_copy(right, Some(&runtime), context);
+                    right_handle = true;
+                } else if right_handle && fixed_text(left, context) {
+                    left = runtime_array_copy(left, Some(&runtime), context);
+                    left_handle = true;
+                }
                 let operands = if left_handle && process_value_is_string_literal(right, context) {
                     Some((ProcessHostValueOp::StringEqualsUtf8, left, right))
                 } else if right_handle && process_value_is_string_literal(left, context) {

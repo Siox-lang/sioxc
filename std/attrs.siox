@@ -16,5 +16,5 @@ module std::attrs;
 pub attr keep: Bool for let, port = false;  // keep through optimization
 pub attr top: Bool for entity = false;      // the design's top entity, for tools
 pub attr clock: Bool for port = false;      // this port is a clock input
-pub attr library: string for entity = "";   // a foreign entity's library
-pub attr name: string for entity = "";      // a foreign entity's name there
+pub attr library: Char[] for entity = "";   // a foreign entity's library
+pub attr name: Char[] for entity = "";      // a foreign entity's name there

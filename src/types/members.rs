@@ -293,7 +293,7 @@ impl<'a> Checker<'a> {
                 format!(
                     "`{}` has no method `{}`",
                     if string {
-                        "string".to_string()
+                        "String".to_string()
                     } else {
                         self.ty_display(&recv)
                     },

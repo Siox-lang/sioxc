@@ -332,6 +332,10 @@ impl<'a> Checker<'a> {
                 let kind = match type_head_name(&a.ty) {
                     Some("Bool") => AttrValueTy::Bool,
                     Some("string") | Some("str") => AttrValueTy::Str,
+                    // Fixed text, `Char[]`.
+                    Some("Char") if matches!(a.ty, Type::Indexed { index: None, .. }) => {
+                        AttrValueTy::Str
+                    }
                     Some("integer") => AttrValueTy::Integer,
                     _ => AttrValueTy::Other,
                 };
