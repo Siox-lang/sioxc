@@ -822,6 +822,7 @@ uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
 
 uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
                                        uint64_t length) {
+    if (!handle) return length == 0; /* an unset `String` is empty */
     sx_runtime_string *string = sx_runtime_string_for(handle);
     if (!string || !text) return 0;
     return length == string->byte_length
@@ -829,8 +830,9 @@ uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
 }
 
 uint64_t sx_runtime_string_equals(uint64_t left, uint64_t right) {
-    sx_runtime_string *a = sx_runtime_string_for(left);
-    sx_runtime_string *b = sx_runtime_string_for(right);
+    /* An unset `String` (handle zero) is empty. */
+    sx_runtime_string *a = left ? sx_runtime_string_for(left) : 0;
+    sx_runtime_string *b = right ? sx_runtime_string_for(right) : 0;
     uint64_t a_length = a ? a->byte_length : 0;
     uint64_t b_length = b ? b->byte_length : 0;
     return a_length == b_length

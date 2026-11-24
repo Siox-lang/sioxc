@@ -1132,7 +1132,14 @@ impl<'a> Checker<'a> {
                         ImplItem::Let(declaration) => {
                             if let Some(ty) = &declaration.ty {
                                 self.check_type_layout(ty);
+                                // A test entity's body is testbench code: a
+                                // `String` or `Vec` there is runtime storage.
+                                let test = self
+                                    .type_key(&implementation.target)
+                                    .is_some_and(|key| self.test_entities.contains(&key));
+                                let saved = self.in_testbench.replace(test);
                                 self.check_storable(ty);
+                                self.in_testbench.set(saved);
                             }
                         }
                         ImplItem::Fn(function) => self.check_fn_type_layouts(function),
