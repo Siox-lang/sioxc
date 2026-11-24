@@ -1004,6 +1004,8 @@ impl<'a> Checker<'a> {
                 // `read<Logic[]>`: a character enum reads as text.
                 let symbols = |ty: &Ty| matches!(ty, Ty::Named(id, ..) if self.is_char_enum(*id));
                 let supported = matches!(requested, Ty::Integer)
+                    // `read<String>`: the file's text.
+                    || self.is_string(&requested)
                     || matches!(
                         requested,
                         Ty::Array {
@@ -1034,7 +1036,7 @@ impl<'a> Checker<'a> {
                     self.error(
                         codes::TYPE_MISMATCH,
                         type_head_span(requested_type).unwrap_or(expr_span(callee)),
-                        "`read<T>` needs `string`, `integer`, a sized packed numeric type constructible from `integer`, an unsized array of one or of fixed arrays of one (`T[]`), or of a character enum such as `Logic` (read as text)"
+                        "`read<T>` needs `String`, `integer`, a sized packed numeric type constructible from `integer`, an unsized array of one or of fixed arrays of one (`T[]`), or of a character enum such as `Logic` (read as text)"
                             .to_string(),
                     );
                 }

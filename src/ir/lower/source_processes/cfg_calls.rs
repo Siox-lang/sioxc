@@ -572,10 +572,12 @@ fn result_local(
                 },
             })
         });
+    // A returned `String` or `Vec` is its runtime handle.
     let width = layout
         .as_ref()
         .and_then(SourceLayout::packed_width)
-        .or(node.bit_width);
+        .or(node.bit_width)
+        .or_else(|| runtime_handle_width(layout.as_ref()));
     process.locals.push(ProcessLocal {
         id: local,
         name: format!("<return:{}>", local.0),
@@ -887,7 +889,9 @@ fn inline_call_once(
             unreachable!()
         };
         process.locals[local.0 as usize].layout = Some(layout.clone());
-        context.process_ir.values[result.0 as usize].bit_width = layout.packed_width();
+        context.process_ir.values[result.0 as usize].bit_width = layout
+            .packed_width()
+            .or_else(|| runtime_handle_width(Some(&layout)));
         context.process_ir.value_layouts[result.0 as usize] = Some(layout);
     }
     declare_result(result, process, *block, context);
@@ -1187,10 +1191,12 @@ pub(super) fn local_value(
 ) -> ProcessValueId {
     let declared = &process.locals[local.0 as usize];
     let layout = declared.layout.clone();
+    // A `String` or `Vec` local is its runtime handle.
     let width = layout
         .as_ref()
         .and_then(SourceLayout::packed_width)
-        .or_else(|| frame_kernel_width(declared));
+        .or_else(|| frame_kernel_width(declared))
+        .or_else(|| runtime_handle_width(layout.as_ref()));
     let value = push_value(
         declared.span,
         declared.ty.clone(),

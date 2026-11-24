@@ -10003,7 +10003,7 @@ fn lower_process_file_call(
     };
     let return_type = return_type.or(requested.as_ref());
     let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
-            if type_leaf(requested) == Some("string"));
+            if matches!(type_leaf(requested), Some("string" | "String")));
     let operation = if builtin_callee_is(callee, "read", context) {
         if process_type_is_string(return_type) || return_type.is_none() && direct_string {
             match return_type {
@@ -10405,6 +10405,40 @@ fn runtime_array_copy(
         Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
             if matches!(elem.as_ref(), crate::types::Ty::Char)
     );
+    // `let s: String = if c { "pos" } else { "neg" };`: each arm becomes a
+    // runtime string, and the selection picks a handle. Selecting the fixed
+    // texts first was as wide as the text, not a handle, and did not lower.
+    if runtime_string {
+        if let ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } = context.process_ir.values[value.0 as usize].kind.clone()
+        {
+            let then_value = runtime_array_copy(then_value, ty, context);
+            let else_value = runtime_array_copy(else_value, ty, context);
+            let handles = [then_value, else_value]
+                .iter()
+                .all(|arm| context.process_ir.values[arm.0 as usize].bit_width == Some(64));
+            if handles {
+                let span = context.process_ir.values[value.0 as usize].span;
+                let select = push_value(
+                    span,
+                    ty.cloned(),
+                    Some(64),
+                    ProcessValueKind::Select {
+                        condition,
+                        then_value,
+                        else_value,
+                    },
+                    context,
+                );
+                context.process_ir.value_layouts[select.0 as usize] =
+                    ty.and_then(|ty| process_layout_for_type(ty, span, context));
+                return select;
+            }
+        }
+    }
     // A call returning a fixed string through a `string` result (`echo(
     // "hello")` of `fn echo(s: string) -> string`) carries that `Char[5]`:
     // typed as the unsized result, it was stored as a runtime handle it is

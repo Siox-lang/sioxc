@@ -30,22 +30,22 @@ pub trait Neg<Out> { fn neg() -> Out; }                  // -a
 
 // A user operator: any symbol or word the grammar does not reserve, such as
 // `xor`. It binds its precedence inside its impl with `attr precedence = N;`.
-pub trait CustomOperator<op: string, Rhs, Out> {
+pub trait CustomOperator<op: Char[], Rhs, Out> {
     fn apply(rhs: Rhs) -> Out;
 }
 
 // Literal affixes are symbol-parameterized the same way (spec 3.24): the first
 // argument is the affix string, the second the literal's data type.
-//   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", string> for T`
+//   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", Char[]> for T`
 //   - a numeric suffix `10ns` dispatches to `impl Suffix<"ns", integer> for T`
 // The impl's target type is what the literal produces; prefix evaluation is a
 // compiler intrinsic (radix expansion) until const string operations land, so
 // prefix impls inherit the empty default body.
-pub trait Prefix<char: string, T> {
+pub trait Prefix<char: Char[], T> {
     static fn prefix(data: T) {}
 }
 
-pub trait Suffix<char: string, T> {
+pub trait Suffix<char: Char[], T> {
     static fn suffix(data: T) {}
 }
 

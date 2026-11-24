@@ -203,7 +203,11 @@ Steps, each its own PR:
    existing changes. **Landed** (`std::alloc::string`,
    `tests/string_type.rs`).
 2. core and std move to `String` or `Char[..]`, with the compiler's own
-   references to `string`.
+   references to `string`. **Landed**: attribute text and the operator
+   traits' text parameters are `Char[]`; `read<String>` (test) and
+   `read<Char[N]>` (baked hardware) replace `read<string>`; a `String`
+   parameter can be written (copy-out), and a `String` can be initialized
+   from an `if` over texts.
 3. The tests and the corpus (siox-tests) move, then `string` is removed.
 
 ## Order of work

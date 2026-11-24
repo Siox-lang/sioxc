@@ -13,6 +13,7 @@ fn a_string_takes_fixed_text_in_a_testbench() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("s.siox");
     std::fs::write(&file, TESTBENCH).unwrap();
+    std::fs::write(dir.join("x.txt"), "Hi").unwrap();
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
         .args([
             "--std",
@@ -38,6 +39,10 @@ fn a_string_takes_fixed_text_in_a_testbench() {
         "e=[] empty=true",
         "g=abc",
         "eq=true ne=true",
+        "written orig=world o=world",
+        "chosen=pos",
+        "read=[Hi]",
+        "rom=Hi",
     ] {
         assert!(stdout.contains(line), "{stdout}");
     }
@@ -75,9 +80,32 @@ const TESTBENCH: &str = r#"module s2;
 fn same(s: String) -> String {
     return s;
 }
+// Writes its parameter: copy-in/copy-out (#94) writes the caller's back.
+fn overwrite(s: String) -> String {
+    s = "world";
+    return s;
+}
+// Fixed text read at compile time, baked into hardware.
+entity Rom { o: Char[2] out }
+impl Rom {
+    let text: Char[2] = read<Char[2]>("x.txt");
+    o = text;
+}
 #[test] entity Tb {}
 impl Tb {
+    let rom: Char[2];
+    let r: Rom = { .o = rom };
     process {
+        await 1ns;
+        print!("rom={}\n", rom);
+        let orig: String = "hello";
+        let o: String = overwrite(orig);
+        print!("written orig={} o={}\n", orig, o);
+        let a: integer = 1;
+        let chosen: String = if a > 0 { "pos" } else { "neg" };
+        print!("chosen={}\n", chosen);
+        let text: String = read<String>("x.txt");
+        print!("read=[{}]\n", text);
         let s: String = "hello";
         print!("s={} len={} empty={} c={}\n", s, s.len(), s.is_empty(), s[1]);
         let t: String = same("hi there");

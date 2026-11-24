@@ -77,8 +77,8 @@ impl Ord<unsigned> for unsigned {
 // string operations land, so each impl inherits the empty default body. A
 // plain string of logic values (`"1X10"`) needs no prefix: it reads as a Logic
 // array by context.
-impl Prefix<"x", string> for unsigned {}
-impl Prefix<"o", string> for unsigned {}
+impl Prefix<"x", Char[]> for unsigned {}
+impl Prefix<"o", Char[]> for unsigned {}
 
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors,
