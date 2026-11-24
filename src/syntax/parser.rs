@@ -2087,13 +2087,13 @@ impl<'a> Parser<'a> {
     /// An implementation or trait member without `static` has a receiver,
     /// implicit as C++'s `this`: it is recorded as the leading `self`
     /// parameter later stages already understand, at a zero-width span of its
-    /// own. Writing `self` is the old spelling: it still means the receiver,
-    /// and warns with the migration, so code written before the change keeps
-    /// compiling while it moves over.
+    /// own. Writing `self` is the old spelling, retired now every source has
+    /// moved over: it is an error that says what to drop, and still means
+    /// the receiver so nothing after it cascades.
     fn implicit_receiver(&mut self, function: &mut FnDecl) {
         if let Some(receiver) = function.params.iter().find(|param| param.is_self) {
             self.sink.emit(
-                Diagnostic::warning("the receiver is implicit: remove the `self` parameter")
+                Diagnostic::error("the receiver is implicit: remove the `self` parameter")
                     .at(receiver.span)
                     .help(format!(
                         "write `fn {}(...)`; a member without a receiver is `static fn {}(...)`",
