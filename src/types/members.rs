@@ -293,14 +293,14 @@ impl<'a> Checker<'a> {
                 format!(
                     "`{}` has no method `{}`",
                     if string {
-                        "String".to_string()
+                        "Char[]".to_string()
                     } else {
                         self.ty_display(&recv)
                     },
                     field.text
                 ),
                 if string {
-                    "a string is a `Char` array: it has the array methods, and its length is `s'length`"
+                    "fixed text is a `Char` array: it has the array methods, and its length is `s'length`"
                         .to_string()
                 } else if fixed_array {
                     "a fixed-size array cannot grow; its length is `xs'length`".to_string()
@@ -391,9 +391,14 @@ impl<'a> Checker<'a> {
             .map(|(_, m)| m.as_str())
             .collect();
         known.sort();
-        let mut d = Diagnostic::error(format!("`{head}` has no method `{}`", field.text))
-            .with_code(codes::INVALID_METHOD_CALL)
-            .at(*span);
+        // Named as written (`String`), as the field message names a type.
+        let mut d = Diagnostic::error(format!(
+            "`{}` has no method `{}`",
+            self.key_leaf(&head),
+            field.text
+        ))
+        .with_code(codes::INVALID_METHOD_CALL)
+        .at(*span);
         if !known.is_empty() {
             d = d.help(format!("it has: {}", known.join(", ")));
         }
