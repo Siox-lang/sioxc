@@ -1532,7 +1532,7 @@ mod tests {
     /// Explicit construction type arguments survive (`read<unsigned[16]>`).
     fn roundtrips_typed_construct_calls() {
         roundtrip(
-            "module m;\nimpl E {\n    let bytes: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\");\n    let text: string = read<string>(\"banner.txt\");\n}\n",
+            "module m;\nimpl E {\n    let bytes: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\");\n    let text: String = read<String>(\"banner.txt\");\n}\n",
         );
     }
 

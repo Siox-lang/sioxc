@@ -198,7 +198,7 @@ impl TB {
         let q: Char = '\'';
         let n: Char = '\n';
         let b: Char = '\\';
-        let s: string = "say \"hi\"";
+        let s: String = "say \"hi\"";
         assert!(q == '\'' and b == '\\', "escapes");
         assert!(s'length == 8, "string {}", s'length);
         let u: Arrow[2] = "←→";
@@ -214,12 +214,12 @@ const QUOTE: &str = r#"module test_str_quote;
 entity TB {}
 impl TB {
     process {
-        let s1: string = "\"";
+        let s1: String = "\"";
         print!("s1 length: {}\n", s1'length);
         print!("s1 character: {:?}\n", s1[0]); // Prints '\\' instead of '"'
         assert!(s1[0] == '"'); // FAILS
 
-        let s2: string = "a\"\"";
+        let s2: String = "a\"\"";
         print!("s2[0] = {:?}, s2[1] = {:?}, s2[2] = {:?}\n", s2[0], s2[1], s2[2]); // Prints 'a', '"', '\\'
         assert!(s2[2] == '"'); // FAILS
     }

@@ -82,7 +82,7 @@ fn reset_initializers_use_ordered_cfgs_before_hardware_and_stimulus() {
         impl Probe { n = packet.n; data = packet.data; }
         #[test] entity Test {}
         impl Test {
-            let empty: string = "";
+            let empty: String = "";
             let ready: Bit = '0';
             let base: integer = accumulate(0);
             let derived: integer = base + 2;

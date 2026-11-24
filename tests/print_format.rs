@@ -151,7 +151,7 @@ fn debug_placeholders_print_the_structural_form() {
 module debug;
 use std::math::Complex;
 enum Kind { Idle, Data }
-struct Tag { pub name: string[2], pub c: Char, pub k: Kind }
+struct Tag { pub name: Char[2], pub c: Char, pub k: Kind }
 struct Pair { pub a: integer, pub b: integer }
 impl Display for Pair {
     fn fmt(f: Formatter) { write!(f, "<{} {}>", self.a, self.b); }

@@ -977,7 +977,7 @@ impl<'a> Checker<'a> {
                     codes::TYPE_MISMATCH,
                     expr_span(callee),
                     "`read` needs exactly one constructed type".to_string(),
-                    "write `read<string>(\"text.txt\")` for UTF-8 or `read<integer>(\"data.bin\")` for binary"
+                    "write `read<String>(\"text.txt\")` for UTF-8 text or `read<integer>(\"data.bin\")` for binary"
                         .to_string(),
                 );
             } else if let Some(requested_type) = type_args[0].type_ref() {
@@ -1345,7 +1345,7 @@ impl<'a> Checker<'a> {
     /// Whether `name` is one of the built-in conversions rather than an ordinary
     /// call.
     pub(super) fn is_conversion_name(&self, name: &str) -> bool {
-        if matches!(name, "integer" | "natural" | "real" | "Char" | "string")
+        if matches!(name, "integer" | "natural" | "real" | "Char")
             || self.is_array_family(name)
             || self.structs.contains_key(name)
             || self.enum_variants.contains_key(name)

@@ -138,3 +138,16 @@ impl Top {
     o = s.len();
 }
 "#;
+
+#[test]
+fn the_retired_string_names_its_replacements() {
+    let text = diagnostics(
+        "siox_string_type_retired.siox",
+        "module r;\n#[test] entity T {}\nimpl T {\n    let s: string = \"a\";\n}\n",
+    );
+    assert!(text.contains("unknown type `string`"), "{text}");
+    assert!(
+        text.contains("fixed text is `Char[N]`") && text.contains("`String`"),
+        "{text}"
+    );
+}

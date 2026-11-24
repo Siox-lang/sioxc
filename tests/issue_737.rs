@@ -44,28 +44,28 @@ fn a_literal_through_a_string_call_is_stored() {
 }
 
 const LITERAL: &str = r#"module s3;
-fn echo(s: string) -> string {
+fn echo(s: String) -> String {
     return s;
 }
 #[test] entity T {}
 impl T {
     process {
-        let e: string = echo("hello");
+        let e: String = echo("hello");
         print!("e={}\n", e);
     }
 }
 "#;
 
 const VARIABLE: &str = r#"module s1;
-fn echo(s: string) -> string {
+fn echo(s: String) -> String {
     return s;
 }
 #[test] entity T {}
 impl T {
     process {
-        let orig: string = "hello";
+        let orig: String = "hello";
         print!("a={}\n", orig);
-        let e: string = echo(orig);
+        let e: String = echo(orig);
         print!("b={} c={}\n", e, orig);
     }
 }

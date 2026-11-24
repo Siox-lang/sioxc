@@ -1,6 +1,6 @@
 //! Regression for sioxc #628: a string literal passed to a function that
 //! writes its parameter is captured in a local of its own, sized by its
-//! text as `let s: string = "hello";` is. Kept as the literal, the callee's
+//! text as `let s: String = "hello";` is. Kept as the literal, the callee's
 //! write targeted a constant and native code generation failed.
 
 use std::process::Command;
@@ -39,7 +39,7 @@ fn a_string_literal_argument_can_be_written_by_the_callee() {
 
 const SOURCE: &str = r#"module p628;
 
-fn modify_str(s: string) -> string {
+fn modify_str(s: String) -> String {
     s = "world";
     return s;
 }
@@ -47,7 +47,7 @@ fn modify_str(s: string) -> string {
 #[test] entity T {}
 impl T {
     process {
-        let r: string = modify_str("hello");
+        let r: String = modify_str("hello");
         print!("r={}\n", r);
         print!("done\n");
     }

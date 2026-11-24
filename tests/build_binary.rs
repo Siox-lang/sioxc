@@ -2606,7 +2606,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              struct NestedBox {{
                  pub character: CharacterBox,
                  pub values: unsigned[8][2],
-                 pub word: string[3]
+                 pub word: Char[3]
              }}
              impl RealBox {{
                  pub fn half() -> real {{ return self.value / 2.0; }}
@@ -2617,11 +2617,11 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              impl T {{
                  let wide: unsigned[128] = {wide};
                  let character: Char = 'λ';
-                 let text: string = \"hé🙂\";
-                 let copied_text: string = text;
-                 let empty: string = \"\";
-                 let other_empty: string = \"\";
-                 let mutable_text: string = \"old\";
+                 let text: Char[3] = \"hé🙂\";
+                 let copied_text: String = text;
+                 let empty: String = \"\";
+                 let other_empty: String = \"\";
+                 let mutable_text: String = \"old\";
                  let scalar_character: Char = 'λ';
                  let symbol: Symbol = 'α';
                  let boxed: CharacterBox = {{ .value = 'λ' }};
@@ -2641,7 +2641,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                      {{ .value = 5, .character = 'λ' }},
                      {{ .value = {wide}, .character = 'β' }}
                  ];
-                 let words: string[3][2] = [\"abc\", \"def\"];
+                 let words: Char[3][2] = [\"abc\", \"def\"];
                  let nested_box: NestedBox = {{
                      .character = CharacterBox {{ .value = 'λ' }},
                      .values = [7, 8],
@@ -2816,7 +2816,7 @@ fn native_string_reassignment_rejects_storage_length_mismatch() {
         "module string_shape;
          #[test] entity T {}
          impl T {
-             let text: string = \"abc\";
+             let text: Char[3] = \"abc\";
              text = \"x\";
          }",
     )

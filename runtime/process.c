@@ -217,29 +217,29 @@ static int sx_utf8_next(const unsigned char *data, size_t length,
 
 uint64_t sx_runtime_read_utf8(const char *path) {
     if (!path) {
-        sx_set_error("read<string>: invalid path");
+        sx_set_error("read<String>: invalid path");
         return 0;
     }
     FILE *file = fopen(path, "rb");
     if (!file) {
-        sx_set_error("read<string>(\"%s\"): cannot open file", path);
+        sx_set_error("read<String>(\"%s\"): cannot open file", path);
         return 0;
     }
     if (fseek(file, 0, SEEK_END) || ftell(file) < 0) {
         fclose(file);
-        sx_set_error("read<string>(\"%s\"): cannot determine file length", path);
+        sx_set_error("read<String>(\"%s\"): cannot determine file length", path);
         return 0;
     }
     long end = ftell(file);
     if (end < 0 || fseek(file, 0, SEEK_SET)) {
         fclose(file);
-        sx_set_error("read<string>(\"%s\"): cannot seek file", path);
+        sx_set_error("read<String>(\"%s\"): cannot seek file", path);
         return 0;
     }
     size_t length = (size_t)end;
     if (length == SIZE_MAX || length > SIZE_MAX / sizeof(uint32_t)) {
         fclose(file);
-        sx_set_error("read<string>(\"%s\"): file is too large", path);
+        sx_set_error("read<String>(\"%s\"): file is too large", path);
         return 0;
     }
     char *bytes = malloc(length + 1);
@@ -248,7 +248,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         free(bytes);
         free(values);
         fclose(file);
-        sx_set_error("read<string>(\"%s\"): out of memory", path);
+        sx_set_error("read<String>(\"%s\"): out of memory", path);
         return 0;
     }
     size_t read = fread(bytes, 1, length, file);
@@ -256,7 +256,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
     if (read != length) {
         free(bytes);
         free(values);
-        sx_set_error("read<string>(\"%s\"): short read", path);
+        sx_set_error("read<String>(\"%s\"): short read", path);
         return 0;
     }
     return sx_runtime_string_register(bytes, values, length, path);
@@ -274,7 +274,7 @@ static uint64_t sx_runtime_string_register(char *bytes, uint32_t *values,
                          &values[count]) < 0) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): file is not valid UTF-8", what);
+            sx_set_error("read<String>(\"%s\"): file is not valid UTF-8", what);
             return 0;
         }
         ++count;
@@ -285,7 +285,7 @@ static uint64_t sx_runtime_string_register(char *bytes, uint32_t *values,
             || capacity > SIZE_MAX / sizeof(sx_runtime_string)) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): too many runtime strings", what);
+            sx_set_error("read<String>(\"%s\"): too many runtime strings", what);
             return 0;
         }
         sx_runtime_string *grown = realloc(
@@ -293,7 +293,7 @@ static uint64_t sx_runtime_string_register(char *bytes, uint32_t *values,
         if (!grown) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): out of memory", what);
+            sx_set_error("read<String>(\"%s\"): out of memory", what);
             return 0;
         }
         sx_strings = grown;
@@ -656,7 +656,7 @@ uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
                                    uint32_t character_capacity) {
     if (!words || (uint64_t)word_count * sizeof(uint64_t) <
                       (uint64_t)character_capacity * sizeof(uint32_t)) {
-        sx_set_error("read<string>: invalid fixed-string destination");
+        sx_set_error("read<Char[N]>: invalid fixed-text destination");
         return 0;
     }
     uint64_t handle = sx_runtime_read_utf8(path);
@@ -665,7 +665,7 @@ uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
     if (!string) return 0;
     if (string->length > character_capacity) {
         sx_set_error(
-            "read<string>(\"%s\"): %llu characters do not fit a %u-element string",
+            "read(\"%s\"): %llu characters do not fit Char[%u]",
             path ? path : "", (unsigned long long)string->length,
             (unsigned)character_capacity);
         return 0;

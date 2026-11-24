@@ -27,7 +27,7 @@ fn a_trait_impl_method_keeps_its_signature() {
 const HARDWARE: &str = r#"module test_trait_signature_hw;
 
 trait Greet {
-    fn hello(name: string) -> integer;
+    fn hello(name: String) -> integer;
 }
 
 struct Person {
@@ -40,7 +40,7 @@ impl Greet for Person {
     }
 }
 
-fn call_greet<T: Greet>(item: T, x: string) -> integer {
+fn call_greet<T: Greet>(item: T, x: String) -> integer {
     return T::hello(x);
 }
 
@@ -57,7 +57,7 @@ impl Top {
 const TESTBENCH: &str = r#"module test_trait_signature_tb;
 
 trait Greet {
-    fn hello(name: string) -> integer;
+    fn hello(name: String) -> integer;
 }
 
 struct Person {
@@ -70,7 +70,7 @@ impl Greet for Person {
     }
 }
 
-fn call_greet<T: Greet>(item: T, x: string) -> integer {
+fn call_greet<T: Greet>(item: T, x: String) -> integer {
     return T::hello(x);
 }
 

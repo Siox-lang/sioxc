@@ -331,7 +331,6 @@ impl<'a> Checker<'a> {
                 self.attr_targets.insert(a.name.text.clone(), targets);
                 let kind = match type_head_name(&a.ty) {
                     Some("Bool") => AttrValueTy::Bool,
-                    Some("string") | Some("str") => AttrValueTy::Str,
                     // Fixed text, `Char[]`.
                     Some("Char") if matches!(a.ty, Type::Indexed { index: None, .. }) => {
                         AttrValueTy::Str

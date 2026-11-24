@@ -18,7 +18,7 @@ fn string_return_boundary_preserves_array_types_and_payload_widths() {
         let text = if fixed {
             "fn echo(value: Char[1]) -> Char[1] { return value; }"
         } else {
-            "fn echo(value: string) -> string { return value; }"
+            "fn echo(value: String) -> String { return value; }"
         };
         let file = sources.add("string_return.siox", text);
         let span = Span::new(file, 0..text.len() as u32);

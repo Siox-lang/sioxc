@@ -305,7 +305,7 @@ impl T {
     check: process {
         await 1ns;
         let q: Logic[3..0] = "10XZ";
-        let text: string = "1010";
+        let text: String = "1010";
         print!("hw {} {} {}", e, n, s);
         print!("tb {} {} {} {} {}", q == "10XZ", "10XZ" == q, q != "10XZ", q == "1010", text == "1010");
     }

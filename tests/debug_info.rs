@@ -21,23 +21,22 @@ fn expression_inline_calls_keep_source_frames_and_value_bindings() {
     let source = directory.join("values.siox");
     let text = r#"module debug_values;
 use std::bits::unsigned;
-use std::primitive::string;
 struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81] }
 fn inspect_payload(value: Payload) -> integer {
     let copy: Payload = value;
     return copy.tag + integer(copy.gain); // expression payload return stop
 }
-fn count(value: string) -> integer {
-    let copy: string = value;
+fn count(value: String) -> integer {
+    let copy: String = value;
     return copy'length; // expression string return stop
 }
-fn echo_text(value: string) -> string {
-    let copy: string = value;
+fn echo_text(value: String) -> String {
+    let copy: String = value;
     return copy; // borrowed string return stop
 }
-fn reuse_text(value: string, mask: integer) -> integer {
+fn reuse_text(value: String, mask: integer) -> integer {
     if mask == 0 { return 0; }
-    let saved: string = echo_text(value); // reused string assignment
+    let saved: String = echo_text(value); // reused string assignment
     let first: integer = if mask > 0 { count(saved) } else { 0 }; // first reused string consumer
     let second: integer = if mask < 9 { count(saved) } else { 0 }; // second reused string consumer
     return first + second;
@@ -69,8 +68,8 @@ impl T {
         let echoed: Logic = echo(sample[7]);
         let tap: Logic = sample[7] xor sample[5];
         assert!(bit == '1' and echoed == '1' and tap == '1', "packed element arguments retain source discriminants");
-        let text: string = read<string>("argument.txt");
-        let borrowed: string = echo_text(text); // expression borrowed string call
+        let text: String = read<String>("argument.txt");
+        let borrowed: String = echo_text(text); // expression borrowed string call
         let runtime_length: integer = count(borrowed); // expression runtime string call
         let literal_length: integer = count("μ\0🙂"); // expression literal string call
         let empty_length: integer = count(""); // expression empty string call
@@ -1634,19 +1633,18 @@ fn source_string_returns_match_the_debugger_finish_abi() {
     std::fs::write(directory.join("a.txt"), "β\0🙂").unwrap();
     std::fs::write(directory.join("b.txt"), "λ\0🙂").unwrap();
     let text = r#"module debug_string_returns;
-use std::primitive::string;
 #[inline(__INLINE__)]
-fn echo_text(value: string) -> string {
-    let copy: string = value;
+fn echo_text(value: String) -> String {
+    let copy: String = value;
     return copy; // source string return stop
 }
 #[test] entity A {}
 impl A {
     stimulus: process {
-        let runtime: string = read<string>("a.txt");
-        let first: string = echo_text(runtime);
+        let runtime: String = read<String>("a.txt");
+        let first: String = echo_text(runtime);
         await 1ns;
-        let second: string = echo_text(first);
+        let second: String = echo_text(first);
         let literal: integer = echo_text("μ\0🙂")'length;
         let single: integer = echo_text("μ")'length;
         let empty: integer = echo_text("")'length;
@@ -1657,8 +1655,8 @@ impl A {
 #[test] entity B {}
 impl B {
     stimulus: process {
-        let runtime: string = read<string>("b.txt");
-        let borrowed: string = echo_text(runtime);
+        let runtime: String = read<String>("b.txt");
+        let borrowed: String = echo_text(runtime);
         let literal: integer = echo_text("μ\0🙂")'length;
         let single: integer = echo_text("μ")'length;
         let empty: integer = echo_text("")'length;
@@ -4827,7 +4825,6 @@ fn repeated_inline_calls_keep_locals_and_source_frames_across_await() {
     let source = directory.join("calls.siox");
     let text = r#"module debug_calls;
 use std::bits::unsigned;
-use std::primitive::string;
 struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81], pub data: unsigned[9] }
 impl Payload {
     pub fn inspect() {
@@ -4874,11 +4871,11 @@ fn check_wide(value: unsigned[81]) {
     await 1ns;
     assert!(value == 18446744073709551617, "wide parameter stop");
 }
-fn check_string(value: string) {
+fn check_string(value: String) {
     await 1ns;
     assert!(value'length == 3, "string parameter stop");
 }
-fn check_empty(value: string) {
+fn check_empty(value: String) {
     await 1ns;
     assert!(value'length == 0, "empty parameter stop");
 }
@@ -4908,7 +4905,7 @@ impl T {
         let bits: unsigned[9] = "01XZUWLH-";
         let packed_cells: unsigned[9][-1..-2] = ["01XZUWLH-", "01XZUWLH-"];
         let packed_index: integer = -1;
-        let text: string = read<string>("argument.txt");
+        let text: String = read<String>("argument.txt");
         leaf(1); // first call
         leaf(2); // second call
         leaf(6); leaf(7); // paired calls
@@ -5254,7 +5251,6 @@ fn direct_dwarf_supports_source_steps_and_persistent_values() {
     let source = directory.join("debug.siox");
     let mut text = r#"module debug;
 use std::bits::{unsigned, signed};
-use std::primitive::string;
 enum Mode { Idle = 3, Active = 7 }
 struct Packet { pub tag: unsigned[3], pub data: unsigned[128], pub gain: real }
 struct LogicPacket { pub tag: unsigned[3], pub gain: real, pub data: unsigned[4] }
@@ -5264,9 +5260,9 @@ entity Probe { a: unsigned[3] in, b: unsigned[5] in, y: unsigned[8] out, negativ
 impl Probe { y = unsigned[8](a) + unsigned[8](b); }
 #[test] entity T {}
 impl T {
-    let text: string = read<string>("message.txt");
-    let alias: string = text;
-    let empty: string = read<string>("empty.txt");
+    let text: String = read<String>("message.txt");
+    let alias: String = text;
+    let empty: String = read<String>("empty.txt");
     let a: unsigned[3] = 5;
     let b: unsigned[5] = 17;
     let y: unsigned[8];
@@ -5285,7 +5281,7 @@ impl T {
     let logic_matrix: unsigned[4][3..2] = ["1XZ0", "0ZX1"];
     let logic_probe: LogicProbe = { .states = states, .ascending = ascending };
     stimulus: process {
-        let local_text: string = read<string>("short.txt");
+        let local_text: String = read<String>("short.txt");
         let local_states: unsigned[9] = states;
         let local_packet: LogicPacket = logic_packet;
         let local: integer = 3;
@@ -5305,7 +5301,7 @@ impl T {
         local_states = states;
         await 1ns;
         assert!(states[8] == 'Z' and states[7] == 'X', "logic updates");
-        text = read<string>("replacement.txt");
+        text = read<String>("replacement.txt");
         local_text = text;
         await 1ns;
         assert!(text'length == 2 and local_text'length == 2 and local_text[0] == 'β' and local_text == "β🙂", "string updates");
@@ -5317,7 +5313,7 @@ impl T {
 }
 #[test] entity Reset {}
 impl Reset {
-    let text: string = read<string>("short.txt"); // reset init
+    let text: String = read<String>("short.txt"); // reset init
     process {
         await 1ns;
         assert!(text'length == 1, "reset strings");
@@ -5557,7 +5553,7 @@ assert int(value('$_exitcode')) == 0
                 + 1,
             initial_string_line = text
                 .lines()
-                .position(|line| line.contains("let text: string"))
+                .position(|line| line.contains("let text: String"))
                 .unwrap()
                 + 1,
             string_line = text
