@@ -177,7 +177,7 @@ fn native_tests_own_and_read_the_current_runtime_files() {
            let message: String = read<String>(\"message.txt\");\n\
            let again: String = read<String>(\"message.txt\");\n\
            let alias: Text = read<Text>(\"message.txt\");\n\
-           let fixed: Char[4] = read<String>(\"fixed.txt\");\n\
+           let fixed: Char[4] = read<Char[4]>(\"fixed.txt\");\n\
            let total: integer = 0;\n\
            for character in message { total = total + unicode(character); }\n\
            await 1ns;\n\
@@ -331,7 +331,7 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
     );
     assert!(
         output.contains("index 9 is outside declared range 0..2")
-            && output.contains("runtime_text_index.siox:7:29"),
+            && output.contains("runtime_text_index.siox:6:29"),
         "runtime string failure was not actionable:\n{output}"
     );
 }

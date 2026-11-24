@@ -123,10 +123,11 @@ fn reset_initializers_use_ordered_cfgs_before_hardware_and_stimulus() {
         .iter()
         .find(|storage| storage.name == "empty")
         .unwrap();
+    // An empty `String` is handle zero, the empty runtime string.
     let initializer = empty.initializer.unwrap();
     assert_eq!(
         design.process_ir.values[initializer.0 as usize].bit_width,
-        None
+        Some(64)
     );
     let output = Command::new(&binary).output().unwrap();
     assert!(
