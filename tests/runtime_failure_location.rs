@@ -72,8 +72,8 @@ fn a_failing_assertion_names_its_line() {
 #[test]
 fn failed_cfg_initializer_reads_name_the_read_expression() {
     for (name, ty, constructor) in [
-        ("initializer_utf8", "string", "string"),
-        ("initializer_fixed_utf8", "string[4]", "string"),
+        ("initializer_utf8", "String", "String"),
+        ("initializer_fixed_utf8", "Char[4]", "Char[4]"),
         ("initializer_binary", "unsigned[16]", "unsigned[16]"),
     ] {
         let declaration = format!(
@@ -83,7 +83,7 @@ fn failed_cfg_initializer_reads_name_the_read_expression() {
         );
         let column = declaration.find("read<").unwrap() + 1;
         let src = format!(
-            "module m;\nuse std::primitive::string;\n#[test] entity T {{}}\nimpl T {{\n{declaration}\n    let later: integer = unexpected();\n}}\nfn unexpected() -> integer {{ return putchar(81); }}\nextern \"C\" {{ fn putchar(value: integer) -> integer; }}\n"
+            "module m;\n#[test] entity T {{}}\nimpl T {{\n{declaration}\n    let later: integer = unexpected();\n}}\nfn unexpected() -> integer {{ return putchar(81); }}\nextern \"C\" {{ fn putchar(value: integer) -> integer; }}\n"
         );
         let out = run(name, &src);
         assert!(
@@ -559,7 +559,7 @@ fn a_failing_file_read_names_the_read_expression() {
                use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
-               \x20   let text: string = read<string>(\"definitely_absent_fixture.txt\");\n\
+               \x20   let text: String = read<String>(\"definitely_absent_fixture.txt\");\n\
                \x20   await 1ns;\n\
                }\n";
     let out = run("ioline", src);

@@ -95,7 +95,7 @@ fn a_bound_value_must_match_the_declared_type() {
     };
     const DECL: &str = "module m;\n\
             pub attr speed: integer for Pll;\n\
-            pub attr vendor: string for Pll;\n\
+            pub attr vendor: Char[] for Pll;\n\
             pub attr flag: Bool for Pll;\n\
             entity Pll { clk: Bit in, locked: Bit out }\nimpl Pll { locked = clk; }\n";
 

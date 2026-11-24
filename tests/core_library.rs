@@ -53,7 +53,7 @@ fn core_needs_no_standard_library() {
          impl Boolean for Flag { fn as_bool() -> Bool { return true; } }\n\
          fn f(x: Flag) -> Bool { if x { return true; } return false; }\n\
          #[allow(unused_param)]\n\
-         fn g(unused: integer) -> string { return \"core\"; }\n",
+         fn g(unused: integer) -> Char[] { return \"core\"; }\n",
         empty.to_str().unwrap(),
     );
     let _ = std::fs::remove_dir_all(&empty);

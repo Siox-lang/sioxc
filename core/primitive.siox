@@ -11,8 +11,5 @@ pub enum Bool {
     true
 }
 
-// Retired (alloc proposal): fixed text is `Char[N]` and growable text is
-// `String`. Kept only until the tests and the corpus move off it.
-pub type string = Char[];
 
 attr lang for Bool = "bool";

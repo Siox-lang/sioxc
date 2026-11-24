@@ -451,7 +451,7 @@ impl TB {
             "194",
             r#"module test_foreign_string;
 
-fn puts(s: string) -> integer;
+fn puts(s: Char[]) -> integer;
 
 #[test] entity TB {}
 impl TB {

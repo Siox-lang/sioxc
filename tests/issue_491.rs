@@ -2,7 +2,7 @@
 //! arguments it declares. Keyed by bare names, `impl<T> Into<Target<T>> for
 //! Source<T>` took `Source<real>` into `Target<integer>`, and `impl
 //! Into<Target<integer>> for Source<integer>` took `Source<real>` into
-//! `Target<string>`.
+//! `Target<Char[]>`.
 
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
@@ -70,8 +70,8 @@ entity Top {}
 impl Top {
     check: process {
         let s: Source<real> = Source<real> { .val = 3.14 };
-        // Source<real> implicitly converts to Target<string>!
-        let t: Target<string> = s;
+        // Source<real> implicitly converts to Target<Char[]>!
+        let t: Target<Char[]> = s;
         // String iteration crashes at runtime because t.val contains a float:
         for ch in t.val {
             print!("ch = {}\n", ch);

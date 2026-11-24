@@ -26,7 +26,7 @@ fn unknown_string_methods_are_reported() {
 const SOURCE: &str = r#"module test_string_methods;
 
 fn foo() {
-    let s: string;
+    let s: String;
     let c: Char[];
     s.any_arbitrary_method_call("foo", 123);
     c.completely_fake_method(true);

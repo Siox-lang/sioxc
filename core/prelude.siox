@@ -6,7 +6,7 @@ module core::prelude;
 // `std::prelude` it does not depend on `--std`: these sources are compiled
 // into `sioxc`.
 
-pub use core::primitive::{Bool, string};
+pub use core::primitive::Bool;
 pub use core::ops::{Boolean, Range, Index, IndexAssign, Resolve};
 pub use core::cmp::{Eq, Ord, Ordering, Match};
 pub use core::default::Default;

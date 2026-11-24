@@ -696,7 +696,7 @@ impl<'a> Resolver<'a> {
     fn seed_builtins(&mut self) {
         // The numeric and character kernels are intrinsic. Digital scalar
         // enums and indexed families come from std declarations.
-        for name in ["integer", "natural", "real", "Char", "string", "range"] {
+        for name in ["integer", "natural", "real", "Char", "range"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);
@@ -2444,6 +2444,11 @@ impl<'a> Resolver<'a> {
                         implements its named trait (`Add<Rhs, Out>`, `Sub`, `Mul`, `Div`, \
                         `Shl`, `Shr`, `And`, `Or`, `Not<Out>`) and a user symbol \
                         `CustomOperator<\"sym\", Rhs, Out>`"
+                        .to_string(),
+                    // The retired text type (alloc proposal).
+                    _ if name == "string" => "`string` was split: fixed text is `Char[N]` \
+                        (a literal `\"abc\"` is a `Char[3]`), and growable testbench text \
+                        is `String`"
                         .to_string(),
                     Some(s) => format!("did you mean `{s}`?"),
                     None => "declare it, or import it with `use`".to_string(),

@@ -51,7 +51,7 @@ struct Pair {
 
 impl Display for Pair {
     fn fmt(f: Formatter) {
-        let s: string = if self.a > 0 { "pos" } else { "neg" };
+        let s: String = if self.a > 0 { "pos" } else { "neg" };
         write!(f, "{}", s);
     }
 }
@@ -76,7 +76,7 @@ struct Pair {
 
 impl Display for Pair {
     fn fmt(f: Formatter) {
-        let s: string = if self.a > 0 { "pos" } else { "neg" };
+        let s: String = if self.a > 0 { "pos" } else { "neg" };
         write!(f, "{}", s);
     }
 }

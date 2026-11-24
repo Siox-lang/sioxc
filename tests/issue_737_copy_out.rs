@@ -40,15 +40,15 @@ fn a_written_string_parameter_copies_out() {
 }
 
 const SOURCE: &str = r#"module s5;
-fn modify_str(s: string) -> string {
+fn modify_str(s: String) -> String {
     s = "world";
     return s;
 }
 #[test] entity T {}
 impl T {
     process {
-        let orig: string = "hello";
-        let o: string = modify_str(orig);
+        let orig: String = "hello";
+        let o: String = modify_str(orig);
         print!("o={} orig={}\n", o, orig);
     }
 }

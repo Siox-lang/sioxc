@@ -10019,7 +10019,7 @@ fn lower_process_file_call(
     };
     let return_type = return_type.or(requested.as_ref());
     let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
-            if matches!(type_leaf(requested), Some("string" | "String")));
+            if type_leaf(requested) == Some("String"));
     let operation = if builtin_callee_is(callee, "read", context) {
         if process_type_is_string(return_type) || return_type.is_none() && direct_string {
             match return_type {
@@ -15836,7 +15836,7 @@ mod tests {
              impl<T: Not<T>> Not<T> for T[] { \
                fn not() -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
-             pub trait Suffix<symbol: string, input> { static fn suffix(data: input) {} } \
+             pub trait Suffix<symbol: Char[], input> { static fn suffix(data: input) {} } \
              attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::{Boolean, Not};",

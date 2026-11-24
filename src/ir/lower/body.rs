@@ -298,15 +298,14 @@ impl<'a> Lowering<'a> {
                             self.add_char_array(path, &l.name.text, text.chars().count(), l.span);
                             continue;
                         }
-                        // `let s: string = read<string>("f.txt");` — the
+                        // `let s: Char[] = read<Char[]>("f.txt");` — the
                         // compiler reads UTF-8; its code-point length sets the
                         // otherwise unconstrained range.
                         if let Some((requested, fpath)) =
                             l.value.as_ref().and_then(Self::fs_read_call)
                         {
-                            if self.type_resolves_to(requested, "string")
-                                || matches!(requested, ast::Type::Indexed { base, .. }
-                                    if self.type_resolves_to(base, "Char"))
+                            if matches!(requested, ast::Type::Indexed { base, .. }
+                                if self.type_resolves_to(base, "Char"))
                             {
                                 match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                     Ok(text) => {
@@ -328,7 +327,7 @@ impl<'a> Lowering<'a> {
                                     }
                                     Err(e) => self.sink.emit(
                                         crate::diag::Diagnostic::error(format!(
-                                            "read<string>(\"{fpath}\"): {e}"
+                                            "read<Char[N]>(\"{fpath}\"): {e}"
                                         ))
                                         .with_code(crate::diag::codes::COMPILE_TIME_IO)
                                         .at(l.span),
@@ -515,9 +514,8 @@ impl<'a> Lowering<'a> {
                     // requested destination representation.
                     if let Some((requested, fpath)) = l.value.as_ref().and_then(Self::fs_read_call)
                     {
-                        if self.type_resolves_to(requested, "string")
-                            || matches!(requested, ast::Type::Indexed { base, .. }
-                                    if self.type_resolves_to(base, "Char"))
+                        if matches!(requested, ast::Type::Indexed { base, .. }
+                                if self.type_resolves_to(base, "Char"))
                         {
                             if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
                                 match std::fs::read_to_string(self.base_dir.join(fpath)) {
@@ -526,7 +524,7 @@ impl<'a> Lowering<'a> {
                                         if chars.len() > indices.len() {
                                             self.sink.emit(
                                                 crate::diag::Diagnostic::error(format!(
-                                                    "read<string>(\"{fpath}\"): {} characters do not fit `{}` ({} elements)",
+                                                    "read<Char[N]>(\"{fpath}\"): {} characters do not fit `{}` ({} elements)",
                                                     chars.len(),
                                                     l.name.text,
                                                     indices.len()
@@ -550,7 +548,7 @@ impl<'a> Lowering<'a> {
                                     }
                                     Err(error) => self.sink.emit(
                                         crate::diag::Diagnostic::error(format!(
-                                            "read<string>(\"{fpath}\"): {error}"
+                                            "read<Char[N]>(\"{fpath}\"): {error}"
                                         ))
                                         .with_code(crate::diag::codes::COMPILE_TIME_IO)
                                         .at(l.span),

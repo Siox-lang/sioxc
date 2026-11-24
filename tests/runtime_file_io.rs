@@ -155,9 +155,8 @@ fn native_tests_own_and_read_the_current_runtime_files() {
     std::fs::write(
         &source,
         "module runtime_io;\n\
-         use std::primitive::string;\n\
          use std::text::unicode;\n\
-         type Text = string;\n\
+         type Text = String;\n\
          entity Rom { data: unsigned[8] out, wide: unsigned[128] out }\n\
          impl Rom {\n\
            let image: unsigned[8][1] = read<unsigned[8]>(\"hardware.bin\");\n\
@@ -175,10 +174,10 @@ fn native_tests_own_and_read_the_current_runtime_files() {
            let short: unsigned[8][4..2] = read<unsigned[8]>(\"short.bin\");\n\
            let scalar: unsigned[16] = read<unsigned[16]>(\"scalar.bin\");\n\
            let raw: integer = read<integer>(\"integer.bin\");\n\
-           let message: string = read<string>(\"message.txt\");\n\
-           let again: string = read<string>(\"message.txt\");\n\
+           let message: String = read<String>(\"message.txt\");\n\
+           let again: String = read<String>(\"message.txt\");\n\
            let alias: Text = read<Text>(\"message.txt\");\n\
-           let fixed: string[4] = read<string>(\"fixed.txt\");\n\
+           let fixed: Char[4] = read<String>(\"fixed.txt\");\n\
            let total: integer = 0;\n\
            for character in message { total = total + unicode(character); }\n\
            await 1ns;\n\
@@ -252,7 +251,7 @@ fn native_tests_own_and_read_the_current_runtime_files() {
         "missing file passed:\n{missing_text}"
     );
     assert!(
-        missing_text.contains("read<string>") && missing_text.contains("message.txt"),
+        missing_text.contains("read<String>") && missing_text.contains("message.txt"),
         "missing-file failure was not actionable:\n{missing_text}"
     );
 
@@ -291,7 +290,7 @@ fn native_tests_own_and_read_the_current_runtime_files() {
         "oversized fixed string passed:\n{fixed_oversized_text}"
     );
     assert!(
-        fixed_oversized_text.contains("8 characters do not fit a 4-element string"),
+        fixed_oversized_text.contains("8 characters do not fit Char[4]"),
         "fixed-string capacity failure was not precise:\n{fixed_oversized_text}"
     );
 }
@@ -306,11 +305,10 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
     std::fs::write(
         &source,
         "module runtime_text_index;\n\
-         use std::primitive::string;\n\
          use std::text::unicode;\n\
          #[test] entity RuntimeTextIndex {}\n\
          impl RuntimeTextIndex {\n\
-         \x20   let message: string = read<string>(\"message.txt\");\n\
+         \x20   let message: String = read<String>(\"message.txt\");\n\
          \x20   assert!(unicode(message[9]) == 0, \"unreachable fallback\");\n\
          }\n",
     )
@@ -357,14 +355,14 @@ module computed_paths;
 #[test] entity T {}
 impl T {
     check: process {
-        let name: string = "word.bin";
+        let name: String = "word.bin";
         assert!(exists(name), "a string local names a fixture");
         let missing: Char[8] = "gone.bin";
         assert!(exists(missing) == false, "a missing computed path is not found");
         let names: Char[8][2] = ["word.bin", "wore.bin"];
         let total: integer = 0;
         for fixture in names { total = total + read<integer>(fixture); }
-        let listed: string = read<string>("list.txt");
+        let listed: String = read<String>("list.txt");
         print!("first={} total={} listed={}\n", read<integer>(name), total, read<integer>(listed));
     }
 }
@@ -555,7 +553,7 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
     assert!(!report.contains("unreachable"), "{report}");
     // `[]` on an unconstrained array nests: `integer[][]` holds runtime
     // arrays, `string[]` strings. Assigning or pushing copies every level;
-    // `rows[i]` is written and grown in place. `string[5]` still fills.
+    // `rows[i]` is written and grown in place. `Char[5]` still fills.
     let report = compile(
         "nested",
         "let rows: integer[][];\n\
@@ -573,12 +571,12 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
          print!(\"rows={} {} {} r0={} {} r1={} r2={} copy={} t={}\\n\", rows'length, \
              rows[0]'length, rows[2]'length, rows[0][0], rows[0][1], rows[1][0], rows[2][1], \
              copy[0][0], t);\n\
-         let names: string[];\n\
-         let s: string = \"abc\";\n\
+         let names: String[];\n\
+         let s: String = \"abc\";\n\
          names.push(s);\n\
          names.push(\"de\");\n\
-         let five: string[5] = \"hello\";\n\
-         let unset: string;\n\
+         let five: Char[5] = \"hello\";\n\
+         let unset: String;\n\
          print!(\"names={} [{}] [{}] {} five={} unset=[{}] {}\\n\", names'length, names[0], \
              names[1], names[1]'length, five, unset, unset'length);",
     );
