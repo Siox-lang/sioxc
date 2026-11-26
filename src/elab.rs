@@ -1561,10 +1561,13 @@ impl<'a> Elaborator<'a> {
             // An `in` port must be driven; an `out`/`inout` port may be left
             // open — its value is still readable as `<instance>.<port>`. A port
             // driven post-declaration (`dut.p = x;`) counts as connected.
+            // A method's generated ports (`m#called`, `m#p`) are a protocol
+            // its callers drive, and default when nothing calls it.
             if !connected.contains(&p.name.text)
                 && !driven.contains(&p.name.text)
                 && p.dir == Some(Direction::In)
                 && !instance.is_empty()
+                && !p.name.text.contains('#')
             {
                 // An unconnected input isn't an error — it holds its default
                 // value (§3.29; "always initialized, may be undriven"). Warn so

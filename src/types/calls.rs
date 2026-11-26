@@ -1144,8 +1144,10 @@ impl<'a> Checker<'a> {
                 // A testbench resolves any string path when it runs; a
                 // hardware read happens at compile time and its lowering asks
                 // for a literal.
+                let path = self.type_of(argument, sym);
                 let string = matches!(argument, Expr::StrLit { .. })
-                    || matches!(self.type_of(argument, sym), Ty::Array {
+                    || self.is_string(&path)
+                    || matches!(path, Ty::Array {
                         elem, family: None, ..
                     } if matches!(elem.as_ref(), Ty::Char));
                 if !string {
@@ -1153,7 +1155,9 @@ impl<'a> Checker<'a> {
                         codes::TYPE_MISMATCH,
                         expr_span(argument),
                         format!("`{function}` needs a file path string"),
-                        format!("write `{function}(\"path/to/file\")`, or pass a `string`"),
+                        format!(
+                            "write `{function}(\"path/to/file\")`, or pass a `String` or `Char[N]`"
+                        ),
                     );
                 }
             }

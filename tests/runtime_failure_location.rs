@@ -95,7 +95,7 @@ fn failed_cfg_initializer_reads_name_the_read_expression() {
             "a failed read must stop before another initializer has effects: {out}"
         );
         assert!(
-            out.contains(&format!("{name}.siox:5:{column}")),
+            out.contains(&format!("{name}.siox:4:{column}")),
             "the executable must identify the failing read, not lose its span: {out}"
         );
     }

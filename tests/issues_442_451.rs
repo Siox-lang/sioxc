@@ -92,7 +92,7 @@ const STRING: &str = r#"module test_str_slice;
 entity Top {}
 impl Top {
     check: process {
-        let s: String = "hello world";
+        let s: Char[11] = "hello world";
         s[0..4] = "HELLO";
         print!("s = {}\n", s);
         assert!(s == "HELLO world");

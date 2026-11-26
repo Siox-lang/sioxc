@@ -513,6 +513,8 @@ impl<'a> Checker<'a> {
                     Expr::PartialRange { .. } => Ty::Error,
                     _ => match self.type_of(range, sym) {
                         Ty::Array { elem, .. } => *elem,
+                        // `for c in s`: a `String`'s characters.
+                        string if self.is_string(&string) => Ty::Char,
                         Ty::Error => Ty::Error,
                         found => {
                             self.error_with_help(

@@ -43,15 +43,16 @@ fn a_member_uses_its_implicit_receiver() {
     assert!(ok, "{text}");
 }
 
-/// The old spelling still compiles, with a warning that says what to drop.
+/// The old spelling is an error that says what to drop, and nothing else.
 #[test]
 fn a_written_self_says_how_to_migrate() {
     let (ok, text) = check(
         "written",
         "module m;\nstruct P { pub x: integer }\nimpl P { pub fn get(self) -> integer { return self.x; } }\n",
     );
-    assert!(ok, "{text}");
-    assert!(text.contains("warning"), "{text}");
+    assert!(!ok, "{text}");
+    assert!(text.contains("error"), "{text}");
+    assert!(!text.contains("warning"), "{text}");
     assert!(
         text.contains("the receiver is implicit: remove the `self` parameter"),
         "{text}"

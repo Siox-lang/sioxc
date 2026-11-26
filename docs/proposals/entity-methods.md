@@ -14,9 +14,13 @@ state lives in the child, and the result comes back in the same cycle.
 Rules: one call site per method per instance (a call in a loop counts as
 several); a direct child only; no testbench callers yet (when the strobe drops
 is undecided); a function cannot return an entity (owner rule, E-P020).
-Not built: a clocked write inside a method body that needs per-clock merging
-of several methods, arbitration between callers, and calls through an
-instance-array element.
+A call through an instance-array element works (2026-11-24): `cells[1].m()`
+calls that element, and `cells[sel].m()` strobes the element `sel` selects
+and reads its result, as *Since this was written* below describes; a
+runtime-index call is the call site of every element, and a nested index
+(`grid[i][j].m()`) is reported. Not built: a clocked write inside a method
+body that needs per-clock merging of several methods, and arbitration
+between callers.
 
 The text below is the design discussion this grew from.
 

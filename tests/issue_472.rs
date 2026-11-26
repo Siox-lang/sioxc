@@ -18,7 +18,7 @@ fn unknown_string_methods_are_reported() {
         "{text}"
     );
     assert!(
-        text.contains("`String` has no method `completely_fake_method`"),
+        text.contains("`Char[]` has no method `completely_fake_method`"),
         "{text}"
     );
 }

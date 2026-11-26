@@ -16,6 +16,11 @@
 //!   arguments just before its statement and reads `ret` in its place; the
 //!   enclosing process defaults them, so no call means no strobe.
 //!
+//! An element of an instance array is called the same way, through its
+//! ports: `cells[k].m(x)` sets `cells[k].m#called` and `cells[k].m#x` and
+//! reads `cells[k].m#ret`, and a runtime index strobes the element it
+//! selects, the process defaulting every element's strobe.
+//!
 //! One call site per method per instance (more would need arbitration), a
 //! direct child only, and no testbench callers yet: each is reported. Names
 //! the pass generates take spans in a source file of their own, so no two
@@ -70,6 +75,34 @@ impl Spans {
 
     fn assign(&mut self, target: &str, value: Expr) -> Stmt {
         let target = self.path(target);
+        let span = crate::syntax::ast::expr_span(&target);
+        Stmt::Assign {
+            label: None,
+            target,
+            value,
+            after: None,
+            span,
+        }
+    }
+
+    /// `array[index].port`: a port of one element of an instance array.
+    fn element_port(&mut self, array: &str, index: &Expr, port: &str) -> Expr {
+        let base = self.path(array);
+        let index_span = self.at(&format!("{array}[..]"));
+        let field = self.ident(port);
+        let span = field.span;
+        Expr::Field {
+            base: Box::new(Expr::Index {
+                base: Box::new(base),
+                index: Box::new(index.clone()),
+                span: index_span,
+            }),
+            field,
+            span,
+        }
+    }
+
+    fn assign_to(&mut self, target: Expr, value: Expr) -> Stmt {
         let span = crate::syntax::ast::expr_span(&target);
         Stmt::Assign {
             label: None,
@@ -1331,6 +1364,49 @@ struct Instance {
     args: HashMap<String, GenericArg>,
 }
 
+/// An instance array, `let cells: Cell[2];`: its element entity and that
+/// entity's generic arguments, and its length or range as written.
+struct ArrayInstance {
+    entity: String,
+    args: HashMap<String, GenericArg>,
+    length: Expr,
+}
+
+/// One call on an element of an instance array, for its process's
+/// defaults: the array, the element index as written, and the method.
+struct ArrayCall {
+    array: String,
+    index: Expr,
+    method: String,
+    /// Made at a process body's top level: it always strobes.
+    unconditional: bool,
+}
+
+/// An instance type's generic arguments, by parameter name.
+fn instance_args(
+    ty: &Type,
+    entity: &str,
+    entity_params: &HashMap<String, Vec<String>>,
+) -> HashMap<String, GenericArg> {
+    let mut args = HashMap::new();
+    if let Type::Generic { args: given, .. } = ty {
+        let names = entity_params.get(entity).cloned().unwrap_or_default();
+        for (index, arg) in given.iter().enumerate() {
+            match arg {
+                GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => {
+                    args.insert(name.text.clone(), arg.clone());
+                }
+                GenericArg::Positional(_) | GenericArg::PositionalType(_) => {
+                    if let Some(name) = names.get(index) {
+                        args.insert(name.clone(), arg.clone());
+                    }
+                }
+            }
+        }
+    }
+    args
+}
+
 /// Rewrite the calls an implementation makes on its children's methods.
 fn rewrite_callers(
     implementation: &mut ImplDecl,
@@ -1341,7 +1417,7 @@ fn rewrite_callers(
     sink: &mut DiagnosticSink,
 ) {
     let mut instances: HashMap<String, Instance> = HashMap::new();
-    let mut arrays: HashMap<String, String> = HashMap::new();
+    let mut arrays: HashMap<String, ArrayInstance> = HashMap::new();
     for item in &implementation.items {
         let ImplItem::Let(declaration) = item else {
             continue;
@@ -1349,31 +1425,32 @@ fn rewrite_callers(
         let Some(ty) = &declaration.ty else {
             continue;
         };
-        if let Type::Indexed { base, .. } = ty {
-            if let Some(entity) = head_name(base).filter(|name| methods.contains_key(name)) {
-                arrays.insert(declaration.name.text.clone(), entity);
+        if let Type::Indexed { base, index, .. } = ty {
+            // `Cell[2][2]` nests: its element entity is the innermost base.
+            let mut base = base.as_ref();
+            while let Type::Indexed { base: inner, .. } = base {
+                base = inner;
+            }
+            if let (Some(entity), Some(length)) = (
+                head_name(base).filter(|name| methods.contains_key(name)),
+                index.as_deref(),
+            ) {
+                let args = instance_args(base, &entity, entity_params);
+                arrays.insert(
+                    declaration.name.text.clone(),
+                    ArrayInstance {
+                        entity,
+                        args,
+                        length: length.clone(),
+                    },
+                );
             }
             continue;
         }
         let Some(entity) = head_name(ty).filter(|name| methods.contains_key(name)) else {
             continue;
         };
-        let mut args = HashMap::new();
-        if let Type::Generic { args: given, .. } = ty {
-            let names = entity_params.get(&entity).cloned().unwrap_or_default();
-            for (index, arg) in given.iter().enumerate() {
-                match arg {
-                    GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => {
-                        args.insert(name.text.clone(), arg.clone());
-                    }
-                    GenericArg::Positional(_) | GenericArg::PositionalType(_) => {
-                        if let Some(name) = names.get(index) {
-                            args.insert(name.clone(), arg.clone());
-                        }
-                    }
-                }
-            }
-        }
+        let args = instance_args(ty, &entity, entity_params);
         instances.insert(declaration.name.text.clone(), Instance { entity, args });
     }
     if instances.is_empty() && arrays.is_empty() {
@@ -1386,6 +1463,7 @@ fn rewrite_callers(
         testbench,
         sites: HashMap::new(),
         used: Vec::new(),
+        array_calls: Vec::new(),
         unconditional: HashSet::new(),
         depth: 0,
         clocked: 0,
@@ -1397,8 +1475,33 @@ fn rewrite_callers(
         match item {
             ImplItem::Process(process) => context.process(&mut process.body),
             ImplItem::Stmt(statement) => {
+                let before = context.array_calls.len();
                 let mut pre = Vec::new();
                 context.statement(statement, &mut pre);
+                // `o = cells[sel].get();` at the root: the element it selects
+                // is strobed and the others are not, which needs defaults, and
+                // only a process has them. It becomes a combinational one.
+                let runtime = context.array_calls[before..]
+                    .iter()
+                    .any(|call| !matches!(call.index, Expr::Int { .. }));
+                if runtime {
+                    let mut stmts = Vec::new();
+                    for call in before..context.array_calls.len() {
+                        stmts.extend(context.array_defaults(call));
+                    }
+                    stmts.extend(pre);
+                    if !matches!(statement, Stmt::Expr(Expr::Path(path)) if path.segments.is_empty())
+                    {
+                        stmts.push(statement.clone());
+                    }
+                    let span = context.spans.at("process { .. }");
+                    *item = ImplItem::Process(ProcessDecl {
+                        label: None,
+                        span,
+                        body: Block { stmts, span },
+                    });
+                    continue;
+                }
                 context
                     .generated
                     .extend(pre.into_iter().map(ImplItem::Stmt));
@@ -1406,6 +1509,11 @@ fn rewrite_callers(
             _ => {}
         }
     }
+    // A call statement at the implementation's root (`fifo.push(x);`)
+    // leaves only the strobes it set: drop its emptied statement.
+    implementation.items.retain(|item| {
+        !matches!(item, ImplItem::Stmt(Stmt::Expr(Expr::Path(path))) if path.segments.is_empty())
+    });
     let mut generated = std::mem::take(&mut context.generated);
     // Hidden signals and their wiring into each instance's connections.
     for (instance, method) in context.used.clone() {
@@ -1529,14 +1637,16 @@ fn substitute(ty: &Type, args: &HashMap<String, GenericArg>) -> Type {
 
 struct Callers<'a, 'b> {
     instances: &'a HashMap<String, Instance>,
-    /// Instance arrays (`let cells: Cell[2];`) by name, to their entity.
-    arrays: &'a HashMap<String, String>,
+    /// Instance arrays (`let cells: Cell[2];`) by name.
+    arrays: &'a HashMap<String, ArrayInstance>,
     methods: &'a HashMap<String, Vec<Method>>,
     testbench: bool,
     /// Where each `(instance, method)` is called, for the one-site rule.
     sites: HashMap<(String, String), Span>,
     /// Each `(instance, method)` called, in first-call order.
     used: Vec<(String, String)>,
+    /// Each call on an instance-array element, in call order.
+    array_calls: Vec<ArrayCall>,
     /// Calls made at a process body's top level: they always strobe, so
     /// they need no default.
     unconditional: HashSet<(String, String)>,
@@ -1556,6 +1666,7 @@ impl Callers<'_, '_> {
     /// drives, so no call means no strobe.
     fn process(&mut self, body: &mut Block) {
         let before = self.used.len();
+        let before_arrays = self.array_calls.len();
         let depth = std::mem::replace(&mut self.depth, 0);
         let clocked = std::mem::replace(&mut self.clocked, 0);
         self.walk(body);
@@ -1565,6 +1676,9 @@ impl Callers<'_, '_> {
         for index in before..self.used.len() {
             let (instance, method) = self.used[index].clone();
             defaults.extend(self.defaults(&instance, &method));
+        }
+        for index in before_arrays..self.array_calls.len() {
+            defaults.extend(self.array_defaults(index));
         }
         body.stmts.splice(0..0, defaults);
     }
@@ -1750,7 +1864,9 @@ impl Callers<'_, '_> {
 
     /// `instance.method(args)` on a direct child, with its span.
     /// `cells[i].method(..)` of an instance array whose entity has `method`.
-    fn array_method_call(&self, e: &Expr) -> Option<(String, String, Span)> {
+    /// The element index is `None` for a nested index (`grid[i][j]`), which
+    /// is not supported.
+    fn array_method_call(&self, e: &Expr) -> Option<(String, Option<Expr>, String, Span)> {
         let Expr::Call {
             callee,
             bang: false,
@@ -1776,11 +1892,17 @@ impl Callers<'_, '_> {
         let [array] = path.segments.as_slice() else {
             return None;
         };
-        let entity = self.arrays.get(&array.text)?;
-        self.methods[entity]
+        let element = self.arrays.get(&array.text)?;
+        let index = match base.as_ref() {
+            Expr::Index { base, index, .. } if matches!(base.as_ref(), Expr::Path(_)) => {
+                Some(index.as_ref().clone())
+            }
+            _ => None,
+        };
+        self.methods[&element.entity]
             .iter()
             .any(|m| m.name == field.text)
-            .then(|| (array.text.clone(), field.text.clone(), *span))
+            .then(|| (array.text.clone(), index, field.text.clone(), *span))
     }
 
     fn method_call(&self, e: &Expr) -> Option<(String, String, Span)> {
@@ -1812,19 +1934,21 @@ impl Callers<'_, '_> {
     /// Rewrite one call: set its strobe and arguments in `pre`, and stand
     /// for its result. Returns whether `e` was a method call.
     fn call(&mut self, e: &mut Expr, pre: &mut Vec<Stmt>, statement: bool) -> bool {
-        // `cells[0].step()`: an element of an instance array has no strobe
-        // ports wired, so the call was left as written and failed later, in
-        // hardware lowering or at run time in a testbench (#660).
-        if let Some((array, method, span)) = self.array_method_call(e) {
-            self.sink.emit(
-                Diagnostic::error(format!(
-                    "calling entity method `{method}` on an element of the instance array \
-                     `{array}` is not supported yet"
-                ))
-                .at(span)
-                .help("declare the instance on its own (`let cell: Cell;`) to call its methods"),
-            );
-            return true;
+        // `cells[1].get()`, `cells[sel].get()`: a call on an element of an
+        // instance array drives that element's method ports directly.
+        if let Some((array, index, method, span)) = self.array_method_call(e) {
+            let Some(index) = index else {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "calling entity method `{method}` through a nested index of `{array}` \
+                         is not supported yet"
+                    ))
+                    .at(span)
+                    .help("index the instance array once: `cells[i].method(..)`"),
+                );
+                return true;
+            };
+            return self.array_call(e, pre, statement, &array, index, &method, span);
         }
         let Some((instance, method, span)) = self.method_call(e) else {
             return false;
@@ -1917,6 +2041,215 @@ impl Callers<'_, '_> {
         }
         *e = self.spans.path(&format!("{instance}#{method}#ret"));
         true
+    }
+
+    /// Rewrite a call on an element of an instance array (owner design,
+    /// entity methods "Since this was written"): `cells[k].m(args)` sets
+    /// `cells[k].m#called` and the argument ports before its statement and
+    /// stands for `cells[k].m#ret`. A constant index calls that element; a
+    /// runtime one (`cells[sel]`) strobes the element it selects and reads
+    /// its result, each element still with one caller.
+    #[allow(clippy::too_many_arguments)]
+    fn array_call(
+        &mut self,
+        e: &mut Expr,
+        pre: &mut Vec<Stmt>,
+        statement: bool,
+        array: &str,
+        index: Expr,
+        method: &str,
+        span: Span,
+    ) -> bool {
+        let shown = format!("{array}[..].{method}");
+        if self.testbench {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "calling entity method `{shown}` from a testbench is not supported yet"
+                ))
+                .at(span)
+                .help("drive the element's ports, or call the method from a hardware entity"),
+            );
+            return true;
+        }
+        if self.clocked > 0 {
+            self.sink.emit(
+                Diagnostic::error(format!("`{shown}` is called under a clock edge"))
+                    .at(span)
+                    .help(
+                        "an entity method is called from combinational logic and the child acts \
+                         on its own clock: move the call out of `if clk.rising()`, under the same \
+                         condition",
+                    ),
+            );
+            return true;
+        }
+        // One call site per element: a constant index names one element, a
+        // runtime index may reach any of them.
+        let element = match &index {
+            Expr::Int { text, .. } => format!("{array}[{text}]"),
+            _ => format!("{array}[*]"),
+        };
+        let clash = self.sites.iter().find_map(|((instance, called), first)| {
+            let same = called == method
+                && (*instance == element
+                    || instance.starts_with(&format!("{array}["))
+                        && (element.ends_with("[*]") || instance.ends_with("[*]")));
+            same.then_some(*first)
+        });
+        if let Some(first) = clash {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{shown}` is already called on this element; an entity method has one call \
+                     site per instance"
+                ))
+                .at(span)
+                .label(first, "first call here")
+                .help("merge the calls, choosing the argument by condition"),
+            );
+            return true;
+        }
+        self.sites.insert((element, method.to_string()), span);
+        let found = &self.arrays[array];
+        let signature = self.methods[&found.entity]
+            .iter()
+            .find(|m| m.name == method)
+            .cloned()
+            .expect("found by array_method_call");
+        let Expr::Call { args, .. } = e else {
+            unreachable!()
+        };
+        for arg in args.iter_mut() {
+            self.expression(arg, pre);
+        }
+        if args.len() != signature.params.len() {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{shown}` takes {} argument(s) but {} were given",
+                    signature.params.len(),
+                    args.len()
+                ))
+                .at(span),
+            );
+            return true;
+        }
+        self.array_calls.push(ArrayCall {
+            array: array.to_string(),
+            index: index.clone(),
+            method: method.to_string(),
+            unconditional: self.depth == 0,
+        });
+        let called = self
+            .spans
+            .element_port(array, &index, &format!("{method}#called"));
+        let one = self.spans.bit('1');
+        pre.push(self.spans.assign_to(called, one));
+        for ((name, _), arg) in signature.params.iter().zip(args.iter()) {
+            let port = self
+                .spans
+                .element_port(array, &index, &format!("{method}#{name}"));
+            pre.push(self.spans.assign_to(port, arg.clone()));
+        }
+        if statement {
+            return true;
+        }
+        if signature.ret.is_none() {
+            self.sink
+                .emit(Diagnostic::error(format!("`{shown}` returns no value")).at(span));
+        }
+        *e = self
+            .spans
+            .element_port(array, &index, &format!("{method}#ret"));
+        true
+    }
+
+    /// The defaults a process gives the element ports one array call drives:
+    /// `'0'` for the strobe and each argument's type default, on that
+    /// element for a constant index and on every element for a runtime one.
+    fn array_defaults(&mut self, call: usize) -> Vec<Stmt> {
+        let ArrayCall {
+            array,
+            index,
+            method,
+            unconditional,
+        } = &self.array_calls[call];
+        if *unconditional && matches!(index, Expr::Int { .. }) {
+            return Vec::new();
+        }
+        let (array, index, method) = (array.clone(), index.clone(), method.clone());
+        let found = &self.arrays[&array];
+        let Some(signature) = self.methods[&found.entity]
+            .iter()
+            .find(|m| m.name == method)
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        let (args, length) = (found.args.clone(), found.length.clone());
+        let element = match &index {
+            Expr::Int { .. } => index.clone(),
+            _ => self.spans.path(&format!("{array}#{method}#element")),
+        };
+        let mut body = Vec::new();
+        let called = self
+            .spans
+            .element_port(&array, &element, &format!("{method}#called"));
+        let zero = self.spans.bit('0');
+        body.push(self.spans.assign_to(called, zero));
+        for (name, ty) in &signature.params {
+            let none = format!("{array}#{method}#none#{name}");
+            let ty = substitute(ty, &args);
+            self.generated
+                .push(ImplItem::Let(self.spans.let_decl(&none, &ty)));
+            let value = self.spans.path(&none);
+            let port = self
+                .spans
+                .element_port(&array, &element, &format!("{method}#{name}"));
+            body.push(self.spans.assign_to(port, value));
+        }
+        if matches!(index, Expr::Int { .. }) {
+            return body;
+        }
+        // Every element: `for k in 0..LEN-1 { .. }`, or over the declared
+        // range (`Cell[1..4]`).
+        let range = match &length {
+            Expr::Range { .. } => length.clone(),
+            _ => {
+                let lo = Expr::Int {
+                    text: "0".to_string(),
+                    span: self.spans.at("0"),
+                };
+                let one = Expr::Int {
+                    text: "1".to_string(),
+                    span: self.spans.at("1"),
+                };
+                let last_span = self.spans.at("LEN - 1");
+                let hi = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(length),
+                    rhs: Box::new(one),
+                    span: last_span,
+                };
+                let span = self.spans.at("0..LEN - 1");
+                Expr::Range {
+                    lo: Box::new(lo),
+                    hi: Box::new(hi),
+                    span,
+                }
+            }
+        };
+        let var = self.spans.ident(&format!("{array}#{method}#element"));
+        let block_span = self.spans.at("{ .. }");
+        let span = self.spans.at("for .. { .. }");
+        vec![Stmt::For {
+            label: None,
+            var,
+            range,
+            body: Block {
+                stmts: body,
+                span: block_span,
+            },
+            span,
+        }]
     }
 
     /// The defaults a calling process gives what it drives: `'0'` for the
