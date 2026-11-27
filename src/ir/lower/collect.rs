@@ -246,7 +246,10 @@ impl<'a> Lowering<'a> {
                                 // operand type. A non-operator trait
                                 // (Resolve/New/From) keys by its own name and
                                 // reads its first type arg.
-                                let custom = tr == "BinaryOperator";
+                                // A prefix `UnaryOperator<"flip", Out>` files
+                                // under its symbol too, with no rhs operand.
+                                let unary_custom = tr == "UnaryOperator";
+                                let custom = tr == "BinaryOperator" || unary_custom;
                                 let op_symbol = if custom {
                                     im.trait_args.first().and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::StrLit {
@@ -260,8 +263,10 @@ impl<'a> Lowering<'a> {
                                         .map(str::to_string)
                                 };
                                 let input_index = usize::from(custom);
-                                let rhs_arg =
-                                    im.trait_args.get(input_index).and_then(|a| match a {
+                                let rhs_arg = (!unary_custom)
+                                    .then(|| im.trait_args.get(input_index))
+                                    .flatten()
+                                    .and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::Path(p))
                                             if crate::ir::functions::impl_type_parameter(im, p) =>
                                         {

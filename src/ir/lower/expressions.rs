@@ -349,6 +349,16 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
+                // `flip x` inlines its `UnaryOperator<"flip", _>` impl.
+                if let ast::UnOp::Custom { symbol, .. } = op {
+                    if let Some(Val::Scalar(v)) = self.inline_unary(symbol, rhs, &HashMap::new()) {
+                        return v;
+                    }
+                    self.unsupported_exprs
+                        .borrow_mut()
+                        .push((crate::syntax::pretty::expr_string(e), ast::expr_span(e)));
+                    return Expr::Unknown;
+                }
                 // `-x` on a type with a `Neg` impl inlines it.
                 if *op == ast::UnOp::Neg {
                     if let Some(Val::Scalar(v)) = self.inline_unary("-", rhs, &HashMap::new()) {
@@ -388,7 +398,7 @@ impl<'a> Lowering<'a> {
                         return v;
                     }
                 }
-                self.make_unary(*op, self.lower_expr(rhs), ast::expr_span(e))
+                self.make_unary(op.clone(), self.lower_expr(rhs), ast::expr_span(e))
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its

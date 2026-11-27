@@ -323,6 +323,34 @@ impl<'a> Checker<'a> {
                 }
                 rhs_ty
             }
+            // `flip x`: its `UnaryOperator<"flip", Out>`'s result.
+            Expr::Unary {
+                op: UnOp::Custom { symbol, .. },
+                rhs,
+                ..
+            } => {
+                let rhs_ty = self.type_of(rhs, sym);
+                let key = crate::syntax::ast::unary_operator_key(symbol);
+                let Some(owner) = self.ty_head(&rhs_ty) else {
+                    return Ty::Error;
+                };
+                match self
+                    .operator_sigs
+                    .get(&(key, owner.clone()))
+                    .and_then(|sigs| sigs.first())
+                {
+                    Some((_, Some((output, written)))) => {
+                        if let Some(ty) = self.declared_operator_output(written.as_ref(), &rhs_ty) {
+                            return ty;
+                        }
+                        if output == "Self" || output == &owner {
+                            return rhs_ty;
+                        }
+                        self.ty_from_head(output)
+                    }
+                    _ => Ty::Error,
+                }
+            }
             Expr::Unary { rhs, .. } => self.type_of(rhs, sym),
             // A name-less struct literal (`ty: None`) takes its type from the
             // assignment target, which `type_of` does not see here.

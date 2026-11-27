@@ -504,7 +504,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 Val::Scalar(self.make_unary(
-                    *op,
+                    op.clone(),
                     self.lower_scalar_env(rhs, env),
                     ast::expr_span(e),
                 ))

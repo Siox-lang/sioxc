@@ -653,6 +653,8 @@ impl<'a> Lowering<'a> {
                 let operation = match op {
                     ast::UnOp::Neg => ProcessUnaryOp::Neg,
                     ast::UnOp::Not => ProcessUnaryOp::Not,
+                    // A user operator runs its impl: not a constant here.
+                    ast::UnOp::Custom { .. } => return None,
                 };
                 Some(self.source_values.borrow_mut().unary(operation, &rhs, span))
             }

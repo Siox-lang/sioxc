@@ -380,6 +380,7 @@ pub fn eval_const_fns(
             match op {
                 ast::UnOp::Neg => v.checked_neg(),
                 ast::UnOp::Not => Some((v == 0) as i64),
+                ast::UnOp::Custom { .. } => None,
             }
         }
         ast::Expr::Binary { op, lhs, rhs, .. } => {
@@ -501,6 +502,7 @@ pub(in crate::ir) fn eval_logic_expr(
             match op {
                 ast::UnOp::Not => Some(u64::from(value == 0)),
                 ast::UnOp::Neg => value.checked_neg(),
+                ast::UnOp::Custom { .. } => None,
             }
         }
         ast::Expr::Binary { op, lhs, rhs, .. } => {

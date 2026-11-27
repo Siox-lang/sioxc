@@ -276,7 +276,7 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
             span: *span,
         },
         Expr::Unary { op, rhs, span } => Expr::Unary {
-            op: *op,
+            op: op.clone(),
             rhs: sub(rhs),
             span: *span,
         },
@@ -496,7 +496,7 @@ pub(in crate::ir) fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr
         // becomes the literal `wires[2]` that `expr_path` can resolve.
         Expr::Unary { op, rhs, span } => {
             let n = Expr::Unary {
-                op: *op,
+                op: op.clone(),
                 rhs: sub(rhs),
                 span: *span,
             };

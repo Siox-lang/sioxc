@@ -245,7 +245,11 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_key) = trait_key else {
             return;
         };
-        let custom = trait_key == "BinaryOperator";
+        // A `UnaryOperator<"op", Out>` files under its symbol as a
+        // `BinaryOperator` does; its receiver-only `apply` is told apart by
+        // its parameters (`get_unary_operator`).
+        let unary_custom = trait_key == "UnaryOperator";
+        let custom = trait_key == "BinaryOperator" || unary_custom;
         let (symbol, method) = if custom {
             let Some(symbol) =
                 implementation
@@ -292,7 +296,7 @@ impl<'a> FunctionIndex<'a> {
         // takes whatever the checker bound it to: `*`, matched after the
         // exact inputs (#608).
         let type_parameter = |path: &ast::Path| impl_type_parameter(implementation, path);
-        let input = (!matches!(trait_key.as_str(), "Not" | "Neg"))
+        let input = (!matches!(trait_key.as_str(), "Not" | "Neg") && !unary_custom)
             .then(|| implementation.trait_args.get(usize::from(custom)))
             .flatten()
             .and_then(|argument| match argument {

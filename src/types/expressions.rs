@@ -256,6 +256,24 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
+                // `flip x` needs `impl UnaryOperator<"flip", Out>` for the
+                // operand's type.
+                if let UnOp::Custom { symbol, .. } = op {
+                    let t = self.type_of(rhs, sym);
+                    if let Some(owner) = self.ty_head(&t) {
+                        let key = crate::syntax::ast::unary_operator_key(symbol);
+                        if !self.has_impl(&key, &owner) {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!(
+                                    "`{symbol}` needs an `impl UnaryOperator<\"{symbol}\", Out> for {}`",
+                                    self.key_leaf(&owner)
+                                ),
+                            );
+                        }
+                    }
+                }
                 // `not` is per-bit boolean — bit-derived / Boolean operands only.
                 if matches!(op, UnOp::Not) {
                     let t = self.type_of(rhs, sym);

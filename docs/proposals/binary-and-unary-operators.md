@@ -1,8 +1,14 @@
 # Split custom operators into binary and unary contracts
 
-Status: **proposal, not implemented**. Written 2026-10-22. Replace the current
-binary-only `CustomOperator` with `BinaryOperator` and `UnaryOperator`, using
-the same trait-name casing as other core contracts. The implemented syntax
+Status: **implemented** (2026-11-27). Written 2026-10-22. The binary-only
+`CustomOperator` is now `BinaryOperator` (sioxc #794), and `UnaryOperator`
+adds prefix operators. The owner settled the open decision on 2026-11-27, after
+comparing VHDL (closed operator set, reserved operator words, string-named
+operator functions `"and"(a, b)`): two traits, not arity by parameter count;
+an operator word is reserved wherever it is visible, so a free function,
+variable or parameter of that name is an error; and `"op"(..)` calls an
+operator by its string name, one argument for the prefix operator and two
+for the infix one. The implemented syntax
 remains documented in
 [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md#325-operator-traits-rust-style).
 

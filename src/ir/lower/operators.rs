@@ -501,6 +501,9 @@ impl<'a> Lowering<'a> {
         let operation = match op {
             ast::UnOp::Neg => ProcessUnaryOp::Neg,
             ast::UnOp::Not => ProcessUnaryOp::Not,
+            // A user operator lowers through its impl (`inline_unary`); one
+            // that reaches here had none.
+            ast::UnOp::Custom { .. } => return Expr::Unknown,
         };
         self.source_values.borrow_mut().unary(operation, &rhs, span)
     }

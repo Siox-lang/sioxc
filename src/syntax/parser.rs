@@ -133,7 +133,10 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                 .map_or(tokens.len(), |offset| i + offset);
             let mut j = i + 1;
             while j < limit {
-                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "BinaryOperator" {
+                let contract = (tokens[j].kind == TokenKind::Ident)
+                    .then(|| text(&tokens[j]))
+                    .filter(|name| matches!(*name, "BinaryOperator" | "UnaryOperator"));
+                if let Some(contract) = contract {
                     while j < limit && tokens[j].kind != TokenKind::StrLit {
                         j += 1;
                     }
@@ -148,7 +151,13 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                         // reports the impl as an error instead.
                         if let Some(precedence) = precedence {
                             if !crate::syntax::ast::is_reserved_operator(&symbol) {
-                                out.insert(symbol, precedence);
+                                // A prefix operator has a key of its own.
+                                let key = if contract == "UnaryOperator" {
+                                    crate::syntax::ast::unary_operator_key(&symbol)
+                                } else {
+                                    symbol
+                                };
+                                out.insert(key, precedence);
                             }
                         }
                     }
@@ -630,6 +639,7 @@ impl<'a> Parser<'a> {
                 if self.eat(TokenKind::Fn) {
                     let fstart = self.span();
                     let name = self.parse_ident();
+                    self.reject_operator_word(&name);
                     let f = self.parse_fn_after_name(fstart, name, fn_is_pub);
                     if f.body.is_some() {
                         self.error_at(f.name.span, "extern functions have no body");
@@ -706,6 +716,7 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
+                self.reject_operator_word(&name);
                 let mut function = self.parse_fn_after_name(start, name, is_pub);
                 function.inline = inline;
                 Item::Fn(function)
@@ -1944,9 +1955,12 @@ impl<'a> Parser<'a> {
     /// rest wait in `grouped_lets`. A tuple is extracted with parentheses,
     /// `let (q, r) = ..;`, so the two never share a spelling.
     fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
+        self.reject_operator_word(&name);
         let mut others = Vec::new();
         while self.eat(TokenKind::Comma) {
-            others.push(self.parse_ident());
+            let other = self.parse_ident();
+            self.reject_operator_word(&other);
+            others.push(other);
         }
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type())
@@ -2222,6 +2236,7 @@ impl<'a> Parser<'a> {
                 });
             } else {
                 let name = self.parse_ident();
+                self.reject_operator_word(&name);
                 let ty = if self.eat(TokenKind::Colon) {
                     Some(self.parse_type())
                 } else {
@@ -3148,6 +3163,7 @@ impl<'a> Parser<'a> {
         let (symbol, &precedence) = self
             .custom_operators
             .iter()
+            .filter(|(symbol, _)| crate::syntax::ast::unary_operator_symbol(symbol).is_none())
             .filter(|(symbol, _)| tail.starts_with(symbol.as_str()))
             .max_by_key(|(symbol, _)| symbol.len())?;
         // The operator must end exactly where a token ends.
@@ -3161,6 +3177,99 @@ impl<'a> Parser<'a> {
             precedence.saturating_add(1),
             consumed,
         ))
+    }
+
+    /// A custom operator word acts as a reserved word wherever it is visible
+    /// (owner, 2026-11-27, as VHDL reserves `and`): a function, variable or
+    /// parameter of that name is an error. The operator stays callable by
+    /// its string name, `"flip"(x)`.
+    fn reject_operator_word(&mut self, name: &Ident) {
+        let reserved = self.custom_operators.keys().any(|key| {
+            let symbol = crate::syntax::ast::unary_operator_symbol(key).unwrap_or(key);
+            symbol == name.text
+        });
+        if reserved {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{}` is a custom operator here, so it cannot also name a function, \
+                     variable or parameter",
+                    name.text
+                ))
+                .at(name.span)
+                .help(format!(
+                    "rename it; the operator itself is called by name as `\"{}\"(..)`",
+                    name.text
+                )),
+            );
+        }
+    }
+
+    /// `"flip"(x)`, `"clip"(a, b)`: a custom operator called by its string
+    /// name, as VHDL calls `"and"(a, b)`. One argument is the prefix
+    /// operator, two the infix one.
+    fn operator_call(&mut self, symbol: &str, mut args: Vec<Expr>, span: Span) -> Option<Expr> {
+        match args.len() {
+            1 => {
+                let key = crate::syntax::ast::unary_operator_key(symbol);
+                let precedence = *self.custom_operators.get(&key)?;
+                Some(Expr::Unary {
+                    op: UnOp::Custom {
+                        symbol: symbol.to_string(),
+                        precedence,
+                    },
+                    rhs: Box::new(args.pop()?),
+                    span,
+                })
+            }
+            2 => {
+                let precedence = *self.custom_operators.get(symbol)?;
+                let rhs = args.pop()?;
+                let lhs = args.pop()?;
+                Some(Expr::Binary {
+                    op: BinOp::Custom {
+                        symbol: symbol.to_string(),
+                        precedence,
+                    },
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// A prefix custom operator starting at the current token: its symbol,
+    /// precedence and how many tokens it spans. A word must be a whole token;
+    /// punctuation may span touching tokens, the longest declared match.
+    fn custom_unary_at(&self) -> Option<(String, u8, usize)> {
+        let mut tail = String::new();
+        let mut ends = Vec::new();
+        let mut i = self.pos;
+        while i < self.tokens.len() && self.tokens[i].kind != TokenKind::Eof {
+            if i > self.pos {
+                let (prev, span) = (self.tokens[i - 1].span, self.tokens[i].span);
+                if span.file != prev.file || span.start != prev.end {
+                    break;
+                }
+            }
+            tail.push_str(self.token_text(i));
+            ends.push(tail.len());
+            i += 1;
+            if tail.len() > 16 {
+                break;
+            }
+        }
+        let (symbol, precedence) = self
+            .custom_operators
+            .iter()
+            .filter_map(|(key, &precedence)| {
+                crate::syntax::ast::unary_operator_symbol(key).map(|symbol| (symbol, precedence))
+            })
+            .filter(|(symbol, _)| tail.starts_with(symbol))
+            .max_by_key(|(symbol, _)| symbol.len())?;
+        let consumed = ends.iter().position(|&end| end == symbol.len())? + 1;
+        Some((symbol.to_string(), precedence, consumed))
     }
 
     /// The text of the token at index `i`.
@@ -3201,6 +3310,20 @@ impl<'a> Parser<'a> {
             let rhs = self.parse_unary(no_struct);
             return Expr::Unary {
                 op: UnOp::Not,
+                rhs: Box::new(rhs),
+                span: start.to(self.prev_span()),
+            };
+        }
+        // `flip x`: a prefix custom operator. Its operand takes every
+        // operator binding tighter than it, so `flip a * b` is `(flip a) * b`
+        // at precedence 100 and `flip (a * b)` at 85.
+        if let Some((symbol, precedence, consumed)) = self.custom_unary_at() {
+            for _ in 0..consumed {
+                self.bump();
+            }
+            let rhs = self.parse_bin(precedence.saturating_add(1), no_struct);
+            return Expr::Unary {
+                op: UnOp::Custom { symbol, precedence },
                 rhs: Box::new(rhs),
                 span: start.to(self.prev_span()),
             };
@@ -3321,13 +3444,36 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::LParen => {
                     let args = self.parse_call_args();
+                    let span = start.to(self.prev_span());
+                    if let Expr::StrLit { text, .. } = &e {
+                        let text = text.clone();
+                        let count = args.len();
+                        let known = match count {
+                            1 => self
+                                .custom_operators
+                                .contains_key(&crate::syntax::ast::unary_operator_key(&text)),
+                            2 => self.custom_operators.contains_key(&text),
+                            _ => false,
+                        };
+                        if known {
+                            if let Some(operator) = self.operator_call(&text, args, span) {
+                                e = operator;
+                                continue;
+                            }
+                            break;
+                        }
+                        self.error_at(
+                            span,
+                            format!("no custom operator `{text}` takes {count} operand(s)"),
+                        );
+                    }
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
                         qualifier: None,
                         args,
                         bang: false,
-                        span: start.to(self.prev_span()),
+                        span,
                     };
                 }
                 // `ufixed<6, 2>::resize(x)`: an associated function of an

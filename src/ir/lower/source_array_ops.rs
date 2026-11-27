@@ -6,7 +6,7 @@ use super::*;
 #[derive(Clone, Copy)]
 enum ArrayOperator<'a> {
     Binary(&'a ast::BinOp),
-    Unary(ast::UnOp),
+    Unary(&'a ast::UnOp),
 }
 
 impl Lowering<'_> {
@@ -20,7 +20,7 @@ impl Lowering<'_> {
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 (ArrayOperator::Binary(op), lhs.as_ref(), Some(rhs.as_ref()))
             }
-            ast::Expr::Unary { op, rhs, .. } => (ArrayOperator::Unary(*op), rhs.as_ref(), None),
+            ast::Expr::Unary { op, rhs, .. } => (ArrayOperator::Unary(op), rhs.as_ref(), None),
             _ => return Val::Scalar(Expr::Unknown),
         };
         let lhs_layout = self
@@ -142,6 +142,7 @@ impl Lowering<'_> {
                 let spelling = match op {
                     ast::UnOp::Neg => "-",
                     ast::UnOp::Not => "not",
+                    ast::UnOp::Custom { symbol, .. } => symbol.as_str(),
                 };
                 if let Some(function) = lhs
                     .family
@@ -153,7 +154,7 @@ impl Lowering<'_> {
                     let Val::Scalar(value) = lhs.value else {
                         return None;
                     };
-                    let value = if op == ast::UnOp::Not
+                    let value = if *op == ast::UnOp::Not
                         && matches!(lhs_layout.kind, LayoutKind::Packed { .. })
                     {
                         let mut ones = vec![0u64; (lhs.width as usize).max(1).div_ceil(64)];
@@ -167,7 +168,7 @@ impl Lowering<'_> {
                             span,
                         )
                     } else {
-                        self.make_unary(op, value, span)
+                        self.make_unary(op.clone(), value, span)
                     };
                     Val::Scalar(value)
                 }
