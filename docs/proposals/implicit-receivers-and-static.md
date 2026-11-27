@@ -9,8 +9,8 @@ function (#371), testbench storage (#372) and hardware process registers
 (#373), and bare field names (`value` for `self.value`, shadowed by
 parameters and locals). A written `self` parameter is an error since
 2026-11-24 (it was a migration warning). Remaining: a hardware function's
-`static let`; public entity methods are tracked in
-[entity-methods](entity-methods.md). The implemented language is
+`static let` (see the 2026-11-24 ruling under *`static let` in a function*);
+public entity methods are tracked in [entity-methods](entity-methods.md). The implemented language is
 [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md).
 
 ## Decision
@@ -242,6 +242,17 @@ These placement and initializer restrictions are proposed starting constraints,
 not claims that broader cases are impossible.
 
 ### `static let` in a function
+
+**Superseded in part (owner, 2026-11-24 and 2026-11-27).** A function's
+`static let` is one state for every call, in hardware as in a testbench:
+the simulator runs it, as a VHDL shared variable, and a hardware call warns
+that it has no RTL form (one register cannot serve every caller); a future
+RTL backend is where it errors. The per-process register and E-P014 rule
+below no longer apply. Hardware lowering has no state shared across
+processes and instances yet (it inlines functions into drivers; only
+testbench processes reach the runtime's storage), so until that is built a
+hardware call stays an error ("only a testbench can run"), rather than a
+warning over wrong simulation.
 
 Decided by the owner (2026-11-03): a function's `static let` has **one copy
 per function**, as C's `static` does: not one per call site, receiver or
