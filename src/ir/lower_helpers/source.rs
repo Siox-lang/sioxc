@@ -269,7 +269,7 @@ pub(in crate::ir) fn blanket_requirement(
         return Some(symbol.to_string());
     }
     match bound {
-        ast::Type::Generic { args, .. } if trait_key == "CustomOperator" => {
+        ast::Type::Generic { args, .. } if trait_key == "BinaryOperator" => {
             args.first().and_then(|argument| match argument {
                 ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
                 _ => None,

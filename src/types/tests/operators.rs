@@ -257,7 +257,7 @@ fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
     let blanket = |op: &str| {
         format!(
             "module m;\n\
-                 impl<T: CustomOperator<\"{op}\", T, T>> CustomOperator<\"{op}\", T, T> for T[] {{\n\
+                 impl<T: BinaryOperator<\"{op}\", T, T>> BinaryOperator<\"{op}\", T, T> for T[] {{\n\
                    attr precedence = 35;\n\
                    fn apply(rhs: T[]) -> T[] {{ return self; }}\n\
                  }}\n"
@@ -281,10 +281,10 @@ fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
 }
 
 #[test]
-/// A standard symbol has a named trait; `CustomOperator` is for the rest.
+/// A standard symbol has a named trait; `BinaryOperator` is for the rest.
 fn a_standard_symbol_is_not_a_custom_operator() {
     let src = "module m;\nstruct V { a: Bit }\n\
-               impl CustomOperator<\"+\", V, V> for V {\n\
+               impl BinaryOperator<\"+\", V, V> for V {\n\
                  fn apply(rhs: V) -> V { return self; }\n\
                }\n";
     let sink = check_modules(&[(src, FileId(0))]);
@@ -377,7 +377,7 @@ fn struct_equality_comes_from_an_eq_impl() {
     );
     assert_eq!(
         check_src(&base(
-            "impl CustomOperator<\"<=>\", V, Ordering> for V {\n\
+            "impl BinaryOperator<\"<=>\", V, Ordering> for V {\n\
                    fn apply(rhs: V) -> Ordering { return Ordering::Equal; }\n\
                  }"
         )),
@@ -579,7 +579,7 @@ fn custom_operator_selects_input_and_output_templates() {
     let ok = "module m;\n\
             attr precedence: integer for impl;\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
-            impl CustomOperator<\"merge\", Right, Result> for Left {\n\
+            impl BinaryOperator<\"merge\", Right, Result> for Left {\n\
               attr precedence = 45;\n\
               fn apply(rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
@@ -655,7 +655,7 @@ fn reserved_operators_cannot_be_overloaded() {
     // comparisons cannot be claimed by an operator impl.
     for sym in ["=", "::", ".", "..", "<", "=="] {
         let src = format!(
-                "{header}impl CustomOperator<\"{sym}\", A, A> for A {{ attr precedence = 5; fn apply(rhs: A) -> A {{ return self; }} }}\n"
+                "{header}impl BinaryOperator<\"{sym}\", A, A> for A {{ attr precedence = 5; fn apply(rhs: A) -> A {{ return self; }} }}\n"
             );
         assert!(
             check_src(&src) >= 1,
@@ -664,7 +664,7 @@ fn reserved_operators_cannot_be_overloaded() {
     }
     // A genuine custom punctuation operator is accepted.
     let ok = format!(
-            "{header}impl CustomOperator<\"^^\", A, A> for A {{ attr precedence = 5; fn apply(rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl BinaryOperator<\"^^\", A, A> for A {{ attr precedence = 5; fn apply(rhs: A) -> A {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&ok), 0);
 }
@@ -676,14 +676,14 @@ fn custom_operator_precedence_is_required_and_consistent() {
     let header = "module m;\nattr precedence: integer for impl;\n\
             enum A { A0 } enum B { B0 }\n";
     let missing = format!(
-            "{header}impl CustomOperator<\"join\", A, A> for A {{ fn apply(rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl BinaryOperator<\"join\", A, A> for A {{ fn apply(rhs: A) -> A {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&missing), 1);
 
     let conflict = format!(
             "{header}\
-             impl CustomOperator<\"join\", A, A> for A {{ attr precedence = 40; fn apply(rhs: A) -> A {{ return self; }} }}\n\
-             impl CustomOperator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(rhs: B) -> B {{ return self; }} }}\n"
+             impl BinaryOperator<\"join\", A, A> for A {{ attr precedence = 40; fn apply(rhs: A) -> A {{ return self; }} }}\n\
+             impl BinaryOperator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(rhs: B) -> B {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&conflict), 1);
 }

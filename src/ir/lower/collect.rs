@@ -241,12 +241,12 @@ impl<'a> Lowering<'a> {
                             } else {
                                 // An operator keys by its symbol: a named trait
                                 // (`impl Add<integer, _> for T`) by its own, a
-                                // `CustomOperator<"xor", _, _>` by its first
+                                // `BinaryOperator<"xor", _, _>` by its first
                                 // argument, and the next argument names the rhs
                                 // operand type. A non-operator trait
                                 // (Resolve/New/From) keys by its own name and
                                 // reads its first type arg.
-                                let custom = tr == "CustomOperator";
+                                let custom = tr == "BinaryOperator";
                                 let op_symbol = if custom {
                                     im.trait_args.first().and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::StrLit {

@@ -35,17 +35,17 @@ fn run(name: &str, source: &str, flags: &[&str]) -> String {
 const NESTED: &str = r#"module nested_custom_operators_test;
 use std::bits::unsigned;
 
-impl CustomOperator<"choose", unsigned, Bool> for unsigned {
+impl BinaryOperator<"choose", unsigned, Bool> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> Bool { return self > rhs; }
 }
-impl CustomOperator<"combine", Bool, unsigned[8]> for Bool {
+impl BinaryOperator<"combine", Bool, unsigned[8]> for Bool {
     attr precedence = 35;
     fn apply(rhs: Bool) -> unsigned[8] {
         return if self and rhs { 192 } else { 3 };
     }
 }
-impl CustomOperator<"clip", unsigned, unsigned[3]> for unsigned {
+impl BinaryOperator<"clip", unsigned, unsigned[3]> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> unsigned[3] {
         let clipped: unsigned[3] = unsigned[3](self + rhs);
@@ -53,23 +53,23 @@ impl CustomOperator<"clip", unsigned, unsigned[3]> for unsigned {
     }
 }
 struct Packet { pub value: unsigned[8] }
-impl CustomOperator<"bundle", unsigned, Packet> for unsigned {
+impl BinaryOperator<"bundle", unsigned, Packet> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> Packet { return { .value = self or rhs }; }
 }
-impl CustomOperator<"merge", unsigned, unsigned[8]> for Packet {
+impl BinaryOperator<"merge", unsigned, unsigned[8]> for Packet {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> unsigned[8] { return self.value or rhs; }
 }
-impl CustomOperator<"total", unsigned, integer> for unsigned {
+impl BinaryOperator<"total", unsigned, integer> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> integer { return integer(self) + integer(rhs); }
 }
-impl CustomOperator<"plus", integer, integer> for integer {
+impl BinaryOperator<"plus", integer, integer> for integer {
     attr precedence = 35;
     fn apply(rhs: integer) -> integer { return self + rhs; }
 }
-impl CustomOperator<"extent", unsigned, integer> for unsigned {
+impl BinaryOperator<"extent", unsigned, integer> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> integer {
         return self'length * 100 + self'left * 10 + self'right;
@@ -131,7 +131,7 @@ impl NestedCustomOperatorsTest {
 
 const ALIAS: &str = r#"module operator_alias_result_test;
 
-impl CustomOperator<"clip_alias", unsigned, Small> for unsigned {
+impl BinaryOperator<"clip_alias", unsigned, Small> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> Small {
         return unsigned[6..4](self + rhs);
@@ -208,7 +208,7 @@ fn a_declared_result_still_mismatches_a_wider_target() {
         "mismatch",
         r#"module mismatch;
 use std::bits::unsigned;
-impl CustomOperator<"clip", unsigned, unsigned[3]> for unsigned {
+impl BinaryOperator<"clip", unsigned, unsigned[3]> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> unsigned[3] { return unsigned[3](self + rhs); }
 }

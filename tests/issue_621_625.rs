@@ -68,21 +68,21 @@ const LOGIC: &str = r#"module p625;
 
 use std::bits::unsigned;
 
-impl CustomOperator<"^~", unsigned[8], unsigned[8]> for unsigned[8] {
+impl BinaryOperator<"^~", unsigned[8], unsigned[8]> for unsigned[8] {
     attr precedence = 40;
     fn apply(rhs: unsigned[8]) -> unsigned[8] {
         return self xnor rhs;
     }
 }
 
-impl CustomOperator<"~&", unsigned[8], unsigned[8]> for unsigned[8] {
+impl BinaryOperator<"~&", unsigned[8], unsigned[8]> for unsigned[8] {
     attr precedence = 40;
     fn apply(rhs: unsigned[8]) -> unsigned[8] {
         return self nand rhs;
     }
 }
 
-impl CustomOperator<"~|", unsigned[8], unsigned[8]> for unsigned[8] {
+impl BinaryOperator<"~|", unsigned[8], unsigned[8]> for unsigned[8] {
     attr precedence = 40;
     fn apply(rhs: unsigned[8]) -> unsigned[8] {
         return self nor rhs;

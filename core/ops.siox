@@ -28,9 +28,10 @@ pub trait Or<Rhs, Out> { fn or(rhs: Rhs) -> Out; }     // a or b
 pub trait Not<Out> { fn not() -> Out; }                  // not a
 pub trait Neg<Out> { fn neg() -> Out; }                  // -a
 
-// A user operator: any symbol or word the grammar does not reserve, such as
-// `xor`. It binds its precedence inside its impl with `attr precedence = N;`.
-pub trait CustomOperator<op: Char[], Rhs, Out> {
+// A user infix operator, `a op b`: any symbol or word the grammar does not
+// reserve, such as `xor`. It binds its precedence inside its impl with
+// `attr precedence = N;`.
+pub trait BinaryOperator<op: Char[], Rhs, Out> {
     fn apply(rhs: Rhs) -> Out;
 }
 
@@ -92,7 +93,7 @@ impl Not<Bool> for Bool {
     }
 }
 
-impl CustomOperator<"xor", Bool, Bool> for Bool {
+impl BinaryOperator<"xor", Bool, Bool> for Bool {
     attr precedence = 35;
     fn apply(rhs: Bool) -> Bool {
         if self { return not rhs; }
@@ -100,17 +101,17 @@ impl CustomOperator<"xor", Bool, Bool> for Bool {
     }
 }
 
-impl CustomOperator<"nand", Bool, Bool> for Bool {
+impl BinaryOperator<"nand", Bool, Bool> for Bool {
     attr precedence = 40;
     fn apply(rhs: Bool) -> Bool { return not (self and rhs); }
 }
 
-impl CustomOperator<"nor", Bool, Bool> for Bool {
+impl BinaryOperator<"nor", Bool, Bool> for Bool {
     attr precedence = 30;
     fn apply(rhs: Bool) -> Bool { return not (self or rhs); }
 }
 
-impl CustomOperator<"xnor", Bool, Bool> for Bool {
+impl BinaryOperator<"xnor", Bool, Bool> for Bool {
     attr precedence = 35;
     fn apply(rhs: Bool) -> Bool {
         if self == rhs { return true; }
@@ -169,7 +170,7 @@ impl<T: Or<T, T>> Or<T, T> for T[] {
     }
 }
 
-impl<T: CustomOperator<"xor", T, T>> CustomOperator<"xor", T, T> for T[] {
+impl<T: BinaryOperator<"xor", T, T>> BinaryOperator<"xor", T, T> for T[] {
     attr precedence = 35;
     fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
@@ -178,7 +179,7 @@ impl<T: CustomOperator<"xor", T, T>> CustomOperator<"xor", T, T> for T[] {
     }
 }
 
-impl<T: CustomOperator<"nand", T, T>> CustomOperator<"nand", T, T> for T[] {
+impl<T: BinaryOperator<"nand", T, T>> BinaryOperator<"nand", T, T> for T[] {
     attr precedence = 40;
     fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
@@ -187,7 +188,7 @@ impl<T: CustomOperator<"nand", T, T>> CustomOperator<"nand", T, T> for T[] {
     }
 }
 
-impl<T: CustomOperator<"nor", T, T>> CustomOperator<"nor", T, T> for T[] {
+impl<T: BinaryOperator<"nor", T, T>> BinaryOperator<"nor", T, T> for T[] {
     attr precedence = 30;
     fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
@@ -196,7 +197,7 @@ impl<T: CustomOperator<"nor", T, T>> CustomOperator<"nor", T, T> for T[] {
     }
 }
 
-impl<T: CustomOperator<"xnor", T, T>> CustomOperator<"xnor", T, T> for T[] {
+impl<T: BinaryOperator<"xnor", T, T>> BinaryOperator<"xnor", T, T> for T[] {
     attr precedence = 35;
     fn apply(rhs: T[]) -> T[] {
         let result: T[] = self;
@@ -245,7 +246,7 @@ attr lang for And = "and";
 attr lang for Or = "or";
 attr lang for Not = "not";
 attr lang for Neg = "neg";
-attr lang for CustomOperator = "custom_operator";
+attr lang for BinaryOperator = "binary_operator";
 attr lang for Prefix = "prefix";
 attr lang for Suffix = "suffix";
 attr lang for Range = "range";

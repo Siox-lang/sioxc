@@ -85,44 +85,44 @@ impl Prefix<"o", Char[]> for unsigned {}
 // built from those three so each element follows `std_logic_1164` (an
 // arithmetic form made any metavalue an all-`X` result).
 
-impl CustomOperator<"xor", unsigned, unsigned> for unsigned {
+impl BinaryOperator<"xor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> unsigned { return (self or rhs) and (not (self and rhs)); }
 }
 
-impl CustomOperator<"nand", unsigned, unsigned> for unsigned {
+impl BinaryOperator<"nand", unsigned, unsigned> for unsigned {
     attr precedence = 40;
     fn apply(rhs: unsigned) -> unsigned { return not (self and rhs); }
 }
 
-impl CustomOperator<"nor", unsigned, unsigned> for unsigned {
+impl BinaryOperator<"nor", unsigned, unsigned> for unsigned {
     attr precedence = 30;
     fn apply(rhs: unsigned) -> unsigned { return not (self or rhs); }
 }
 
-impl CustomOperator<"xnor", unsigned, unsigned> for unsigned {
+impl BinaryOperator<"xnor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
     fn apply(rhs: unsigned) -> unsigned {
         return not ((self or rhs) and (not (self and rhs)));
     }
 }
 
-impl CustomOperator<"xor", signed, signed> for signed {
+impl BinaryOperator<"xor", signed, signed> for signed {
     attr precedence = 35;
     fn apply(rhs: signed) -> signed { return (self or rhs) and (not (self and rhs)); }
 }
 
-impl CustomOperator<"nand", signed, signed> for signed {
+impl BinaryOperator<"nand", signed, signed> for signed {
     attr precedence = 40;
     fn apply(rhs: signed) -> signed { return not (self and rhs); }
 }
 
-impl CustomOperator<"nor", signed, signed> for signed {
+impl BinaryOperator<"nor", signed, signed> for signed {
     attr precedence = 30;
     fn apply(rhs: signed) -> signed { return not (self or rhs); }
 }
 
-impl CustomOperator<"xnor", signed, signed> for signed {
+impl BinaryOperator<"xnor", signed, signed> for signed {
     attr precedence = 35;
     fn apply(rhs: signed) -> signed {
         return not ((self or rhs) and (not (self and rhs)));

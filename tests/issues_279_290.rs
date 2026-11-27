@@ -223,11 +223,11 @@ impl T {
         (
             "288",
             r#"module test;
-impl CustomOperator<"++", integer, integer> for integer {
+impl BinaryOperator<"++", integer, integer> for integer {
     fn apply(rhs: integer) -> integer { return self + rhs + 1; }
     attr precedence = 40;
 }
-impl CustomOperator<"**", integer, integer> for integer {
+impl BinaryOperator<"**", integer, integer> for integer {
     fn apply(rhs: integer) -> integer { return self * rhs * 10; }
     attr precedence = 95;
 }

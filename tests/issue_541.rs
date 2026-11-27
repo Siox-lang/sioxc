@@ -51,7 +51,7 @@ const VECTOR: &str = r#"module c541;
 
 use std::bits::unsigned;
 
-impl CustomOperator<"^^", unsigned[8], unsigned[8]> for unsigned[8] {
+impl BinaryOperator<"^^", unsigned[8], unsigned[8]> for unsigned[8] {
     attr precedence = 40;
     fn apply(rhs: unsigned[8]) -> unsigned[8] {
         return self xor rhs;
@@ -84,7 +84,7 @@ impl Tb {
 
 const BIT: &str = r#"module test_custom_hw;
 
-impl CustomOperator<"^^", Bit, Bit> for Bit {
+impl BinaryOperator<"^^", Bit, Bit> for Bit {
     attr precedence = 40;
     fn apply(rhs: Bit) -> Bit {
         return self xor rhs;

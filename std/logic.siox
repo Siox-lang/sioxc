@@ -55,7 +55,7 @@ impl Not<Bit> for Bit {
     }
 }
 
-impl CustomOperator<"xor", Bit, Bit> for Bit {
+impl BinaryOperator<"xor", Bit, Bit> for Bit {
     attr precedence = 35;
     fn apply(rhs: Bit) -> Bit {
         if self == rhs { return '0'; }
@@ -63,17 +63,17 @@ impl CustomOperator<"xor", Bit, Bit> for Bit {
     }
 }
 
-impl CustomOperator<"nand", Bit, Bit> for Bit {
+impl BinaryOperator<"nand", Bit, Bit> for Bit {
     attr precedence = 40;
     fn apply(rhs: Bit) -> Bit { return not (self and rhs); }
 }
 
-impl CustomOperator<"nor", Bit, Bit> for Bit {
+impl BinaryOperator<"nor", Bit, Bit> for Bit {
     attr precedence = 30;
     fn apply(rhs: Bit) -> Bit { return not (self or rhs); }
 }
 
-impl CustomOperator<"xnor", Bit, Bit> for Bit {
+impl BinaryOperator<"xnor", Bit, Bit> for Bit {
     attr precedence = 35;
     fn apply(rhs: Bit) -> Bit {
         if self == rhs { return '1'; }
@@ -260,7 +260,7 @@ impl Or<Logic, Logic> for Logic {
     }
 }
 
-impl CustomOperator<"xor", Logic, Logic> for Logic {
+impl BinaryOperator<"xor", Logic, Logic> for Logic {
     attr precedence = 35;
     fn apply(rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -281,7 +281,7 @@ impl Not<Logic> for Logic {
     }
 }
 
-impl CustomOperator<"nand", Logic, Logic> for Logic {
+impl BinaryOperator<"nand", Logic, Logic> for Logic {
     attr precedence = 40;
     fn apply(rhs: Logic) -> Logic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
@@ -291,7 +291,7 @@ impl CustomOperator<"nand", Logic, Logic> for Logic {
     }
 }
 
-impl CustomOperator<"nor", Logic, Logic> for Logic {
+impl BinaryOperator<"nor", Logic, Logic> for Logic {
     attr precedence = 30;
     fn apply(rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
@@ -301,7 +301,7 @@ impl CustomOperator<"nor", Logic, Logic> for Logic {
     }
 }
 
-impl CustomOperator<"xnor", Logic, Logic> for Logic {
+impl BinaryOperator<"xnor", Logic, Logic> for Logic {
     attr precedence = 35;
     fn apply(rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -377,7 +377,7 @@ impl Or<ULogic, ULogic> for ULogic {
     }
 }
 
-impl CustomOperator<"xor", ULogic, ULogic> for ULogic {
+impl BinaryOperator<"xor", ULogic, ULogic> for ULogic {
     attr precedence = 35;
     fn apply(rhs: ULogic) -> ULogic {
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -398,7 +398,7 @@ impl Not<ULogic> for ULogic {
     }
 }
 
-impl CustomOperator<"nand", ULogic, ULogic> for ULogic {
+impl BinaryOperator<"nand", ULogic, ULogic> for ULogic {
     attr precedence = 40;
     fn apply(rhs: ULogic) -> ULogic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
@@ -408,7 +408,7 @@ impl CustomOperator<"nand", ULogic, ULogic> for ULogic {
     }
 }
 
-impl CustomOperator<"nor", ULogic, ULogic> for ULogic {
+impl BinaryOperator<"nor", ULogic, ULogic> for ULogic {
     attr precedence = 30;
     fn apply(rhs: ULogic) -> ULogic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
@@ -418,7 +418,7 @@ impl CustomOperator<"nor", ULogic, ULogic> for ULogic {
     }
 }
 
-impl CustomOperator<"xnor", ULogic, ULogic> for ULogic {
+impl BinaryOperator<"xnor", ULogic, ULogic> for ULogic {
     attr precedence = 35;
     fn apply(rhs: ULogic) -> ULogic {
         if self == 'U' or rhs == 'U' { return 'U'; }

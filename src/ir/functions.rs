@@ -229,7 +229,7 @@ impl<'a> FunctionIndex<'a> {
     }
 
     /// Register the executable body of one operator impl: a named trait's
-    /// method (`Add::add`) or a `CustomOperator`'s `apply`. Blanket
+    /// method (`Add::add`) or a `BinaryOperator`'s `apply`. Blanket
     /// `T[]` declarations are indexed separately from concrete nominal owners;
     /// Process lowering expands their loop shape before selecting element
     /// implementations.
@@ -245,7 +245,7 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_key) = trait_key else {
             return;
         };
-        let custom = trait_key == "CustomOperator";
+        let custom = trait_key == "BinaryOperator";
         let (symbol, method) = if custom {
             let Some(symbol) =
                 implementation

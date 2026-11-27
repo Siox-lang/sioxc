@@ -16,13 +16,13 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("local/operators.siox"),
         r#"module local::operators;
-           use std::ops::CustomOperator;
+           use std::ops::BinaryOperator;
            pub enum Flag { Off, On }
-           impl CustomOperator<"unless", Flag, Bool> for Flag {
+           impl BinaryOperator<"unless", Flag, Bool> for Flag {
                attr precedence = 45;
                fn apply(rhs: Flag) -> Bool { return true; }
            }
-           impl CustomOperator<"^^", Flag, Bool> for Flag {
+           impl BinaryOperator<"^^", Flag, Bool> for Flag {
                attr precedence = 44;
                fn apply(rhs: Flag) -> Bool { return true; }
            }"#,
@@ -38,9 +38,9 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("unrelated.siox"),
         r#"module unrelated;
-           use std::ops::CustomOperator;
+           use std::ops::BinaryOperator;
            enum Other { A }
-           impl CustomOperator<"unless", Other, Bool> for Other {
+           impl BinaryOperator<"unless", Other, Bool> for Other {
                attr precedence = 1;
                fn apply(rhs: Other) -> Bool { return true; }
            }"#,
@@ -163,4 +163,24 @@ fn custom_operators_run_in_native_harness() {
     let run = Command::new(&bin).status().unwrap();
     let _ = std::fs::remove_file(&bin);
     assert!(run.success(), "custom operator native test failed");
+}
+
+/// The binary contract was renamed (binary-and-unary-operators proposal): the
+/// old name says what replaces it.
+#[test]
+fn the_old_custom_operator_name_points_at_binary_operator() {
+    let path = std::env::temp_dir().join("siox_custom_operator_renamed.siox");
+    let text = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
+        .compile(CompileRequest::new(
+            SourceInput::memory(
+                path,
+                "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n    attr precedence = 40;\n    fn apply(rhs: Bit) -> Bit { return self; }\n}\n",
+            ),
+            Emit::Metadata,
+        ))
+        .render_diagnostics();
+    assert!(
+        text.contains("`CustomOperator` was renamed `BinaryOperator<\"op\", Rhs, Out>`"),
+        "{text}"
+    );
 }
