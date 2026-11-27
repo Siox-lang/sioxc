@@ -1,6 +1,6 @@
 module custom_operator_test;
 
-use std::ops::CustomOperator;
+use std::ops::BinaryOperator;
 
 pub enum Flag {
     Off,
@@ -12,7 +12,7 @@ pub enum Other {
     Yes
 }
 
-impl CustomOperator<"unless", Flag, Bool> for Flag {
+impl BinaryOperator<"unless", Flag, Bool> for Flag {
     attr precedence = 45;
     fn apply(rhs: Flag) -> Bool {
         if self == Flag::On and rhs == Flag::Off {
@@ -22,14 +22,14 @@ impl CustomOperator<"unless", Flag, Bool> for Flag {
     }
 }
 
-impl CustomOperator<"unless", Other, Bool> for Flag {
+impl BinaryOperator<"unless", Other, Bool> for Flag {
     attr precedence = 45;
     fn apply(rhs: Other) -> Bool {
         return rhs == Other::Yes;
     }
 }
 
-impl CustomOperator<"^^", Flag, Bool> for Flag {
+impl BinaryOperator<"^^", Flag, Bool> for Flag {
     attr precedence = 44;
     fn apply(rhs: Flag) -> Bool {
         return self == rhs;

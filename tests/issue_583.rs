@@ -1,6 +1,6 @@
 //! Regression for sioxc #583: a custom operator declared by an impl with
 //! a long generic header (`impl<A: Marker, B: Marker, C: Marker, D: Marker>
-//! CustomOperator<"^^", Bit, Bit> for Bit`) is in the operator table. The
+//! BinaryOperator<"^^", Bit, Bit> for Bit`) is in the operator table. The
 //! pre-parse scan read only 20 tokens past `impl`, so `x ^^ x` was "no
 //! operator `^^` is declared".
 
@@ -35,7 +35,7 @@ trait Marker {}
 
 impl Marker for Bit {}
 
-impl<A: Marker, B: Marker, C: Marker, D: Marker> CustomOperator<"^^", Bit, Bit> for Bit {
+impl<A: Marker, B: Marker, C: Marker, D: Marker> BinaryOperator<"^^", Bit, Bit> for Bit {
     attr precedence = 40;
     fn apply(rhs: Bit) -> Bit { return self; }
 }

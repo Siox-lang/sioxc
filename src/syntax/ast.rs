@@ -1445,7 +1445,7 @@ pub fn type_span(t: &Type) -> Span {
 
 /// The standard operator symbols, which carry built-in precedence and have
 /// named traits. Any other symbol (a user operator like `xor`) is a
-/// `CustomOperator` and must declare its precedence.
+/// `BinaryOperator` and must declare its precedence.
 pub fn is_builtin_operator(sym: &str) -> bool {
     operator_symbol_trait(sym).is_some()
 }
@@ -1453,7 +1453,7 @@ pub fn is_builtin_operator(sym: &str) -> bool {
 /// The standard operators' named traits (`core::ops`, spec 3.25): trait,
 /// symbol, and the method the impl provides. `Not` and `Neg` (unary `-`,
 /// after `Sub` so `-` names `Sub` in diagnostics) are unary. User operators
-/// are `CustomOperator<"sym", Rhs, Out>` with `apply` instead.
+/// are `BinaryOperator<"sym", Rhs, Out>` with `apply` instead.
 pub const OPERATOR_TRAITS: &[(&str, &str, &str)] = &[
     ("Add", "+", "add"),
     ("Sub", "-", "sub"),
@@ -1485,12 +1485,12 @@ pub fn operator_symbol_trait(symbol: &str) -> Option<&'static str> {
 }
 
 /// The trait an impl of `symbol` names, for diagnostics: `Add<Rhs, Out>`,
-/// `Not<Out>`, or `CustomOperator<"xor", Rhs, Out>`.
+/// `Not<Out>`, or `BinaryOperator<"xor", Rhs, Out>`.
 pub fn operator_impl_form(symbol: &str) -> String {
     match operator_symbol_trait(symbol) {
         Some("Not") => "Not<Out>".to_string(),
         Some(named) => format!("{named}<Rhs, Out>"),
-        None => format!("CustomOperator<\"{symbol}\", Rhs, Out>"),
+        None => format!("BinaryOperator<\"{symbol}\", Rhs, Out>"),
     }
 }
 
@@ -1503,7 +1503,7 @@ pub fn operator_trait_method(trait_name: &str) -> Option<&'static str> {
 }
 
 /// Symbols the grammar reserves for the language itself — assignment, paths,
-/// ranges, separators, brackets, attributes — so a `CustomOperator<sym, …>` impl
+/// ranges, separators, brackets, attributes — so a `BinaryOperator<sym, …>` impl
 /// cannot claim them (spec 3.25). The six comparisons are reserved too: they
 /// are `Eq`/`Ord` methods, so implement those instead. An empty
 /// symbol is rejected here as well.

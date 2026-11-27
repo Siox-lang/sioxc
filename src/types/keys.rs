@@ -140,7 +140,7 @@ impl<'a> Checker<'a> {
         if let Some(symbol) = crate::syntax::ast::operator_trait_symbol(&trait_key) {
             return Some(symbol.to_string());
         }
-        if trait_key == "CustomOperator" {
+        if trait_key == "BinaryOperator" {
             let Type::Generic { args, .. } = bound else {
                 return Some(trait_key);
             };

@@ -34,7 +34,7 @@ use crate::syntax::Module;
 
 /// Trait names the compiler itself provides: the hooks expression syntax
 /// dispatches to, including the named operator traits (`Add`, … `Not`, spec
-/// 3.25) and `CustomOperator` for user symbols. They stay reachable as
+/// 3.25) and `BinaryOperator` for user symbols. They stay reachable as
 /// builtins even when std declares a trait with the same spelling, so a
 /// user module never has to import them to write an `impl`.
 const COMPILER_TRAITS: &[&str] = &[
@@ -49,7 +49,7 @@ const COMPILER_TRAITS: &[&str] = &[
     "Or",
     "Not",
     "Neg",
-    "CustomOperator",
+    "BinaryOperator",
     "Prefix",
     "Suffix",
     "Index",
@@ -78,7 +78,7 @@ fn trait_role(name: &str) -> Option<&'static str> {
         "Or" => "or",
         "Not" => "not",
         "Neg" => "neg",
-        "CustomOperator" => "custom_operator",
+        "BinaryOperator" => "binary_operator",
         "Prefix" => "prefix",
         "Suffix" => "suffix",
         "Index" => "index",
@@ -2443,12 +2443,15 @@ impl<'a> Resolver<'a> {
                     _ if name == "Operator" => "`Operator` was split: a standard operator \
                         implements its named trait (`Add<Rhs, Out>`, `Sub`, `Mul`, `Div`, \
                         `Shl`, `Shr`, `And`, `Or`, `Not<Out>`) and a user symbol \
-                        `CustomOperator<\"sym\", Rhs, Out>`"
+                        `BinaryOperator<\"sym\", Rhs, Out>`"
                         .to_string(),
                     // The retired text type (alloc proposal).
                     _ if name == "string" => "`string` was split: fixed text is `Char[N]` \
                         (a literal `\"abc\"` is a `Char[3]`), and growable testbench text \
                         is `String`"
+                        .to_string(),
+                    _ if name == "CustomOperator" => "`CustomOperator` was renamed \
+                        `BinaryOperator<\"op\", Rhs, Out>`"
                         .to_string(),
                     Some(s) => format!("did you mean `{s}`?"),
                     None => "declare it, or import it with `use`".to_string(),

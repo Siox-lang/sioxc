@@ -645,12 +645,12 @@ impl<'a> Checker<'a> {
                             }
                         }
                         // Operators key by symbol: a named trait (`impl Add<Rhs,
-                        // Out> for T`) by its own, a `CustomOperator<"sym", Rhs,
+                        // Out> for T`) by its own, a `BinaryOperator<"sym", Rhs,
                         // Out>` by its first argument. A custom operator must
                         // declare `attr precedence = N;`; the standard symbols
                         // carry built-in precedence (spec 3.25).
                         let trait_name = t.clone();
-                        let custom = t == "CustomOperator";
+                        let custom = t == "BinaryOperator";
                         let operator = if custom {
                             im.trait_args.first().and_then(|a| match a {
                                 GenericArg::Positional(Expr::StrLit { text, .. }) => {

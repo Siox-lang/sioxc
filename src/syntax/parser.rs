@@ -87,7 +87,7 @@ fn impl_item_of(statement: Stmt) -> ImplItem {
 }
 
 /// Lightweight declaration pass used before the full Pratt parse. It finds
-/// `impl CustomOperator<"symbol", ...>` blocks with a precedence without parsing their
+/// `impl BinaryOperator<"symbol", ...>` blocks with a precedence without parsing their
 /// bodies, producing the operator table needed to group expressions.
 pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String, u8> {
     let text = |t: &Token| &src[t.span.start as usize..t.span.end as usize];
@@ -125,7 +125,7 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
         let pending = pending_precedence.take();
         if tokens[i].kind == TokenKind::Impl {
             // The header runs to the body's `{`: generic parameters with
-            // bounds pushed `CustomOperator<"^^", ..>` past a fixed 20-token
+            // bounds pushed `BinaryOperator<"^^", ..>` past a fixed 20-token
             // window, and the operator went undeclared (#583).
             let limit = tokens[i..]
                 .iter()
@@ -133,7 +133,7 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                 .map_or(tokens.len(), |offset| i + offset);
             let mut j = i + 1;
             while j < limit {
-                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "CustomOperator" {
+                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "BinaryOperator" {
                     while j < limit && tokens[j].kind != TokenKind::StrLit {
                         j += 1;
                     }
@@ -2254,11 +2254,11 @@ impl<'a> Parser<'a> {
             self.error_at(
                 t.span,
                 format!(
-                    "quoted operator traits were removed; use the operator's named trait (`Add`, …) or `CustomOperator<\"{text}\", Rhs, Out>`"
+                    "quoted operator traits were removed; use the operator's named trait (`Add`, …) or `BinaryOperator<\"{text}\", Rhs, Out>`"
                 ),
             );
             Ident {
-                text: "CustomOperator".to_string(),
+                text: "BinaryOperator".to_string(),
                 span: t.span,
             }
         } else {
@@ -3106,7 +3106,7 @@ impl<'a> Parser<'a> {
         lhs
     }
 
-    /// Punctuation used as an operator that no `impl CustomOperator<..>` declares.
+    /// Punctuation used as an operator that no `impl BinaryOperator<..>` declares.
     /// The parser learns its operators from those impls, so an undeclared one
     /// is indistinguishable from the end of an expression — which is why the
     /// symbol itself has to be named here rather than left to the caller.
@@ -3117,7 +3117,7 @@ impl<'a> Parser<'a> {
                 .at(span)
                 .help(format!(
                     "operators come from the standard library, not the grammar: \
-                     declare one with `impl CustomOperator<\"{symbol}\", Rhs, Out> \
+                     declare one with `impl BinaryOperator<\"{symbol}\", Rhs, Out> \
                      for Lhs {{ attr precedence = N; … }}`"
                 )),
         );
@@ -4968,7 +4968,7 @@ mod tests {
         assert_eq!(names, ["a", "y"]);
     }
 
-    /// The parser learns its operators from `impl CustomOperator<..>`, so an
+    /// The parser learns its operators from `impl BinaryOperator<..>`, so an
     /// undeclared one looked exactly like the end of an expression: `a % b`
     /// reported "expected `;` after a `let`" and left the reader hunting a
     /// punctuation error. Eleven diagnostics for one unknown symbol.
@@ -4980,7 +4980,7 @@ mod tests {
         assert!(diags[0]
             .help
             .as_ref()
-            .is_some_and(|h| h.contains("impl CustomOperator<\"^\", ")));
+            .is_some_and(|h| h.contains("impl BinaryOperator<\"^\", ")));
     }
 
     /// A stray statement in an entity body used to be retried as a fresh port
@@ -5795,7 +5795,7 @@ mod tests {
     /// precedence bound inside the impl body, not only `#[precedence = N]`.
     #[test]
     fn precedence_is_discovered_from_a_body_binding() {
-        let src = "module m;\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl CustomOperator<\"~~\", Bit, Bit> for Bit {}\n";
+        let src = "module m;\nimpl BinaryOperator<\"^^\", Bit, Bit> for Bit {\n  fn apply(rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl BinaryOperator<\"~~\", Bit, Bit> for Bit {}\n";
         let mut sink = DiagnosticSink::new();
         let tokens = crate::syntax::lexer::Lexer::new(FileId(0), src).tokenize(&mut sink);
         let operators = discover_custom_operators(src, &tokens);
@@ -5808,7 +5808,7 @@ mod tests {
     /// and stays in the tree so later stages still see it.
     #[test]
     fn metadata_in_brackets_names_its_binding() {
-        let src = "module m;\n#[test]\nentity T {}\n#[top]\nentity Chip {}\n#[precedence = 40]\nimpl CustomOperator<\"^^\", Bit, Bit> for Bit {}\nimpl Chip {\n  #[vendor::keep = false]\n  let probe: Bit;\n}\n";
+        let src = "module m;\n#[test]\nentity T {}\n#[top]\nentity Chip {}\n#[precedence = 40]\nimpl BinaryOperator<\"^^\", Bit, Bit> for Bit {}\nimpl Chip {\n  #[vendor::keep = false]\n  let probe: Bit;\n}\n";
         let diags = diagnostics(src);
         let helps: Vec<_> = diags
             .iter()
