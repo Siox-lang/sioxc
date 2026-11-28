@@ -35,6 +35,14 @@ pub trait BinaryOperator<op: Char[], Rhs, Out> {
     fn apply(rhs: Rhs) -> Out;
 }
 
+// A user prefix operator, `op a`, on the receiver alone: a symbol or word the
+// grammar does not reserve. It binds `attr precedence = N;` too: the operand
+// takes every operator binding tighter. A word operator is reserved wherever
+// it is visible; `"op"(a)` calls it by name, as VHDL's `"not"(a)`.
+pub trait UnaryOperator<op: Char[], Out> {
+    fn apply() -> Out;
+}
+
 // Literal affixes are symbol-parameterized the same way (spec 3.24): the first
 // argument is the affix string, the second the literal's data type.
 //   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", Char[]> for T`
@@ -247,6 +255,7 @@ attr lang for Or = "or";
 attr lang for Not = "not";
 attr lang for Neg = "neg";
 attr lang for BinaryOperator = "binary_operator";
+attr lang for UnaryOperator = "unary_operator";
 attr lang for Prefix = "prefix";
 attr lang for Suffix = "suffix";
 attr lang for Range = "range";

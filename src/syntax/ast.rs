@@ -1147,13 +1147,35 @@ pub struct ConnectArg {
 }
 
 /// A prefix operator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnOp {
     /// Arithmetic negation, `-x`.
     Neg,
     /// Logical or bitwise complement, `not x`. On a vector this lowers to an
     /// exclusive-or against all-ones.
     Not,
+    /// A user prefix operator, `flip x`: an `impl UnaryOperator<"flip",
+    /// Out> for T` of the operand's type.
+    Custom {
+        /// The operator as declared.
+        symbol: String,
+        /// Its declared binding power: the operand takes every operator
+        /// binding tighter.
+        precedence: u8,
+    },
+}
+
+/// The key a prefix (unary) custom operator has in the operator tables,
+/// beside the binary ones keyed by their bare symbol: `fold` may be both, at
+/// different precedences.
+pub fn unary_operator_key(symbol: &str) -> String {
+    format!("\u{1}{symbol}")
+}
+
+/// The symbol of a key [`unary_operator_key`] built, or `None` for a binary
+/// operator's key.
+pub fn unary_operator_symbol(key: &str) -> Option<&str> {
+    key.strip_prefix('\u{1}')
 }
 
 /// An infix operator as written in the source.

@@ -12434,6 +12434,7 @@ fn inline_process_unary_operator(
     let symbol = match operator {
         ast::UnOp::Neg => "-",
         ast::UnOp::Not => "not",
+        ast::UnOp::Custom { symbol, .. } => symbol.as_str(),
     };
     if matches!(operand_type, crate::types::Ty::Array { family: None, .. })
         && context.functions.has_blanket_array_operator(symbol, 0)
@@ -14058,6 +14059,11 @@ fn value_ref_with_type_inner(
             operation: match op {
                 ast::UnOp::Neg => ProcessUnaryOp::Neg,
                 ast::UnOp::Not => ProcessUnaryOp::Not,
+                // A user operator runs its impl, inlined before this; one
+                // that reaches here had none.
+                ast::UnOp::Custom { .. } => {
+                    return unsupported_process_value(span, contextual_type, context);
+                }
             },
             operand: value_ref(rhs, process, context),
         },

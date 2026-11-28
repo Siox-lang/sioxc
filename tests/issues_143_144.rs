@@ -102,12 +102,14 @@ impl NestedCustomOperatorsTest {
     let c: unsigned[8] = 49;
     let chained: unsigned[8]; let right: unsigned[8];
     let complemented: unsigned[8]; let changed_type: unsigned[8];
-    let short: unsigned[3]; let packet: unsigned[8]; let total: integer;
-    let extent: integer; let inherited: integer;
+    // `total` and `extent` are operators here, so their results need other
+    // names: an operator word is reserved where it is visible.
+    let short: unsigned[3]; let packet: unsigned[8]; let summed: integer;
+    let measured: integer; let inherited: integer;
     let probe: Probe = { .a = a, .b = b, .c = c, .chained = chained,
         .right = right, .complemented = complemented, .changed_type = changed_type,
-        .short = short, .packet = packet, .total = total,
-        .extent = extent, .inherited = inherited };
+        .short = short, .packet = packet, .total = summed,
+        .extent = measured, .inherited = inherited };
     process {
         await 1ns;
         assert!(chained == 151 and right == 151, "nested xor preserves its family");
@@ -115,13 +117,13 @@ impl NestedCustomOperatorsTest {
         assert!(changed_type == 192, "custom result types drive subsequent dispatch");
         assert!(short == 0, "custom output widths override the input width");
         assert!(packet == 183, "aggregate custom results retain their layout");
-        assert!(total == 215, "kernel custom results retain their full width");
-        assert!(extent == 302, "constrained result length and direction follow its declaration");
+        assert!(summed == 215, "kernel custom results retain their full width");
+        assert!(measured == 302, "constrained result length and direction follow its declaration");
         assert!(inherited == 807, "unconstrained results retain the operand direction");
         c = 0; await 1ns;
         assert!(chained == 166 and right == 166 and complemented == 89);
         assert!(changed_type == 3);
-        assert!(short == 1 and packet == 166 and total == 166);
+        assert!(short == 1 and packet == 166 and summed == 166);
         a = "1010X000"; await 1ns;
         assert!(chained[3] == 'X' and right[3] == 'X' and complemented[3] == 'X');
         assert!(chained[7] == '1' and complemented[7] == '0', "metavalues stay per element");

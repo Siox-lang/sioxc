@@ -1153,12 +1153,19 @@ fn indexed_view(t: &Type) -> Option<(String, String)> {
     }
 }
 
-/// The source spelling of a prefix operator. `not` keeps its trailing space
-/// because it is a word rather than punctuation.
-fn un_op(op: UnOp) -> &'static str {
+/// The source spelling of a prefix operator. A word (`not`, a custom
+/// `flip`) keeps a trailing space; punctuation does not.
+fn un_op(op: &UnOp) -> String {
     match op {
-        UnOp::Neg => "-",
-        UnOp::Not => "not ",
+        UnOp::Neg => "-".to_string(),
+        UnOp::Not => "not ".to_string(),
+        UnOp::Custom { symbol, .. } => {
+            if symbol.ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+                format!("{symbol} ")
+            } else {
+                symbol.clone()
+            }
+        }
     }
 }
 
@@ -1303,7 +1310,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             (format!("match {} {{ {} }}", expr(scrutinee), arms_str), 0)
         }
         Expr::Unary { op, rhs, .. } => (
-            format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)),
+            format!("{}{}", un_op(op), expr_prec(rhs, UNARY_PREC)),
             UNARY_PREC,
         ),
         Expr::Binary { op, lhs, rhs, .. } => {

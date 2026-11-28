@@ -650,7 +650,10 @@ impl<'a> Checker<'a> {
                         // declare `attr precedence = N;`; the standard symbols
                         // carry built-in precedence (spec 3.25).
                         let trait_name = t.clone();
-                        let custom = t == "BinaryOperator";
+                        // A prefix `UnaryOperator<"flip", Out>` keys apart
+                        // from a binary operator of the same symbol.
+                        let unary_custom = t == "UnaryOperator";
+                        let custom = t == "BinaryOperator" || unary_custom;
                         let operator = if custom {
                             im.trait_args.first().and_then(|a| match a {
                                 GenericArg::Positional(Expr::StrLit { text, .. }) => {
@@ -662,7 +665,11 @@ impl<'a> Checker<'a> {
                             crate::syntax::ast::operator_trait_symbol(&t).map(str::to_string)
                         };
                         if let Some(symbol) = &operator {
-                            t = symbol.clone();
+                            t = if unary_custom {
+                                crate::syntax::ast::unary_operator_key(symbol)
+                            } else {
+                                symbol.clone()
+                            };
                             if let Some(named) =
                                 crate::syntax::ast::operator_symbol_trait(symbol).filter(|_| custom)
                             {
@@ -717,7 +724,7 @@ impl<'a> Checker<'a> {
                                 match precedence {
                                     Some((value, span)) => {
                                         if let Some((previous, previous_span)) =
-                                            self.operator_precedence.get(symbol).copied()
+                                            self.operator_precedence.get(&t).copied()
                                         {
                                             if previous != value {
                                                 self.sink.emit(
@@ -731,7 +738,7 @@ impl<'a> Checker<'a> {
                                             }
                                         } else {
                                             self.operator_precedence
-                                                .insert(symbol.clone(), (value, span));
+                                                .insert(t.clone(), (value, span));
                                         }
                                     }
                                     None => self.error(
@@ -780,7 +787,8 @@ impl<'a> Checker<'a> {
                         // operator's symbol; `Not<Out>` has no `Rhs`), falling
                         // back to the method's rhs-param / return types.
                         if operator.is_some() {
-                            let unary = matches!(trait_name.as_str(), "Not" | "Neg");
+                            let unary =
+                                matches!(trait_name.as_str(), "Not" | "Neg") || unary_custom;
                             let skip = usize::from(custom);
                             let arg_name = |index: usize| {
                                 let index = if unary { index.checked_sub(1)? } else { index };
