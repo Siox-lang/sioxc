@@ -1,11 +1,17 @@
 # A growable vector: `std::vec::Vec<T>`
 
-Status: **proposed**, with a proof of concept (2026-11-16): `std::vec::Vec<T>`
-names the simulator's growable store, has `len`, `is_empty`, `last`, `pop` and
-`clear` written in siox, and is rejected in hardware. Phases 2–5 below are not
-started. [`alloc.md`](alloc.md) (2026-11-23) widens this into the allocation
-layer siox takes from Rust's `alloc` crate, and proposes phase 2 as store
-primitives with `Vec` written entirely in std.
+Status: **partly implemented** (updated 2026-11-28). Phase 1 landed (#770):
+`std::vec::Vec<T>` names the simulator's growable store and is rejected in
+hardware. The [`alloc.md`](alloc.md) work (2026-11-23) took it further: `Vec`
+lives in `std::alloc::vec` with `insert`, `remove` and `truncate` besides
+`len`, `is_empty`, `last`, `pop` and `clear` (#786); a struct, generic ones
+included, holds `Vec` fields copied as values (#783, #784), which every
+collection is built on; and `Vec<String>` and `Vec<Vec<T>>` work. Of phase 3,
+tuple and struct *elements* remain (#423, #424, #440, #470). Phases 2
+(a nominal type), 4 (formatting, attributes, conversions) and 5 (retiring
+runtime `T[]`) are not started, and `alloc.md` proposes phase 2 as store
+primitives with `Vec` written entirely in std. The open questions below are
+still open; `Vec` is not in the prelude.
 
 Ruling it builds on (2026-11-05): a growable array is its own type, as Rust's
 `Vec<T>`; `T[]` is never dynamic. Ten open issues are runtime-array bugs that

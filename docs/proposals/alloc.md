@@ -1,7 +1,12 @@
 # What siox takes from Rust's `alloc`
 
-Status: **proposed** (2026-11-23); **the string switch is adopted**
-(2026-11-23, see "Strings" below). It widens [`vec.md`](vec.md): `Vec<T>` is
+Status: **largely implemented** (updated 2026-11-28). Landed: the
+`std::alloc` layout and every collection of Rust's `alloc::collections`
+(#782–#787), `format!` and `String`'s growth API (#788), and the string switch
+(#789, #790: `string` is retired). Remaining: store primitives with `Vec`
+written in std (order of work, step 1), tuple and struct elements,
+`to_string`, iteration over collections, `Option` results (payload enums), and
+the rest of Rust's `Vec`/`String` API. It widens [`vec.md`](vec.md): `Vec<T>` is
 one part of a small allocation layer for testbenches, and `String` is a
 dynamic string, with fixed text as `Char[N]`.
 
@@ -203,12 +208,13 @@ Steps, each its own PR:
    existing changes. **Landed** (`std::alloc::string`,
    `tests/string_type.rs`).
 2. core and std move to `String` or `Char[..]`, with the compiler's own
-   references to `string`. **Landed**: attribute text and the operator
+   references to `string`. **Landed** (#789). **Landed**: attribute text and the operator
    traits' text parameters are `Char[]`; `read<String>` (test) and
    `read<Char[N]>` (baked hardware) replace `read<string>`; a `String`
    parameter can be written (copy-out), and a `String` can be initialized
    from an `if` over texts.
 3. The tests and the corpus (siox-tests) move, then `string` is removed.
+   **Landed** (siox-tests #46, #790, #792).
 
 ## Order of work
 
